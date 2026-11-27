@@ -11,11 +11,12 @@ use alloc::{rc::Rc, vec::Vec};
 use core::cell::RefCell;
 use core::{
     any::{Any, TypeId, type_name},
+    cell::Cell,
     fmt,
     marker::PhantomData,
 };
 
-use nami::{Binding, Signal as _};
+use nami::{Binding, Signal, SignalIdentity, watcher::Context};
 #[cfg(feature = "serde")]
 use serde::de::{DeserializeOwned, DeserializeSeed, Error as DeError, SeqAccess, Visitor};
 #[cfg(feature = "serde")]
@@ -409,6 +410,24 @@ impl<R: Clone + 'static> NavigationPath<R> {
         self.len() == 0
     }
 
+    /// Returns a signal tracking the number of routes in the path without
+    /// cloning the route vector on read.
+    #[must_use]
+    pub fn len_signal(&self) -> impl Signal<Output = usize> + use<R> {
+        NavigationPathLenSignal {
+            inner: self.inner.clone(),
+        }
+    }
+
+    /// Returns a signal tracking whether the path contains no routes without
+    /// cloning the route vector on read.
+    #[must_use]
+    pub fn is_empty_signal(&self) -> impl Signal<Output = bool> + use<R> {
+        NavigationPathIsEmptySignal {
+            inner: self.inner.clone(),
+        }
+    }
+
     /// Returns an independent snapshot of the current routes.
     #[must_use]
     pub fn snapshot(&self) -> Vec<R> {
@@ -419,15 +438,105 @@ impl<R: Clone + 'static> NavigationPath<R> {
     pub fn iter(&self) -> impl Iterator<Item = R> {
         self.snapshot().into_iter()
     }
+}
 
-    /// Calls `watcher` with the routes after every change; registering
-    /// delivers nothing, so a subscriber reads [`Self::snapshot`] first.
-    pub(crate) fn watch(
-        &self,
-        watcher: impl Fn(Vec<R>) + 'static,
-    ) -> impl nami::watcher::WatcherGuard {
+impl<R: Clone + 'static> Signal for NavigationPath<R> {
+    type Output = Vec<R>;
+    type Guard = <Binding<Vec<R>> as Signal>::Guard;
+
+    fn snapshot(&self) -> Self::Output {
+        self.inner.snapshot()
+    }
+
+    fn with_ref<T>(&self, f: impl FnOnce(&Self::Output) -> T) -> T {
+        self.inner.with_ref(f)
+    }
+
+    fn identity(&self) -> Option<SignalIdentity> {
+        self.inner.identity()
+    }
+
+    fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
+        self.inner.watch(watcher)
+    }
+}
+
+// Distinct property discriminators separating derived length and emptiness
+// signals from the parent `NavigationPath` signal identity.
+const PATH_LEN_SIGNAL_DISCRIMINATOR: usize = 1;
+const PATH_IS_EMPTY_SIGNAL_DISCRIMINATOR: usize = 2;
+
+struct NavigationPathLenSignal<R: 'static> {
+    inner: Binding<Vec<R>>,
+}
+
+impl<R: 'static> Clone for NavigationPathLenSignal<R> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<R: 'static> Signal for NavigationPathLenSignal<R> {
+    type Output = usize;
+    type Guard = <Binding<Vec<R>> as Signal>::Guard;
+
+    fn snapshot(&self) -> Self::Output {
+        self.inner.with_ref(Vec::len)
+    }
+
+    fn identity(&self) -> Option<SignalIdentity> {
         self.inner
-            .watch(move |context| watcher(context.into_value()))
+            .identity()
+            .map(|id| id.with_discriminator(PATH_LEN_SIGNAL_DISCRIMINATOR))
+    }
+
+    fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
+        let last = Cell::new(self.snapshot());
+        self.inner.watch(move |ctx| {
+            let next = ctx.value().len();
+            if last.replace(next) != next {
+                watcher(ctx.map(|_| next));
+            }
+        })
+    }
+}
+
+struct NavigationPathIsEmptySignal<R: 'static> {
+    inner: Binding<Vec<R>>,
+}
+
+impl<R: 'static> Clone for NavigationPathIsEmptySignal<R> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<R: 'static> Signal for NavigationPathIsEmptySignal<R> {
+    type Output = bool;
+    type Guard = <Binding<Vec<R>> as Signal>::Guard;
+
+    fn snapshot(&self) -> Self::Output {
+        self.inner.with_ref(Vec::is_empty)
+    }
+
+    fn identity(&self) -> Option<SignalIdentity> {
+        self.inner
+            .identity()
+            .map(|id| id.with_discriminator(PATH_IS_EMPTY_SIGNAL_DISCRIMINATOR))
+    }
+
+    fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
+        let last = Cell::new(self.snapshot());
+        self.inner.watch(move |ctx| {
+            let next = ctx.value().is_empty();
+            if last.replace(next) != next {
+                watcher(ctx.map(|_| next));
+            }
+        })
     }
 }
 
@@ -617,7 +726,9 @@ where
 mod tests {
     #[cfg(feature = "serde")]
     use alloc::string::ToString as _;
-    use alloc::{rc::Rc, string::String, vec};
+    use alloc::{rc::Rc, string::String, vec, vec::Vec};
+    use core::cell::{Cell, RefCell};
+    use nami::{Signal as _, SignalExt as _, signal::IntoComputed as _};
     #[cfg(feature = "serde")]
     use serde::de::DeserializeSeed as _;
     #[cfg(feature = "serde")]
@@ -843,5 +954,128 @@ mod tests {
     fn empty_restoration_key_is_rejected() {
         let path = NavigationPath::heterogeneous();
         path.register_restoration::<u32>("");
+    }
+
+    #[test]
+    fn typed_path_implements_signal_with_single_notification_semantics() {
+        let path = NavigationPath::<u32>::new();
+        assert_eq!(path.snapshot(), Vec::<u32>::new());
+        assert!(path.identity().is_some());
+
+        // Verify `IntoSignal` / `IntoComputed` / `SignalExt::map` blanket impls.
+        let computed: nami::Computed<Vec<u32>> = path.clone().into_computed();
+        let mapped = path.map(|routes| routes.len());
+        let into_signal =
+            <NavigationPath<u32> as nami::signal::IntoSignal<Vec<u32>>>::into_signal(path.clone());
+        assert_eq!(computed.snapshot(), Vec::<u32>::new());
+        assert_eq!(mapped.snapshot(), 0);
+        assert_eq!(into_signal.snapshot(), Vec::<u32>::new());
+
+        let observed = Rc::new(RefCell::new(Vec::<Vec<u32>>::new()));
+        let sink = Rc::clone(&observed);
+        let _guard = path.watch(move |ctx| sink.borrow_mut().push(ctx.into_value()));
+
+        path.push(10);
+        path.push(20);
+        assert_eq!(path.pop(), Some(20));
+        path.replace([30, 40]);
+        path.clear();
+
+        assert_eq!(
+            *observed.borrow(),
+            vec![vec![10], vec![10, 20], vec![10], vec![30, 40], vec![]]
+        );
+        assert_eq!(computed.snapshot(), Vec::<u32>::new());
+        assert_eq!(mapped.snapshot(), 0);
+    }
+
+    #[test]
+    fn heterogeneous_path_implements_signal_and_derived_length_signals() {
+        let path = NavigationPath::heterogeneous();
+        assert!(path.identity().is_some());
+
+        let computed: nami::Computed<Vec<super::ErasedNavigationRoute>> =
+            path.clone().into_computed();
+        let mapped = path.map(|routes| routes.len());
+        assert_eq!(computed.snapshot().len(), 0);
+        assert_eq!(mapped.snapshot(), 0);
+
+        let lengths = Rc::new(RefCell::new(Vec::<usize>::new()));
+        let len_sink = Rc::clone(&lengths);
+        let len_signal = path.len_signal();
+        assert_eq!(len_signal.snapshot(), 0);
+        let _len_guard = len_signal.watch(move |ctx| len_sink.borrow_mut().push(ctx.into_value()));
+
+        let empties = Rc::new(RefCell::new(Vec::<bool>::new()));
+        let empty_sink = Rc::clone(&empties);
+        let is_empty_signal = path.is_empty_signal();
+        assert!(is_empty_signal.snapshot());
+        let _empty_guard =
+            is_empty_signal.watch(move |ctx| empty_sink.borrow_mut().push(ctx.into_value()));
+
+        let route_notifications = Rc::new(Cell::new(0_usize));
+        let route_sink = Rc::clone(&route_notifications);
+        let _path_guard = path.watch(move |_| route_sink.set(route_sink.get() + 1));
+
+        path.push(7_u32);
+        path.push(String::from("settings"));
+        assert!(path.pop());
+        // Same-length replacement notifies the path signal, not length or emptiness.
+        path.replace(|routes| routes.push(String::from("profile")));
+        assert!(path.pop());
+
+        assert_eq!(route_notifications.get(), 5);
+        assert_eq!(*lengths.borrow(), vec![1, 2, 1, 0]);
+        assert_eq!(*empties.borrow(), vec![false, true]);
+        assert_eq!(len_signal.snapshot(), 0);
+        assert!(is_empty_signal.snapshot());
+        assert_eq!(mapped.snapshot(), 0);
+    }
+
+    #[test]
+    fn len_and_is_empty_signals_read_without_cloning_routes() {
+        #[derive(PartialEq, Eq)]
+        struct CountingRoute {
+            id: u32,
+            clones: Rc<Cell<usize>>,
+        }
+
+        impl Clone for CountingRoute {
+            fn clone(&self) -> Self {
+                self.clones.set(self.clones.get() + 1);
+                Self {
+                    id: self.id,
+                    clones: Rc::clone(&self.clones),
+                }
+            }
+        }
+
+        let clones = Rc::new(Cell::new(0_usize));
+        let path = NavigationPath::from(vec![
+            CountingRoute {
+                id: 1,
+                clones: Rc::clone(&clones),
+            },
+            CountingRoute {
+                id: 2,
+                clones: Rc::clone(&clones),
+            },
+        ]);
+        assert_eq!(clones.get(), 0);
+
+        let len_signal = path.len_signal();
+        let is_empty_signal = path.is_empty_signal();
+
+        assert_eq!(len_signal.snapshot(), 2);
+        assert!(!is_empty_signal.snapshot());
+        assert_eq!(path.with_ref(Vec::len), 2);
+        assert_eq!(
+            clones.get(),
+            0,
+            "len_signal, is_empty_signal, and with_ref must not clone routes"
+        );
+        assert_ne!(path.identity(), len_signal.identity());
+        assert_ne!(path.identity(), is_empty_signal.identity());
+        assert_ne!(len_signal.identity(), is_empty_signal.identity());
     }
 }
