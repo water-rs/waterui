@@ -166,7 +166,7 @@ reexported-dependencies = { anyhow = "waterui::Error", bytemuck = "waterui::grap
 # on nami 0.12 (water-rs/gtk-backend#144 and water-rs/waterui-winui#84).
 # Drop the `git`/`rev` half once each backend releases a migrated version.
 [package.metadata.waterui.scaffold-pins]
-hydrolysis-glass = { version = "0.1.0", git = "https://github.com/water-rs/hydrolysis-glass", rev = "abcd5cc9eb4720b554794e3d4693234828d3376b" }
+hydrolysis-glass = { version = "0.1.0", git = "https://github.com/water-rs/hydrolysis-glass", rev = "a62f95df77d813c0c668e8a654d92fd993134a9f" }
 waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "0173db0e8e066305ff49bc4e12197c1056321831" }
 waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/winui-backend", rev = "4c8c82bb133940d1d2671c1d29c5b448ad035255" }
 
