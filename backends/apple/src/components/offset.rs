@@ -13,13 +13,13 @@ use core::cell::RefCell;
 #[cfg(target_os = "ios")]
 use cocoa_ui::Point;
 use cocoa_ui::{PlatformView, Rect, view};
-use waterui::reactive::Signal;
-use waterui::style::Offset;
+use nami::Signal;
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_shape::style::Offset;
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;

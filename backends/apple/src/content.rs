@@ -30,12 +30,16 @@ pub async fn await_content(
 ) -> Result<(), ContentError> {
     let root = cocoa_ui::view::retain_base(root);
     ledger
-        .wait(deadline, waterui::task::sleep(deadline), || {
-            drain(&root);
-            // The main executor's next turn runs after the work the drain
-            // queued — a load an `Appear` hook spawned.
-            waterui::task::yield_now()
-        })
+        .wait(
+            deadline,
+            waterui_backend_core::task::sleep(deadline),
+            || {
+                drain(&root);
+                // The main executor's next turn runs after the work the drain
+                // queued — a load an `Appear` hook spawned.
+                waterui_backend_core::task::yield_now()
+            },
+        )
         .await
 }
 

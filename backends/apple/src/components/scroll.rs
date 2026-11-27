@@ -22,16 +22,16 @@ use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 
 use cocoa_ui::{MainThreadMarker, Retained};
-use waterui::animation::Animation;
-use waterui::layout::scroll::{
-    Axis, ScrollDriver, ScrollItemTarget, ScrollPosition, ScrollRequest, ScrollTarget, ScrollView,
-    scroll_stretch_axis,
-};
-use waterui::reactive::{Binding, Signal};
+use nami::{Binding, Signal};
 use waterui_backend_core::Environment;
+use waterui_core::animation::Animation;
 use waterui_core::layout::{
     LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
+};
+use waterui_layout::scroll::{
+    Axis, ScrollDriver, ScrollItemTarget, ScrollPosition, ScrollRequest, ScrollTarget, ScrollView,
+    scroll_stretch_axis,
 };
 
 use crate::animation;
@@ -490,7 +490,7 @@ fn clamped_offset(scroll: &ScrollSurface, target: Point) -> cocoa_ui::Point {
 #[cfg(target_os = "ios")]
 fn apply_point_request(scroll: &ScrollSurface, target: Point, animation: Option<&Animation>) {
     if !(target.x.is_finite() && target.y.is_finite()) {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "WaterUI ScrollView target must contain finite coordinates; the request is ignored"
         );
         return;
@@ -518,7 +518,7 @@ fn apply_point_request(scroll: &ScrollSurface, target: Point, animation: Option<
 #[cfg(target_os = "macos")]
 fn apply_point_request(scroll: &ScrollSurface, target: Point, animation: Option<&Animation>) {
     if !(target.x.is_finite() && target.y.is_finite()) {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "WaterUI ScrollView target must contain finite coordinates; the request is ignored"
         );
         return;
@@ -639,7 +639,7 @@ pub fn realize_scroll_view<C>(
     let axis = match axis {
         Axis::Vertical | Axis::Horizontal | Axis::All => axis,
         axis => {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "unsupported WaterUI scroll axis: {axis:?}; the scroll view scrolls vertically"
             );
             Axis::Vertical

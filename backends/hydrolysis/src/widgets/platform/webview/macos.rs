@@ -47,7 +47,7 @@ use objc2_web_kit::{
     WKURLSchemeHandler, WKURLSchemeTask, WKUserContentController, WKUserScript,
     WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration,
 };
-use waterui::webview::{
+use waterui_backend_core::webview::{
     ASSET_ORIGIN, ASSET_SCHEME, AssetResponse, AssetServer, BackendEvent, Cookie, DocumentScripts,
     NavigationPolicy, NavigationRequest, OriginPolicy, ScriptInjectionTime, Url, UserScript,
     WatcherGuard, WatcherSet, WebViewConfig, WebViewController, WebViewError, WebViewEvent,
@@ -128,7 +128,7 @@ impl Drop for ScriptReply {
     }
 }
 
-type JavaScriptHandler = Rc<waterui::webview::ScriptMessageHandler>;
+type JavaScriptHandler = Rc<waterui_backend_core::webview::ScriptMessageHandler>;
 
 #[path = "macos_hosted.rs"]
 mod hosted;
@@ -784,7 +784,7 @@ fn install_user_scripts(controller: &WKUserContentController, shared: &SharedSta
     );
     add_user_script(
         controller,
-        waterui::webview::DOCUMENT_START_SCRIPT,
+        waterui_backend_core::webview::DOCUMENT_START_SCRIPT,
         ScriptInjectionTime::DocumentStart,
     );
     for script in shared.scripts.borrow().iter() {
@@ -795,7 +795,7 @@ fn install_user_scripts(controller: &WKUserContentController, shared: &SharedSta
 /// The string an evaluation produced.
 ///
 /// Both evaluation paths run scripts that encode their answer in the page —
-/// the raw path through `waterui::webview::raw_evaluation`, the awaited one
+/// the raw path through `waterui_backend_core::webview::raw_evaluation`, the awaited one
 /// through the shared wrapper's envelope — so `WebKit` hands back a string,
 /// returned as it is. Anything else, `nil` for `undefined` included, means the
 /// script broke that contract and is reported rather than re-encoded here.
@@ -1285,7 +1285,9 @@ impl MacSystemWebViewHandle {
             // expiry unset; one whose interval names no representable date
             // fails the whole query rather than silently dropping the expiry.
             let seconds = expires.timeIntervalSince1970();
-            builder = builder.expires(waterui::webview::cookie_expiry(&name, seconds)?);
+            builder = builder.expires(waterui_backend_core::webview::cookie_expiry(
+                &name, seconds,
+            )?);
         }
         Ok(builder.build())
     }
@@ -1327,7 +1329,11 @@ impl WebViewHandle for MacSystemWebViewHandle {
         self.rebuild_user_scripts();
     }
 
-    fn add_handler(&self, name: &str, handler: Box<waterui::webview::ScriptMessageHandler>) {
+    fn add_handler(
+        &self,
+        name: &str,
+        handler: Box<waterui_backend_core::webview::ScriptMessageHandler>,
+    ) {
         if name.is_empty() {
             contract_violation!(
                 "Hydrolysis WKWebView handler name must not be empty; the handler is not registered"
@@ -1476,7 +1482,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
         // the module safety note.
         unsafe {
             self.inner.web_view.evaluateJavaScript_completionHandler(
-                &NSString::from_str(&waterui::webview::raw_evaluation(script)),
+                &NSString::from_str(&waterui_backend_core::webview::raw_evaluation(script)),
                 Some(&completion),
             );
         }

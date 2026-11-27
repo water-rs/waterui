@@ -215,7 +215,7 @@ impl Drop for AdoptedControllers {
 /// mode before layout and rasterization.
 fn apply_env_color_scheme(view: &PlatformView, env: &Environment) {
     use cocoa_ui::ColorScheme as CocoaColorScheme;
-    use waterui::theme::{ColorScheme, installed_color_scheme};
+    use waterui_controls::theme::{ColorScheme, installed_color_scheme};
     use waterui_core::Signal as _;
 
     let Some(scheme_signal) = installed_color_scheme(env) else {

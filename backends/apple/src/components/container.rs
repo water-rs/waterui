@@ -20,22 +20,22 @@ use cocoa_ui::scroll::{
     ScrollObservation, enclosing_scroll_view, observe_scroll_viewport, scroll_viewport,
 };
 use cocoa_ui::{PlatformView, Rect, Retained, view};
-use waterui::id::Id as RawId;
-use waterui::layout::container::LazyContainer;
-use waterui::layout::scroll::{Axis as ScrollAxis, ScrollCollectionId, ScrollItemTarget};
-use waterui::layout::stack::{Axis, LazyStackAxis, lazy_stack_axis_for, lazy_stack_cross_stretch};
-use waterui::reactive::Signal;
-use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
-use waterui::views::AnyViewsSnapshot;
+use nami::Signal;
+use nami::watcher::{BoxWatcherGuard, Metadata};
 use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_backend_core::{Child, ChildView};
 use waterui_core::Computed;
+use waterui_core::id::Id as RawId;
 use waterui_core::layout::{
     HorizontalAlignment, Layout, LayoutDirection, LayoutError, PlacedGeometry, PlacementInput,
     Point, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     VerticalAlignment, ViewDimensions, measure_layout, place_layout, resolve_layout_extent,
 };
 use waterui_core::views::AnyViews;
+use waterui_core::views::AnyViewsSnapshot;
+use waterui_layout::container::LazyContainer;
+use waterui_layout::scroll::{Axis as ScrollAxis, ScrollCollectionId, ScrollItemTarget};
+use waterui_layout::stack::{Axis, LazyStackAxis, lazy_stack_axis_for, lazy_stack_cross_stretch};
 
 use crate::backend::AppleBackend;
 use crate::components::scroll::{ResolvedScrollItem, ScrollItemRegistry, content_coordinate_view};
@@ -678,7 +678,7 @@ fn has_unique_ids(ids: &[ItemId]) -> bool {
     let mut seen = HashSet::with_capacity(ids.len());
     for &id in ids {
         if !seen.insert(id) {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "duplicate child view id in container: {id:?}; the update is ignored and \
                  the container keeps its previous children"
             );
@@ -1280,7 +1280,7 @@ fn perform_fixed_layout(state: &mut ContainerState) {
             f64::from(placed_frame.height()),
         );
         if !frame.is_valid_for_layout() {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "container received an invalid layout rect for member {index}: {frame:?}; \
                  the member is not placed"
             );

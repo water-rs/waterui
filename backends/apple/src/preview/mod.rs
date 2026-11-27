@@ -20,10 +20,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub use cocoa_ui::bitmap::HdrRaster;
-use waterui::AnyView;
 use waterui_backend_core::Environment;
 use waterui_capture::content_ledger::ContentError;
 use waterui_capture::view_renderer::RenderResult;
+use waterui_core::AnyView;
 #[cfg(target_os = "macos")]
 use waterui_preview_protocol::run::PreviewColorScheme;
 use waterui_preview_protocol::run::{

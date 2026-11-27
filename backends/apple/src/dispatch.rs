@@ -1,8 +1,8 @@
 //! Rendering a view tree through [`AppleBackend`].
 
-#[cfg(waterui_feature = "toggle")]
-use waterui::component::toggle::ToggleStyle;
 use waterui_backend_core::{Environment, Realize, View};
+#[cfg(waterui_feature = "toggle")]
+use waterui_controls::toggle::ToggleStyle;
 
 use crate::backend::AppleBackend;
 #[cfg(waterui_feature = "dialog")]

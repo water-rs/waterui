@@ -23,18 +23,18 @@ use core::cell::RefCell;
 #[cfg(target_os = "ios")]
 use cocoa_ui::Retained;
 use cocoa_ui::{PlatformView, Rect};
-use waterui::animation::ChangeAnimation;
-use waterui::component::progress::{ProgressConfig, ProgressStyle};
-use waterui::graphics::color::WorkingColor;
-use waterui::reactive::watcher::Metadata;
-use waterui::reactive::{Signal, SignalExt};
-use waterui::resolve::Resolvable;
-use waterui::theme::color::{AccentContainer, Border, Tertiary, TertiaryContainer};
+use nami::watcher::Metadata;
+use nami::{Signal, SignalExt};
 use waterui_backend_core::Environment;
+use waterui_controls::progress::{ProgressConfig, ProgressStyle};
+use waterui_controls::theme::color::{AccentContainer, Border, Tertiary, TertiaryContainer};
+use waterui_core::animation::ChangeAnimation;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_core::resolve::Resolvable;
+use waterui_graphics::color::WorkingColor;
 
 use crate::components::button_chrome;
 use crate::contract::{Held, Mounted, NativeLeaf};
@@ -386,7 +386,7 @@ fn apply_value(
     let value = if is_indeterminate(value) || (value.is_finite() && (0.0..=1.0).contains(&value)) {
         value
     } else {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "Progress value must be finite within 0...1 or positive infinity, got {value}; \
              the nearest value in 0...1 applies (NaN reads as 0)"
         );
@@ -648,7 +648,7 @@ fn install_tint(
 
 #[cfg(test)]
 mod tests {
-    use waterui::animation::{Animation, NoAnimation};
+    use waterui_core::animation::{Animation, NoAnimation};
 
     use super::*;
 

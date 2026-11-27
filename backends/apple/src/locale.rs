@@ -9,7 +9,7 @@
 use alloc::string::String;
 use core::str::FromStr;
 
-use waterui::reactive::{Binding, Container};
+use nami::{Binding, Container};
 use waterui_backend_core::Environment;
 use waterui_locale::{Locale, regional};
 

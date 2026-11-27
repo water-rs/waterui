@@ -41,9 +41,9 @@ use cocoa_ui::objc2_metal::{
 use cocoa_ui::view::bounds as view_bounds;
 #[cfg(all(preview_entry, target_os = "macos"))]
 use half::f16;
-#[cfg(all(preview_entry, target_os = "macos"))]
-use waterui::contract_violation;
 use waterui_backend_core::Environment;
+#[cfg(all(preview_entry, target_os = "macos"))]
+use waterui_core::contract_violation;
 
 #[cfg(render_server_capture)]
 use crate::capture::CaptureError as NativeCaptureError;
@@ -806,7 +806,7 @@ impl CaptureDrive {
         let redraw = Rc::new(RefCell::new(Signal::default()));
         let previous = self.terminal.borrow_mut().replace(redraw.clone());
         if previous.is_some() {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "a capture drive performs one terminal capture; \
                  the later capture takes over the redraw signal"
             );

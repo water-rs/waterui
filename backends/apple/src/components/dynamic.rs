@@ -27,9 +27,9 @@ use core::marker::PhantomData;
 
 use cocoa_ui::geometry::Rect;
 use cocoa_ui::{Retained, view};
-use waterui::component::Dynamic;
-use waterui::reactive::watcher::Context;
+use nami::watcher::Context;
 use waterui_backend_core::{Child, ChildView, DynamicNode};
+use waterui_core::Dynamic;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,

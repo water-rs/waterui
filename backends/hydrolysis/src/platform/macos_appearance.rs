@@ -28,7 +28,7 @@ use objc2_foundation::{
     NSArray, NSDictionary, NSKeyValueObservingOptions, NSNotification, NSObject,
     NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSString, ns_string,
 };
-use waterui::theme::ColorScheme;
+use waterui_controls::theme::ColorScheme;
 use waterui_core::contract_violation;
 
 /// The `NSApplication` property the observation follows.

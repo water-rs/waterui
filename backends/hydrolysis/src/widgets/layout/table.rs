@@ -10,8 +10,8 @@ use accesskit::{
 use cherenkov_record::Draw as _;
 use nami::SignalExt as _;
 use nami::watcher::BoxWatcherGuard;
-use waterui::component::table::{SortDirection, TableConfig, TableRow, TableSelection, TableSort};
-use waterui::theme::color;
+use waterui_controls::table::{SortDirection, TableConfig, TableRow, TableSelection, TableSort};
+use waterui_controls::theme::color;
 use waterui_core::Environment;
 #[cfg(feature = "accessibility")]
 use waterui_core::contract_violation;

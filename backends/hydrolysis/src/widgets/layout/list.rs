@@ -26,13 +26,12 @@ use accesskit::{
     Role as AccessibilityNodeRole,
 };
 #[cfg(feature = "accessibility")]
-use waterui::accessibility::{AccessibilityHidden, AccessibilityStateSignal};
-use waterui::component::list::{
+use waterui_accessibility::{AccessibilityHidden, AccessibilityStateSignal};
+use waterui_backend_core::scroll::{ScrollPositionReport, animated_row_scroll_approach};
+use waterui_controls::list::{
     ListConfig, ListRowDeletable, ListRowInsets, ListRowTags, ListScrollController,
     ListSectionSpan, ListSelection, ListTagId,
 };
-use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
-use waterui_backend_core::scroll::{ScrollPositionReport, animated_row_scroll_approach};
 use waterui_core::Environment;
 use waterui_core::animation::Animation;
 use waterui_core::contract_violation;
@@ -43,6 +42,7 @@ use waterui_core::layout::{
     ProposalSize, Size as LayoutSize, UnitPoint, ViewDimensions, layout_direction,
 };
 use waterui_core::views::AnyViewsSnapshot;
+use waterui_interaction::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
 use waterui_interaction::interaction::{InteractionState, Selected};
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::scroll::Axis as ScrollAxis;
@@ -54,7 +54,7 @@ use crate::widgets::draw_scroll_indicators;
 use cherenkov_record::Draw as _;
 use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal, SignalExt as _};
-use waterui::theme::color;
+use waterui_controls::theme::color;
 use waterui_core::resolve::Resolvable as _;
 
 /// The stable per-row id used to key the retained content sub-view cache, matching
@@ -474,7 +474,7 @@ fn adopt_content_naming<E: crate::text::TextEngine>(
     subtree_env: &Environment,
 ) {
     use crate::renderer::accessibility::ScopedAccessibilityIdentifier;
-    use waterui::accessibility::{
+    use waterui_accessibility::{
         AccessibilityChildren, AccessibilityGeometry, AccessibilityLabel, AccessibilityRole,
         AccessibilityValue,
     };
@@ -3495,7 +3495,7 @@ fn draw_section_label<E: crate::text::TextEngine>(
 /// Only the text content comes from the app, and it stays reactive.
 fn section_chrome_text(label: Text, is_header: bool) -> Text {
     let text = label.color(waterui_graphics::color::Color::new(
-        waterui::theme::color::MutedForeground,
+        waterui_controls::theme::color::MutedForeground,
     ));
     if is_header {
         text.font(waterui_text::font::Subheadline)

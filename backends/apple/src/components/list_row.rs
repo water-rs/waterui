@@ -7,10 +7,11 @@ use core::fmt::{self, Debug, Formatter};
 
 use cocoa_ui::geometry::Rect as KitRect;
 use cocoa_ui::view;
-use waterui::Signal as _;
-use waterui::ViewExt as _;
-use waterui::component::list::{ListRowConfig, RowLayout};
+use nami::Signal as _;
+use waterui_controls::list::{ListRowConfig, RowLayout};
+use waterui_controls::theme::ForegroundOverride;
 use waterui_core::contract_violation;
+use waterui_core::env::Installed;
 use waterui_core::layout::{
     LayoutDirection, LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions, layout_direction,
@@ -344,7 +345,7 @@ pub fn realize_list_row_config(config: ListRowConfig<Held>, ctx: &RenderContext<
     view::set_translates_autoresizing(label.view(), true);
 
     let value_leaf = match value_color {
-        Some(color) => ctx.render(value_text.foreground(color)),
+        Some(color) => ctx.render(Installed::new(value_text, ForegroundOverride::new(color))),
         None => ctx.render(value_text),
     };
     let value = value_leaf.mount(&host);

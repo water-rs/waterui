@@ -1,4 +1,4 @@
-//! Hydrolysis realization of [`Avatar`](waterui::widget::avatar::Avatar):
+//! Hydrolysis realization of [`Avatar`](waterui_controls::avatar::Avatar):
 //! clipped backdrop, optional derived monogram or custom fallback view, optional
 //! image overlay, optional surrounding ring, and a single `Role::Image`
 //! accessibility leaf.
@@ -12,12 +12,12 @@ use cherenkov_record::Paint;
 use kurbo::{Rect, Stroke};
 use nami::{Computed, SignalExt as _};
 #[cfg(waterui_feature = "image")]
-use waterui::layout::ContentMode;
-#[cfg(waterui_feature = "image")]
-use waterui::media::Photo;
-use waterui::widget::avatar::{AvatarConfig, AvatarRing};
+use waterui_backend_core::media::Photo;
+use waterui_controls::avatar::{AvatarConfig, AvatarRing};
 use waterui_core::Environment;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
+#[cfg(waterui_feature = "image")]
+use waterui_layout::ContentMode;
 use waterui_shape::{Circle, ClipShape, PathCommand, ShapeKind};
 use waterui_text::styled::StyledStr;
 
@@ -30,7 +30,7 @@ use crate::renderer::{
 use crate::text::TextEngine;
 use crate::theme::{AvatarLook, WidgetTheme};
 
-/// Retained render state for an [`Avatar`](waterui::widget::avatar::Avatar).
+/// Retained render state for an [`Avatar`](waterui_controls::avatar::Avatar).
 pub struct AvatarRenderState<E: TextEngine> {
     config: AvatarConfig<HeldChild<E>>,
     shape_kind: ShapeKind,
@@ -127,7 +127,7 @@ fn avatar_accessibility<E: TextEngine>(
     }
 }
 
-/// Emits accessibility nodes for an [`Avatar`](waterui::widget::avatar::Avatar)
+/// Emits accessibility nodes for an [`Avatar`](waterui_controls::avatar::Avatar)
 /// during semantic-only tree walks.
 #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
 pub fn emit_avatar_accessibility<E: TextEngine>(
@@ -141,7 +141,7 @@ pub fn emit_avatar_accessibility<E: TextEngine>(
     avatar_accessibility(renderer, None, &state.borrow().config, env);
 }
 
-/// Measures an [`Avatar`](waterui::widget::avatar::Avatar).
+/// Measures an [`Avatar`](waterui_controls::avatar::Avatar).
 pub fn measure_avatar_node<E: TextEngine>(
     render_state: &AvatarRenderState<E>,
     _proposal: ProposalSize,
@@ -295,7 +295,7 @@ fn render_avatar_ring<E: TextEngine>(
     );
 }
 
-/// Renders a retained [`Avatar`](waterui::widget::avatar::Avatar) leaf.
+/// Renders a retained [`Avatar`](waterui_controls::avatar::Avatar) leaf.
 pub fn render_avatar_node<E: TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<AvatarRenderState<E>>>,

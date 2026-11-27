@@ -8,25 +8,30 @@ use core::time::Duration;
 
 use executor_core::spawn_local;
 use nami::{Binding, Signal as _, SignalExt as _};
-use waterui::ViewExt as _;
-use waterui::shape::{FilledShape, Path, RoundedRectangle, ShapeExt as _};
-use waterui::snackbar::{SnackbarHostConfig, SnackbarPosition, SnackbarPresentation};
-use waterui::style::Shadow;
 use waterui_backend_core::time::Instant;
 use waterui_backend_core::{Child, NativeBackendFamily, SlotView};
 use waterui_controls::slot::SlotBuilder;
+use waterui_controls::snackbar::{SnackbarHostConfig, SnackbarPosition, SnackbarPresentation};
+use waterui_controls::theme::ForegroundOverride;
 use waterui_controls::{Button, ButtonStyle, Label, button, label};
-use waterui_core::{Environment, OneOf2, View};
+use waterui_core::env::Installed;
+use waterui_core::{Environment, Metadata, OneOf2, View};
 use waterui_graphics::color::Color;
+use waterui_interaction::event::{LifeCycle, LifeCycleHook};
+use waterui_layout::background::BackgroundView;
 use waterui_layout::container::FixedContainer;
 use waterui_layout::frame::Frame;
-use waterui_layout::padding::EdgeInsets;
+use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{Alignment, hstack};
 use waterui_layout::{
     Layout, LayoutError, PlacementInput, ProposalSize, Rect, Size, StretchAxis, SubView,
     SubviewPlacement, UnitPoint,
 };
+use waterui_shape::background::IntoBackground;
+use waterui_shape::filter::Opacity;
+use waterui_shape::style::{Offset, Shadow};
+use waterui_shape::{FilledShape, Path, RoundedRectangle, ShapeExt as _};
 
 #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
 use crate::renderer::SemanticCore;
@@ -81,9 +86,10 @@ struct CloseIcon {
 
 impl View for CloseIcon {
     fn body(self, _env: &Environment) -> impl View {
-        FilledShape::new(close_icon_path(), self.color)
-            .size(self.icon_size, self.icon_size)
-            .size(self.box_size, self.box_size)
+        let icon = Frame::new(FilledShape::new(close_icon_path(), self.color))
+            .width(self.icon_size)
+            .height(self.icon_size);
+        Frame::new(icon).width(self.box_size).height(self.box_size)
     }
 }
 
@@ -242,9 +248,8 @@ fn build_row_content<E: TextEngine>(
 ) -> impl View + use<E> {
     let has_trailing_controls = presentation.action().is_some() || presentation.closeable();
 
-    let label_view = presentation
-        .icon()
-        .map_or_else(
+    let label_view = Installed::new(
+        presentation.icon().map_or_else(
             || {
                 OneOf2::B(
                     label(presentation.message().clone()).font(look.supporting_text_font.clone()),
@@ -257,8 +262,9 @@ fn build_row_content<E: TextEngine>(
                         .font(look.supporting_text_font.clone()),
                 )
             },
-        )
-        .foreground(look.supporting_text_color.clone());
+        ),
+        ForegroundOverride::new(look.supporting_text_color.clone()),
+    );
 
     let action_button = presentation.action().map(|action| {
         let presentation_for_action = presentation.clone();
@@ -267,10 +273,10 @@ fn build_row_content<E: TextEngine>(
         let action_font = look.action_label_font.clone();
         let action_color = look.action_label_color.clone();
         button(Label::new(semantic_text, move || {
-            action_label
-                .clone()
-                .font(action_font.clone())
-                .foreground(action_color.clone())
+            Installed::new(
+                action_label.clone().font(action_font.clone()),
+                ForegroundOverride::new(action_color.clone()),
+            )
         }))
         .style(ButtonStyle::Borderless)
         .action(move |env: Environment| {
@@ -342,31 +348,42 @@ fn build_rendered_snackbar<E: TextEngine>(
             min: look.min_width,
             max: look.max_width,
         },
-        (content
-            .on_appear(move || {
-                entrance_opacity.set(1.0);
-                entrance_slide.set(0.0);
-            })
-            .padding_with(content_padding)
-            .height(look.single_line_min_height),),
+        (Frame::new(Padding::new(
+            content_padding,
+            Metadata::new(
+                content,
+                LifeCycleHook::new(LifeCycle::Appear, move || {
+                    entrance_opacity.set(1.0);
+                    entrance_slide.set(0.0);
+                }),
+            ),
+        ))
+        .height(look.single_line_min_height),),
     );
 
     let surfaced = if let Some(glass) = &look.background_glass {
-        OneOf2::A(bar.background(glass.clone()))
+        OneOf2::A(glass.clone().apply_background(bar))
     } else {
-        OneOf2::B(bar.background(shape.fill(look.container_color.clone())))
+        OneOf2::B(BackgroundView::new(
+            bar,
+            shape.fill(look.container_color.clone()),
+        ))
     };
 
-    let view = Frame::new(
-        surfaced
-            .shadow(ambient_shadow)
-            .shadow(shadow)
-            .opacity(opacity.with(enter_animation.clone()))
-            .offset(0.0, entrance_offset.with(enter_animation.clone()))
-            .offset(0.0, stack_offset.with(enter_animation)),
-    )
-    .alignment(position_alignment(position))
-    .padding_with(look.viewport_padding.clone());
+    let animated = Metadata::new(
+        Metadata::new(
+            Metadata::new(
+                Metadata::new(Metadata::new(surfaced, ambient_shadow), shadow),
+                Opacity::new(opacity.with(enter_animation.clone())),
+            ),
+            Offset::new(0.0, entrance_offset.with(enter_animation.clone())),
+        ),
+        Offset::new(0.0, stack_offset.with(enter_animation)),
+    );
+    let view = Padding::new(
+        look.viewport_padding.clone(),
+        Frame::new(animated).alignment(position_alignment(position)),
+    );
 
     RetainedSubview::new(view)
 }

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 /// The font files a host resolved from font declarations, registered by the
 /// runtime's font collection in addition to the
-/// [`waterui::ResourceContext`] fonts directory.
+/// [`waterui_backend_core::ResourceContext`] fonts directory.
 ///
 /// A host that staged the graph's declared fonts into the fonts directory
 /// installs an empty one — the `water` CLI's runtime binaries do, since the

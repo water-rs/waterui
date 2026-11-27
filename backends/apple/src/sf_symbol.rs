@@ -73,7 +73,7 @@ impl From<SfSymbol> for String {
     }
 }
 
-/// Probe context used by [`waterui::component::IconSlot::probe`] to extract an
+/// Probe context used by [`waterui_controls::IconSlot::probe`] to extract an
 /// [`SfSymbol`] catalog name without mounting a platform view or erasing to `AnyView`.
 #[derive(Debug, Default)]
 pub struct SfSymbolProbe {

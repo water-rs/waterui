@@ -12,7 +12,7 @@ use nami::{Binding, Computed, Signal};
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
-use waterui::component::progress::{ProgressConfig, ProgressStyle};
+use waterui_controls::progress::{ProgressConfig, ProgressStyle};
 use waterui_core::Environment;
 use waterui_core::contract_violation;
 use waterui_core::layout::Size as LayoutSize;
@@ -486,7 +486,7 @@ pub fn emit_progress_accessibility<E: crate::text::TextEngine>(
 mod tests {
     use super::{ProgressLook, align_label_in_band};
     use kurbo::Rect;
-    use waterui::component::progress::ProgressStyle;
+    use waterui_controls::progress::ProgressStyle;
     use waterui_core::layout::{LayoutDirection, Size as LayoutSize};
 
     #[test]

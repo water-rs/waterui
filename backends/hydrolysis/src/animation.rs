@@ -432,7 +432,7 @@ mod tests {
     use core::time::Duration;
     use std::time::Instant;
 
-    use waterui::animation::Animation;
+    use waterui_core::animation::Animation;
     use waterui_frame_rate::FrameRate;
 
     use super::{AnimationController, AnimationKey};

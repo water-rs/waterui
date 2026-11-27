@@ -26,31 +26,31 @@ use core::num::NonZeroUsize;
 use core::ops::Range;
 
 use cocoa_ui::{PlatformView, Rect, Retained, focus, view};
+use nami::Computed;
+use nami::{Binding, Signal};
 use objc2::rc::Weak;
 use objc2_foundation::{NSRange, NSString};
-use waterui::State;
-use waterui::Str;
-use waterui::component::input::ContentType;
-#[cfg(target_os = "ios")]
-use waterui::component::input::KeyboardType;
-use waterui::component::menu::ResolvedMenuItem;
-use waterui::component::text_field::TextFieldConfig;
-use waterui::component::text_selection::{CustomTextSelection, TextSelection};
-use waterui::graphics::color::WorkingColor;
-use waterui::reactive::Computed;
-use waterui::reactive::{Binding, Signal};
-use waterui::resolve::Resolvable;
-use waterui::text::StyledStr;
-#[cfg(target_os = "macos")]
-use waterui::text::font::Body;
-use waterui::text::font::ResolvedFont;
-use waterui::theme::color::Foreground;
 use waterui_backend_core::Environment;
+use waterui_controls::input::ContentType;
+#[cfg(target_os = "ios")]
+use waterui_controls::input::KeyboardType;
+use waterui_controls::menu::ResolvedMenuItem;
+use waterui_controls::text_field::TextFieldConfig;
+use waterui_controls::text_selection::{CustomTextSelection, TextSelection};
+use waterui_controls::theme::color::Foreground;
+use waterui_core::State;
+use waterui_core::Str;
 use waterui_core::layout::{
     HorizontalAlignment, LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size,
     StretchAxis, SubView, ViewDimensions,
 };
+use waterui_core::resolve::Resolvable;
+use waterui_graphics::color::WorkingColor;
 use waterui_interaction::interaction::Disabled;
+use waterui_text::StyledStr;
+#[cfg(target_os = "macos")]
+use waterui_text::font::Body;
+use waterui_text::font::ResolvedFont;
 
 use super::font::platform_font;
 use crate::contract::{Held, Mounted, NativeLeaf};
@@ -323,7 +323,7 @@ fn keyboard(kind: &KeyboardType) -> platform::Keyboard {
         KeyboardType::Number => platform::Keyboard::Number,
         KeyboardType::PhoneNumber => platform::Keyboard::PhoneNumber,
         _ => {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "unsupported WaterUI keyboard type; the text keyboard is used"
             );
             platform::Keyboard::Text
@@ -367,7 +367,7 @@ fn field_height(field: &TextField, width: f64) -> f64 {
 /// re-resolve every chunk signal, then push the rebuild.
 fn restyle(
     state: &Rc<RefCell<StyledPush>>,
-) -> impl Fn(waterui::reactive::watcher::Context<StyledStr>) + 'static + use<> {
+) -> impl Fn(nami::watcher::Context<StyledStr>) + 'static + use<> {
     let state = Rc::clone(state);
     move |ctx| {
         apply_styled(&state, ctx.value());
@@ -446,7 +446,7 @@ fn wire_prompt(
     leaf: &mut NativeLeaf,
     ctx: &crate::contract::RenderContext<'_>,
     field: &Retained<TextField>,
-    prompt: &waterui::component::text::TextConfig,
+    prompt: &waterui_text::TextConfig,
 ) {
     let content = prompt.content();
     let state = styled_push(
@@ -741,7 +741,7 @@ fn utf16_range(text: &str, range: &Range<usize>) -> Option<NSRange> {
     let edge = |byte: usize| {
         let edge = cocoa_ui::text::utf16_offset_at_byte(text, byte);
         if edge.is_none() {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "selection edge {byte} is not a UTF-8 boundary of the field's text; \
                  the selection command is ignored"
             );
@@ -809,7 +809,7 @@ impl FieldSelection {
     fn live_field(&self) -> Option<Retained<TextField>> {
         let field = self.field.load();
         if field.is_none() {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "a selection command fired after its field was released; \
                  the command answers as an empty selection"
             );
@@ -830,7 +830,7 @@ impl CustomTextSelection for FieldSelection {
         };
         let text = field.string();
         let Some(utf16) = field.selected_range() else {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "a selection command fired on a field with no editing session; \
                  the selection reads as empty"
             );

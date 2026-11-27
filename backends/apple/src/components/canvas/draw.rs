@@ -65,7 +65,7 @@ impl Periods {
     /// stops at the most periods the lowering takes.
     fn limited(self) -> Self {
         if self.count() > MAX_PERIODS {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "a repeating gradient needs {} periods across its extent; the lowering expands at most {MAX_PERIODS}, \
                  and the rest is not drawn",
                 self.count()
@@ -103,7 +103,7 @@ fn components(stop: &ColorStop, interpolation: Interpolation) -> [f64; 4] {
 
 fn stops(stops: &[ColorStop], interpolation: Interpolation) -> Vec<Stop> {
     if stops.is_empty() {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "a gradient has at least one stop; a gradient with none paints transparent"
         );
         return vec![(0.0, [0.0; 4])];
@@ -255,7 +255,7 @@ fn radial(context: &CGContext, paint: &RadialGradient, extent: Rect) {
         repeat @ (Extend::Repeat | Extend::Reflect) => {
             let delta = paint.end_radius - paint.start_radius;
             if delta <= 0.0 {
-                waterui::contract_violation!(
+                waterui_core::contract_violation!(
                     "a repeating radial gradient grows outward; got radii {} to {}; \
                      the gradient is not drawn",
                     paint.start_radius,
@@ -314,7 +314,7 @@ fn color_at(stops: &[Stop], offset: f64) -> [f64; 4] {
 fn sweep(context: &CGContext, paint: &SweepGradient) {
     let span = paint.end_angle - paint.start_angle;
     if !(span > 0.0 && span <= f64::from(core::f32::consts::TAU)) {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "an angular gradient sweeps 0 < span <= TAU, got {span}; the gradient is not drawn"
         );
         return;
@@ -478,7 +478,7 @@ fn pattern(context: &CGContext, pattern: &ImagePattern, extent: Rect, registry: 
     )]
     let tiles = (columns.len() * rows.len()) as f64;
     if tiles > MAX_TILES {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "an image pattern tiles at most {MAX_TILES} times across its extent, got {tiles}; \
              the pattern is not drawn"
         );
@@ -666,7 +666,7 @@ pub fn paint(context: &CGContext, paint: &Paint, extent: Rect, registry: &Regist
         }
         Paint::Mesh(_) => unreachable!("`plan::classify` routes a mesh gradient to its own layer"),
         Paint::Shader(_) => {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "a shader paint needs an engine surface, which a canvas has none of; \
                  the paint is not drawn"
             );

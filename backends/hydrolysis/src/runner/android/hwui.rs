@@ -7,7 +7,7 @@ use std::rc::Rc;
 use crate::theme::WidgetTheme;
 use cherenkov_record::SurfaceId;
 use jni::objects::JObject;
-use waterui::Environment;
+use waterui_core::Environment;
 
 use super::jni::JniError;
 use crate::hwui::{HwuiSurface, JniPainter};

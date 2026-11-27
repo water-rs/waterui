@@ -140,7 +140,7 @@ impl<Id: Copy + Eq + Hash> SlotSequence<Id> {
             .iter()
             .position(|slot| matches!(slot, Slot::Ghost(k) if *k == key))
         else {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "transition ghost key is not a member of this sequence; the removal is ignored"
             );
             return;

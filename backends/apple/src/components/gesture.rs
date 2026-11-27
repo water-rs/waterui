@@ -39,10 +39,6 @@ use cocoa_ui::objc2::MainThreadOnly as _;
 #[cfg(target_os = "macos")]
 use cocoa_ui::objc2_app_kit::{NSApplication, NSEventType};
 use cocoa_ui::view;
-use waterui::gesture::{
-    DragEvent, Gesture, GestureObserver, GesturePhase, LongPressEvent, MagnificationEvent,
-    PointerButton, RotationEvent, TapEvent,
-};
 use waterui_core::extract::State;
 use waterui_core::handler::ReportExtraction as _;
 use waterui_core::layout::{
@@ -50,6 +46,10 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 use waterui_core::{Angle, Metadata};
+use waterui_interaction::gesture::{
+    DragEvent, Gesture, GestureObserver, GesturePhase, LongPressEvent, MagnificationEvent,
+    PointerButton, RotationEvent, TapEvent,
+};
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
@@ -72,7 +72,7 @@ use cocoa_ui::uikit::{HostView, gesture as kit};
 /// The `WATERUI_POINTER_BUTTON_*` mask a gesture's `buttons` field already
 /// is: `PointerButtons` and [`ButtonMask`] both follow the DOM `buttons`
 /// bit order, so the mask applies verbatim.
-const fn button_mask(buttons: waterui::gesture::PointerButtons) -> ButtonMask {
+const fn button_mask(buttons: waterui_interaction::gesture::PointerButtons) -> ButtonMask {
     ButtonMask::from_bits(buttons.bits())
 }
 
@@ -725,7 +725,7 @@ pub fn realize_gesture_observer_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui::gesture::{DragGesture, LongPressGesture, PointerButtons, TapGesture};
+    use waterui_interaction::gesture::{DragGesture, LongPressGesture, PointerButtons, TapGesture};
 
     #[test]
     fn button_mask_carries_pointer_button_bits_verbatim() {

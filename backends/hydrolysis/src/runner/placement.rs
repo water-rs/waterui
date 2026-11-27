@@ -16,7 +16,7 @@
 //! selector needs that winit does not answer (the last pointer-focused
 //! window, Wayland's only pointer home) lives in `WinitRunner` fields.
 
-use waterui::window::{Activation, Monitor, MonitorSelector};
+use waterui_backend_core::window::{Activation, Monitor, MonitorSelector};
 use waterui_core::Str;
 use waterui_core::contract_violation;
 use waterui_core::layout::{Point, Rect, Size};

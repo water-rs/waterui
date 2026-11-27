@@ -21,7 +21,6 @@ use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Computed, Signal, SignalExt as _};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use waterui::ViewExt as _;
 use waterui_controls::ControlSize;
 use waterui_controls::label::{ControlLabel, LabelDisplayMode};
 use waterui_controls::slider::{SliderConfig, ValueFormatter, snap};
@@ -633,7 +632,7 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
     #[cfg(feature = "accessibility")]
     {
         let live_formatter = if env
-            .get::<waterui::accessibility::AccessibilityValue>()
+            .get::<waterui_accessibility::AccessibilityValue>()
             .is_some()
         {
             None
@@ -833,7 +832,9 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
         let text = Rc::clone(text);
         let styled: Computed<StyledStr> =
             Computed::new(value_binding.map(move |value: f64| text(value)));
-        let mut subview = RetainedSubview::new(styled.into_text().alignment(Alignment::Center));
+        let mut subview = RetainedSubview::new(
+            waterui_layout::frame::Frame::new(styled.into_text()).alignment(Alignment::Center),
+        );
         subview.ensure_built(ctx.renderer_mut(), env);
         indicator_text = Some(subview);
     }
@@ -1053,9 +1054,9 @@ mod tests {
     };
     use core::time::Duration;
     use kurbo::{Point, Rect, Size};
-    use waterui::animation::Animation;
     use waterui_controls::ControlSize;
     use waterui_core::Environment;
+    use waterui_core::animation::Animation;
     use waterui_core::layout::{LayoutDirection, Size as LayoutSize};
 
     fn test_slider_look() -> SliderLook {

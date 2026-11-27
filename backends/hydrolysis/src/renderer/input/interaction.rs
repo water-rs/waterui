@@ -594,8 +594,8 @@ mod tests {
     use crate::time::Instant;
     use core::time::Duration;
     use std::rc::Rc;
-    use waterui::animation::Animation;
-    use waterui::interaction::InteractionState;
+    use waterui_core::animation::Animation;
+    use waterui_interaction::interaction::InteractionState;
 
     fn motion() -> InteractionMotion {
         InteractionMotion {

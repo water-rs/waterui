@@ -15,11 +15,11 @@ use core::cell::{Cell, RefCell};
 
 use cocoa_ui::response::ReportsResponse;
 use cocoa_ui::{PlatformView, Rect, Retained, view};
-use waterui::layout::container::FixedContainer;
 use waterui_core::layout::{
     Layout, LayoutError, PlacedGeometry, ProposalSize, Rect as LayoutRect, ResolvedExtent,
     StretchAxis, SubView, ViewDimensions, measure_layout, place_layout, resolve_layout_extent,
 };
+use waterui_layout::container::FixedContainer;
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::proposal::{self, CommittedGeometry, Placement, to_proposal};
@@ -140,7 +140,7 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
             f64::from(placed_frame.height()),
         );
         if !frame.is_valid_for_layout() {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "fixed container received an invalid layout rect for child {index}: {frame:?}; \
                  the child is not placed"
             );

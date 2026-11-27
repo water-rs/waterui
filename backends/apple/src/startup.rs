@@ -11,9 +11,9 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 
 #[cfg(feature = "inspector")]
-use waterui::inspector::InspectorRuntime;
+use waterui_backend_core::inspector::InspectorRuntime;
 #[cfg(feature = "inspector")]
-use waterui::task::RuntimeProbe;
+use waterui_backend_core::task::RuntimeProbe;
 
 #[cfg(feature = "inspector")]
 use waterui_backend_core::log::{LOG_LEVEL_ENV, env_filter};
@@ -71,7 +71,7 @@ fn install_executors(#[cfg(feature = "inspector")] inspector: Option<&InspectorR
         std::process::exit(1);
     };
     #[cfg(feature = "inspector")]
-    let local_executor = waterui::task::monitored_local_executor_with_probes(
+    let local_executor = waterui_backend_core::task::monitored_local_executor_with_probes(
         main_executor,
         display_refresh_rate(),
         inspector
@@ -80,7 +80,7 @@ fn install_executors(#[cfg(feature = "inspector")] inspector: Option<&InspectorR
     );
     #[cfg(not(feature = "inspector"))]
     let local_executor =
-        waterui::task::monitored_local_executor(main_executor, display_refresh_rate());
+        waterui_backend_core::task::monitored_local_executor(main_executor, display_refresh_rate());
     executor_core::init_local_executor(local_executor);
 
     // The listener's mailbox pump needs the executor installed above.
@@ -92,7 +92,7 @@ fn install_executors(#[cfg(feature = "inspector")] inspector: Option<&InspectorR
 #[cfg(feature = "inspector")]
 fn initialize_inner(stderr: bool) -> Option<InspectorRuntime> {
     install_process_base();
-    let inspector = waterui::inspector::maybe_init_from_env("apple");
+    let inspector = waterui_backend_core::inspector::maybe_init_from_env("apple");
     init_tracing(
         inspector.as_ref().map(InspectorRuntime::tracing_layer),
         stderr,
@@ -125,8 +125,8 @@ fn ignore_sigpipe() {
 
 /// The refresh rate of the displays this host drives, for the executor's
 /// frame budget.
-fn display_refresh_rate() -> waterui::task::RefreshRate {
-    use waterui::task::RefreshRate;
+fn display_refresh_rate() -> waterui_backend_core::task::RefreshRate {
+    use waterui_backend_core::task::RefreshRate;
 
     // Metadata the platform does not expose is not a fault of the app: the
     // budget only scales stall diagnostics, so it takes the nominal rate.
@@ -202,7 +202,7 @@ fn max_frames_per_second() -> Option<core::num::NonZeroU32> {
 /// host, and `devicectl --console` only carries stderr. `stderr` forces the
 /// console layer on regardless — the preview entry's contract.
 #[cfg(feature = "inspector")]
-fn init_tracing(inspector: Option<waterui::inspector::InspectorLayer>, stderr: bool) {
+fn init_tracing(inspector: Option<waterui_backend_core::inspector::InspectorLayer>, stderr: bool) {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
     let console_layer = (stderr || std::env::var_os(LOG_LEVEL_ENV).is_some()).then(|| {

@@ -12,20 +12,20 @@ use cocoa_ui::geometry::{Rect as KitRect, Size as KitSize};
 use cocoa_ui::layer;
 use cocoa_ui::path::{CornerRadius, ShapeKind as CocoaShapeKind, shape_path};
 use cocoa_ui::{PlatformView, Retained, view};
-use waterui::graphics::color::{Color, WorkingColor};
-use waterui::reactive::SignalExt as _;
-use waterui::resolve::Resolvable;
-use waterui::text::font::{Body, Font, Subheadline, Title};
-use waterui::theme::color::{
+use nami::SignalExt as _;
+use waterui_controls::theme::color::{
     Border as BorderToken, MutedForeground, Surface as SurfaceToken, SurfaceVariant,
 };
-use waterui::theme::{ForegroundOverride, install_font_signal};
-use waterui::widget::{CardConfig, CardStyle};
+use waterui_controls::theme::{ForegroundOverride, install_font_signal};
+use waterui_controls::{CardConfig, CardStyle};
 use waterui_core::Environment;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
 use waterui_core::plugin::Plugin;
+use waterui_core::resolve::Resolvable;
+use waterui_graphics::color::{Color, WorkingColor};
+use waterui_text::font::{Body, Font, Subheadline, Title};
 
 use crate::contract::{Held, Mounted, NativeLeaf, RenderContext};
 use crate::proposal::{self, Placement};

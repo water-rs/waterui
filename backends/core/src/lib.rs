@@ -83,8 +83,22 @@ mod window_close;
 #[cfg(feature = "runtime")]
 mod window_focus;
 
+#[cfg(feature = "form")]
+pub use waterui_form as form;
+#[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
+pub use waterui_inspector_runtime as inspector;
+#[cfg(feature = "map")]
+pub use waterui_map as map;
+#[cfg(feature = "image")]
+pub use waterui_media as media;
+#[cfg(feature = "navigation")]
+pub use waterui_navigation as navigation;
 #[cfg(feature = "runtime")]
 pub use waterui_resources::ResourceContext;
+#[cfg(feature = "video")]
+pub use waterui_video as video;
+#[cfg(feature = "webview")]
+pub use waterui_webview as webview;
 
 /// Capture standalone resource roots once when creating an application environment.
 ///

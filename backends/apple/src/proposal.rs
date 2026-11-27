@@ -191,7 +191,7 @@ pub fn install(view: &PlatformView, layout: &Rc<dyn SubView>) -> CommittedGeomet
                 .upgrade()
                 .expect("a leaf's layout face outlives its view's commit handler");
             if let Err(error) = geometry.commit_leaf(view, slot_of(view), &*layout) {
-                waterui::contract_violation!(
+                waterui_core::contract_violation!(
                     "a placed leaf's layout face failed to resolve its response: {error}; \
                      the leaf keeps the geometry it last committed"
                 );

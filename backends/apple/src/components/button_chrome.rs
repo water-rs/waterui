@@ -6,20 +6,20 @@
 //! through these, so a menu styled like a button reads like one.
 
 use cocoa_ui::Retained;
-use waterui::component::ControlSize;
-use waterui::component::button::{ButtonRole, ButtonStyle};
-use waterui::graphics::color::WorkingColor;
-use waterui::reactive::{Computed, SignalExt};
-use waterui::resolve::Resolvable;
-#[cfg(target_os = "macos")]
-use waterui::text::font::{Body, ResolvedFont};
-#[cfg(target_os = "macos")]
-use waterui::theme::color::MutedForeground;
-use waterui::theme::color::{AccentForeground, Error, ErrorForeground, Foreground};
-#[cfg(target_os = "macos")]
-use waterui::theme::install_font_signal;
-use waterui::theme::{install_color_signal, resolve_tint};
+use nami::{Computed, SignalExt};
 use waterui_backend_core::Environment;
+use waterui_controls::ControlSize;
+use waterui_controls::button::{ButtonRole, ButtonStyle};
+#[cfg(target_os = "macos")]
+use waterui_controls::theme::color::MutedForeground;
+use waterui_controls::theme::color::{AccentForeground, Error, ErrorForeground, Foreground};
+#[cfg(target_os = "macos")]
+use waterui_controls::theme::install_font_signal;
+use waterui_controls::theme::{install_color_signal, resolve_tint};
+use waterui_core::resolve::Resolvable;
+use waterui_graphics::color::WorkingColor;
+#[cfg(target_os = "macos")]
+use waterui_text::font::{Body, ResolvedFont};
 
 #[cfg(target_os = "macos")]
 use crate::components::control_size::platform_control_size;
@@ -114,7 +114,7 @@ fn label_foreground(
         | ButtonStyle::Borderless
         | ButtonStyle::Bordered => tint_signal(env),
         _ => {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "unsupported WaterUI button style: {style:?}; the automatic style's label color is used"
             );
             label_foreground(ButtonStyle::Automatic, None, env)
@@ -153,7 +153,7 @@ fn label_foreground(
         }
         ButtonStyle::Link | ButtonStyle::Borderless => tint_signal(env),
         _ => {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "unsupported WaterUI button style: {style:?}; the automatic style's label color is used"
             );
             label_foreground(ButtonStyle::Automatic, None, env)
@@ -239,7 +239,7 @@ pub(super) fn bezel_of(style: ButtonStyle) -> Option<platform::NSBezelStyle> {
         ButtonStyle::Glass | ButtonStyle::GlassProminent => Some(platform::NSBezelStyle::Glass),
         ButtonStyle::Plain | ButtonStyle::Link | ButtonStyle::Borderless => None,
         _ => {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "unsupported WaterUI button style: {style:?}; the automatic style's bezel is used"
             );
             bezel_of(ButtonStyle::Automatic)
@@ -327,10 +327,10 @@ pub(super) fn bind_tint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui::graphics::color::{Color, Working};
-    use waterui::reactive::{Binding, Signal, constant};
-    use waterui::theme::Tint;
-    use waterui::theme::color::Accent;
+    use nami::{Binding, Signal, constant};
+    use waterui_controls::theme::Tint;
+    use waterui_controls::theme::color::Accent;
+    use waterui_graphics::color::{Color, Working};
 
     fn components(signal: &Computed<WorkingColor>) -> [f32; 4] {
         signal.snapshot().components

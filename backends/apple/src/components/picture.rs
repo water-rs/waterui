@@ -14,13 +14,13 @@ use alloc::rc::Rc;
 use core::cell::RefCell;
 
 use cocoa_ui::objc2::AllocAnyThread;
-use waterui::graphics::backend::raster::Rasterizer;
-use waterui::graphics::backend::{Picture, PictureRecording};
-use waterui::reactive::Signal;
+use nami::Signal;
 use waterui_core::Str;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_graphics::backend::raster::Rasterizer;
+use waterui_graphics::backend::{Picture, PictureRecording};
 
 use crate::contract::NativeLeaf;
 use crate::proposal;
@@ -73,7 +73,7 @@ fn raster_pixels(points: cocoa_ui::Size, scale: f64) -> Option<(u32, u32)> {
     let width = (points.width * scale).round().max(1.0);
     let height = (points.height * scale).round().max(1.0);
     if width > f64::from(u16::MAX) || height > f64::from(u16::MAX) {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "a picture is at most 65535 pixels a side, got {width}x{height}; \
              the picture is not rasterized"
         );

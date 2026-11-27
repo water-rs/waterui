@@ -1,6 +1,6 @@
 //! A window's reactive background realized at the window.
 //!
-//! The framework resolves [`Window::background`](waterui::window::Window) to
+//! The framework resolves [`Window::background`](waterui_backend_core::window::Window) to
 //! a colour or a material. A colour is painted behind the window's content. A
 //! material is the window's material: the platform's visual-effect view —
 //! `NSVisualEffectView` on `AppKit`, `UIVisualEffectView` on `UIKit` — fills
@@ -25,13 +25,13 @@ use core::cell::RefCell;
 
 use cocoa_ui::material;
 use cocoa_ui::{MainThreadMarker, PlatformView, Retained, view};
-use waterui::background::Material;
-use waterui::graphics::Color;
-use waterui::graphics::color::WorkingColor;
-use waterui::reactive::{Computed, SignalExt as _};
-use waterui::theme::color::Background;
-use waterui::window::ResolvedWindowBackground;
+use nami::{Computed, SignalExt as _};
 use waterui_backend_core::Environment;
+use waterui_backend_core::window::ResolvedWindowBackground;
+use waterui_controls::theme::color::Background;
+use waterui_graphics::Color;
+use waterui_graphics::color::WorkingColor;
+use waterui_shape::background::Material;
 
 use crate::contract::KeepAlive;
 

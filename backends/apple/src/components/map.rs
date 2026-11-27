@@ -22,11 +22,11 @@ use cocoa_ui::map::{
     Coordinate as KitCoordinate, LoadStatus, MapView, Region as KitRegion, Span as KitSpan,
     Style as KitStyle, SuppliedLocation,
 };
+use nami::Signal;
+use nami::watcher::Metadata;
 use objc2::rc::Retained;
-use waterui::Str;
-use waterui::animation::ChangeAnimation;
-use waterui::reactive::Signal;
-use waterui::reactive::watcher::Metadata;
+use waterui_core::Str;
+use waterui_core::animation::ChangeAnimation;
 use waterui_core::id::Id;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,

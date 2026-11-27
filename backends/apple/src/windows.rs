@@ -13,11 +13,11 @@ use alloc::vec::Vec;
 use cocoa_ui::MainThreadMarker;
 #[cfg(target_os = "macos")]
 use cocoa_ui::geometry::{Rect, Size};
-use waterui::app::{WindowSink, Windows};
-use waterui::handler::ViewBuilder;
-use waterui::window::{Window, WindowChannel, WindowParts, WindowToolbar};
 use waterui_backend_core::Environment;
+use waterui_backend_core::app::{WindowSink, Windows};
+use waterui_backend_core::window::{Window, WindowChannel, WindowParts, WindowToolbar};
 use waterui_core::extract::State as EnvState;
+use waterui_core::handler::ViewBuilder;
 
 use crate::contract::NativeLeaf;
 use crate::dispatch;
@@ -106,14 +106,14 @@ mod imp {
     };
     use cocoa_ui::main_queue::enqueue_local;
     use cocoa_ui::{MainThreadMarker, Retained};
-    use waterui::animation::ChangeAnimation;
-    use waterui::handler::ViewBuilder;
-    use waterui::reactive::{Binding, Computed, Signal};
-    use waterui::window::{
+    use nami::{Binding, Computed, Signal};
+    use waterui_backend_core::Environment;
+    use waterui_backend_core::window::{
         Activation, ResolvedWindowBackground, UserAttention, Window, WindowHandle, WindowLevel,
         WindowState, WindowStyle as WuiStyle, WindowToolbar,
     };
-    use waterui_backend_core::Environment;
+    use waterui_core::animation::ChangeAnimation;
+    use waterui_core::handler::ViewBuilder;
 
     use crate::contract::KeepAlive;
 
@@ -1040,9 +1040,9 @@ mod imp {
 
     fn apply_background(
         window: &cocoa_ui::appkit::Window,
-        color: waterui::graphics::color::WorkingColor,
+        color: waterui_graphics::color::WorkingColor,
     ) {
-        let srgb = waterui::graphics::color::working::to_srgb(color);
+        let srgb = waterui_graphics::color::working::to_srgb(color);
         let alpha = color.components[3];
         window.set_background_color(cocoa_ui::Rgba {
             red: f64::from(srgb.red),
@@ -1118,12 +1118,12 @@ mod imp {
         ColorSchemeObservation, HostView, ViewController, WindowScene, window_root,
     };
     use cocoa_ui::{MainThreadMarker, Retained, view};
-    use waterui::graphics::Color;
-    use waterui::graphics::color::WorkingColor;
-    use waterui::reactive::{Computed, Signal};
-    use waterui::theme::color::Background;
-    use waterui::window::WindowState;
+    use nami::{Computed, Signal};
     use waterui_backend_core::Environment;
+    use waterui_backend_core::window::WindowState;
+    use waterui_controls::theme::color::Background;
+    use waterui_graphics::Color;
+    use waterui_graphics::color::WorkingColor;
 
     use crate::contract::KeepAlive;
     use crate::theme::ThemeSignals;
@@ -1267,7 +1267,7 @@ mod imp {
     /// Reports that opening a secondary window at run time is unsupported on
     /// iOS.
     pub fn show_unsupported_on_ios() {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "WaterUI multi-window is unsupported on iOS; the window is not shown"
         );
     }
@@ -1571,7 +1571,7 @@ mod imp {
     pub fn bind_background(
         keepalive: &mut KeepAlive,
         host: &cocoa_ui::PlatformView,
-        resolved: &waterui::reactive::Computed<waterui::window::ResolvedWindowBackground>,
+        resolved: &nami::Computed<waterui_backend_core::window::ResolvedWindowBackground>,
         env: &Environment,
         mtm: MainThreadMarker,
     ) {
@@ -1638,9 +1638,9 @@ fn into_kit_size(size: WSize) -> Size {
 #[cfg(test)]
 mod tests {
     use super::root_window;
-    use waterui::Environment;
-    use waterui::layout::Divider;
-    use waterui::window::Window;
+    use waterui_backend_core::window::Window;
+    use waterui_controls::Divider;
+    use waterui_core::Environment;
 
     #[test]
     fn root_window_preserves_absent_and_present_toolbars() {

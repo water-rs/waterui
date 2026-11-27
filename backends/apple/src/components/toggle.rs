@@ -10,12 +10,12 @@
 //! the control; the payload's stretch axis picks how the row fills its
 //! offer (`docs/layout-spec.md` §3, §6).
 
+use nami::Signal;
+use nami::watcher::Metadata;
+use waterui_controls::ControlSize;
+use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 #[cfg(target_os = "macos")]
-use waterui::animation::ChangeAnimation;
-use waterui::component::ControlSize;
-use waterui::component::toggle::{ToggleConfig, ToggleStyle};
-use waterui::reactive::Signal;
-use waterui::reactive::watcher::Metadata;
+use waterui_core::animation::ChangeAnimation;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
@@ -50,14 +50,16 @@ fn kind(style: ToggleStyle) -> Kind {
         ToggleStyle::Switch => Kind::Switch,
         ToggleStyle::Checkbox => Kind::Checkbox,
         ToggleStyle::Automatic => {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "the toggle payload reached the backend with an unresolved Automatic style; \
                  the switch is drawn"
             );
             Kind::Switch
         }
         _ => {
-            waterui::contract_violation!("unsupported WaterUI toggle style; the switch is drawn");
+            waterui_core::contract_violation!(
+                "unsupported WaterUI toggle style; the switch is drawn"
+            );
             Kind::Switch
         }
     }
@@ -264,14 +266,15 @@ pub fn realize_toggle_config(config: ToggleConfig<Held>, ctx: &RenderContext<'_>
 mod tests {
     use core::time::Duration;
 
-    use waterui::animation::{Animation, NoAnimation};
+    use waterui_core::animation::{Animation, NoAnimation};
 
     use super::*;
 
     #[test]
     fn kind_maps_resolved_styles_like_the_swift_table() {
         use crate::dispatch;
-        use waterui::{Environment, Plugin as _};
+        use waterui_core::Environment;
+        use waterui_core::plugin::Plugin as _;
 
         let mut default_env = Environment::new();
         dispatch::install(&mut default_env);

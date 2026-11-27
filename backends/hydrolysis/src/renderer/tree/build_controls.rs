@@ -8,7 +8,7 @@ use crate::widgets::controls::link::LinkRenderState;
 #[allow(clippy::wildcard_imports)]
 use super::*;
 #[cfg(feature = "link")]
-use waterui::component::link::LinkConfig;
+use waterui_controls::link::LinkConfig;
 
 #[cfg(waterui_feature = "avatar")]
 impl_widget_behavior!(
@@ -525,7 +525,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// during prepare and tracking the installed `Body` font slot.
     #[cfg(waterui_feature = "highlight")]
     pub(super) fn build_code(
-        config: waterui::text::code::CodeConfig,
+        config: waterui_text::code::CodeConfig,
         env: &Environment,
         renderer: &SemanticCore<E>,
     ) -> Self {
@@ -539,7 +539,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// the card inherits its content's stretch axis, while optional title and
     /// subtitle text views are styled from `WidgetTheme::card` during prepare.
     pub(super) fn build_card(
-        config: waterui::widget::card::CardConfig<HeldChild<E>>,
+        config: waterui_controls::card::CardConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -559,7 +559,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// on first flush.
     #[cfg(waterui_feature = "avatar")]
     pub(super) fn build_avatar(
-        config: waterui::widget::avatar::AvatarConfig<HeldChild<E>>,
+        config: waterui_controls::avatar::AvatarConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -577,7 +577,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Build a persistent disclosure node: its header label is pre-built
     /// eagerly, while its expandable body is created lazily only when expanded.
     pub(super) fn build_disclosure(
-        config: waterui::widget::disclosure::DisclosureConfig<HeldChild<E>>,
+        config: waterui_controls::disclosure::DisclosureConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {

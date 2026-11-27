@@ -7,9 +7,9 @@ use core::fmt::{Debug, Formatter, Result as FmtResult};
 
 use cocoa_ui::visibility::{VisibilityWatch, presentable};
 use cocoa_ui::{PlatformView, Rect, Retained, view};
-use waterui::animation::{FrameRate, FrameRateVote};
-use waterui::reactive::Signal;
+use nami::Signal;
 use waterui_core::Metadata;
+use waterui_core::animation::{FrameRate, FrameRateVote};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,

@@ -1,11 +1,12 @@
 //! The `divider` leaf: `Native<Divider>` realized as a 1-point separator line
 //! oriented across the enclosing stack and tinted by the `Border` theme slot.
 
-use waterui::graphics::color::Color;
-use waterui::layout::{Divider, stack::Axis};
+use waterui_controls::Divider;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_graphics::color::Color;
+use waterui_layout::stack::Axis;
 
 use crate::components::resolved_color::platform_color;
 use crate::contract::{NativeLeaf, RenderContext};

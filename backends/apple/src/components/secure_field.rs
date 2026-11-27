@@ -21,15 +21,15 @@
 use alloc::rc::Rc;
 
 use cocoa_ui::{PlatformView, Rect, Retained, focus, view};
-use waterui::component::form::secure::{Secure, SecureFieldConfig};
-use waterui::resolve::Resolvable;
-use waterui::text::StyledStr;
-use waterui::text::font::Body;
+use waterui_backend_core::form::secure::{Secure, SecureFieldConfig};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_core::resolve::Resolvable;
 use waterui_interaction::interaction::Disabled;
+use waterui_text::StyledStr;
+use waterui_text::font::Body;
 
 use super::font::platform_font;
 use crate::contract::{Held, Mounted, NativeLeaf};

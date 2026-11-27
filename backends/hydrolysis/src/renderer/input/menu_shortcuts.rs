@@ -21,7 +21,7 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use nami::{Computed, Signal as _};
-use waterui::app::Quit;
+use waterui_backend_core::app::Quit;
 use waterui_controls::NoopSlot;
 use waterui_controls::menu::{
     CloseWindowChord, MenuItem, ResolvedCommand, ResolvedMenuItem, Shortcut, ShortcutKey,

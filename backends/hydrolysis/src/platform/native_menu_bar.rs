@@ -53,13 +53,13 @@ use waterkit_menu::{
     Command, CommandId, Entry, Key, MenuBar, Modifiers, Shortcut as MenuShortcut, Submenu,
 };
 #[cfg(not(target_os = "macos"))]
-use waterui::app::Quit;
-use waterui::{Environment, State};
+use waterui_backend_core::app::Quit;
 #[cfg(target_os = "macos")]
 use waterui_controls::menu::CloseWindowPlacement;
 use waterui_controls::menu::{ResolvedCommand, ResolvedMenuItem, ResolvedNestedMenu, Shortcut};
 use waterui_core::contract_violation;
 use waterui_core::handler::SharedAction;
+use waterui_core::{Environment, State};
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::HWND;
 

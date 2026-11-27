@@ -22,13 +22,11 @@ use core::cell::{Cell, RefCell};
 
 use cocoa_ui::geometry::Rect as KitRect;
 use cocoa_ui::{PlatformView, Retained, view};
-use waterui::metadata::anchored_overlay::{
-    AnchorEdge, AnchorPlacement, AnchoredOverlay, Dismissal,
-};
-use waterui::reactive::{Binding, Signal};
-use waterui::widget::disclosure::SlotBuilder;
+use nami::{Binding, Signal};
 use waterui_backend_core::Environment;
 use waterui_backend_core::overlay::{PhysicalEdge, logical_edge, place_anchored_overlay};
+use waterui_controls::anchored_overlay::{AnchorEdge, AnchorPlacement, AnchoredOverlay, Dismissal};
+use waterui_controls::slot::SlotBuilder;
 use waterui_core::layout::{
     LayoutDirection, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis,
     SubView, ViewDimensions, layout_direction,

@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use waterui::Environment;
+use waterui_core::Environment;
 
 /// Installs the framework default colour and font tokens required by
 /// Hydrolysis rendering, underneath any entries the environment already
@@ -13,7 +13,7 @@ use waterui::Environment;
 /// *not* a [`crate::Style`]: it carries no widget theme, so tests that mount
 /// widgets on the rendered runtime must still supply a real style.
 pub fn install_theme(env: &mut Environment) {
-    crate::theme::install_theme_tokens(env, None, waterui::theme::ColorScheme::Light);
+    crate::theme::install_theme_tokens(env, None, waterui_controls::theme::ColorScheme::Light);
 }
 
 /// Returns the root directory Hydrolysis's own test artifacts are written
@@ -53,7 +53,7 @@ pub fn artifact_snapshot_path(suite: &str, case: &str, stage: &str) -> PathBuf {
 pub fn plain_toggle_control() -> crate::theme::ToggleControl {
     crate::theme::ToggleControl::new(
         kurbo::Size::new(10.0, 20.0),
-        crate::theme::Motion::uniform(waterui::animation::Animation::linear(
+        crate::theme::Motion::uniform(waterui_core::animation::Animation::linear(
             std::time::Duration::from_millis(100),
         )),
     )
@@ -68,12 +68,12 @@ pub fn plain_chrome() -> crate::theme::Chrome {
     use crate::theme::{Chrome, CornerShape, FocusIndicator, Motion, PressFeedback, StateLayer};
     Chrome::new(
         Surface::clear(CornerShape::radius(0.0)),
-        StateLayer::new(waterui::graphics::Color::new(
-            waterui::theme::color::Foreground,
+        StateLayer::new(waterui_graphics::Color::new(
+            waterui_controls::theme::color::Foreground,
         )),
         PressFeedback::new(),
         FocusIndicator::Tint,
-        Motion::uniform(waterui::animation::Animation::linear(
+        Motion::uniform(waterui_core::animation::Animation::linear(
             std::time::Duration::from_millis(15),
         )),
     )
@@ -112,7 +112,7 @@ pub const fn plain_navigation_metrics() -> crate::theme::NavigationMetrics {
 pub const fn plain_navigation_motion() -> crate::theme::NavigationMotion {
     crate::theme::NavigationMotion {
         transition_duration: std::time::Duration::from_millis(450),
-        transition_easing: waterui::EasingCurve::bezier(0.2, 0.0, 0.0, 1.0),
+        transition_easing: waterui_core::easing::EasingCurve::bezier(0.2, 0.0, 0.0, 1.0),
         shared_axis_slide_distance: 30.0,
         fade_through_threshold: 0.35,
     }
@@ -144,7 +144,7 @@ pub const fn plain_tabs_metrics() -> crate::theme::TabsMetrics {
 #[must_use]
 #[cfg(waterui_feature = "navigation")]
 pub fn plain_tabs_motion() -> crate::theme::Motion {
-    crate::theme::Motion::uniform(waterui::animation::Animation::linear(
+    crate::theme::Motion::uniform(waterui_core::animation::Animation::linear(
         std::time::Duration::from_millis(15),
     ))
 }
@@ -236,7 +236,9 @@ pub fn plain_list_look() -> crate::theme::ListLook {
             swipe_threshold: 0.5,
             reorder_threshold: 0.5,
             slop: 8.0,
-            settle: waterui::animation::Animation::linear(std::time::Duration::from_millis(15)),
+            settle: waterui_core::animation::Animation::linear(std::time::Duration::from_millis(
+                15,
+            )),
         },
         Custom::new((), |_recorder, _frame, ()| {}),
         Custom::new((), |_recorder, _frame, ()| {}),
@@ -287,7 +289,7 @@ pub fn plain_badge_look() -> crate::theme::BadgeLook {
             large_offset_y: 14.0,
         },
         waterui_text::font::Font::default(),
-        waterui::Color::srgb(255, 255, 255),
+        waterui_graphics::Color::srgb(255, 255, 255),
         Custom::new((), |_recorder, _frame, ()| {}),
         Custom::new((), |_recorder, _frame, ()| {}),
     )
@@ -333,7 +335,7 @@ pub fn plain_radio_group_look() -> crate::theme::RadioGroupLook {
     RadioGroupLook::new(
         ToggleControl::new(
             kurbo::Size::new(16.0, 16.0),
-            Motion::uniform(waterui::animation::Animation::linear(
+            Motion::uniform(waterui_core::animation::Animation::linear(
                 std::time::Duration::from_millis(1),
             )),
         )
@@ -370,9 +372,9 @@ pub fn plain_segmented_look() -> crate::theme::SegmentedLook {
         },
         SegmentLabel::new(
             waterui_text::font::Font::default(),
-            waterui::graphics::Color::new(waterui::theme::color::Foreground),
+            waterui_graphics::Color::new(waterui_controls::theme::color::Foreground),
         ),
-        Motion::uniform(waterui::animation::Animation::linear(
+        Motion::uniform(waterui_core::animation::Animation::linear(
             std::time::Duration::from_millis(15),
         )),
     )
@@ -391,8 +393,8 @@ pub fn plain_text_field_look(
     use crate::theme::{Caret, FloatingLabel, Label, TextCaretMotion, TextFieldLook, ValueMotion};
     use cherenkov_record::Paint;
     use std::time::Duration;
-    use waterui::animation::Animation;
-    use waterui::graphics::color::Srgb;
+    use waterui_core::animation::Animation;
+    use waterui_graphics::color::Srgb;
     let label = FloatingLabel::new(
         Label::new(),
         ValueMotion::Follow(Animation::linear(Duration::from_millis(15))),
@@ -409,7 +411,7 @@ pub fn plain_text_field_look(
     );
     let selection = Paint::Solid(Srgb::new(0.20, 0.45, 0.90).resolve().with_alpha(0.28));
     TextFieldLook::new(container, metrics, label, caret, selection)
-        .placeholder(Label::new().color(waterui::graphics::Color::srgb(0, 0, 0)))
+        .placeholder(Label::new().color(waterui_graphics::Color::srgb(0, 0, 0)))
 }
 
 /// The metrics a test style's fields lay out by.
@@ -459,8 +461,9 @@ mod test_style {
         waterui_feature = "color-picker"
     ))]
     use crate::theme::{TextFieldLook, TextFieldSpec};
-    use waterui::animation::Animation;
-    use waterui::{Color, Environment};
+    use waterui_core::Environment;
+    use waterui_core::animation::Animation;
+    use waterui_graphics::color::Color;
 
     type TokenInstaller = std::sync::Arc<dyn Fn(&mut Environment) + Send + Sync>;
 
@@ -529,7 +532,7 @@ mod test_style {
         fn button(&self, _spec: &ButtonSpec, _env: &Environment) -> ButtonLook {
             let chrome = Chrome::new(
                 Surface::clear(CornerShape::radius(0.0)),
-                StateLayer::new(Color::new(waterui::theme::color::Foreground)),
+                StateLayer::new(Color::new(waterui_controls::theme::color::Foreground)),
                 PressFeedback::new(),
                 FocusIndicator::Tint,
                 Motion::uniform(Animation::linear(Duration::from_millis(15))),

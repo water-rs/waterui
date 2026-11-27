@@ -52,10 +52,10 @@ use super::window::RootWindows;
 use tracing::level_filters::LevelFilter;
 use tracing_log::AsLog;
 #[cfg(feature = "menu")]
-use waterui::app::DeclaredMenuBar;
+use waterui_backend_core::app::DeclaredMenuBar;
 #[cfg(not(feature = "menu"))]
-use waterui::app::NoMenuBar;
-use waterui::app::{App, AppMenuBar, AppParts, Windows};
+use waterui_backend_core::app::NoMenuBar;
+use waterui_backend_core::app::{App, AppMenuBar, AppParts, Windows};
 use waterui_core::contract_violation;
 
 pub use preview::register_preview;

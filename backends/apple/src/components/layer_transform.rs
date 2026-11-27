@@ -16,8 +16,8 @@
 //! reset the modifier's transform to identity (#3504), while a parent's
 //! `sublayerTransform` is not part of that sync.
 
-use waterui::animation::ChangeAnimation;
-use waterui::reactive::watcher::Metadata as WatchMetadata;
+use nami::watcher::Metadata as WatchMetadata;
+use waterui_core::animation::ChangeAnimation;
 
 use cocoa_ui::core_animation::Playback;
 use cocoa_ui::objc2_quartz_core::CATransform3D;

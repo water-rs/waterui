@@ -12,9 +12,9 @@ use cocoa_ui::ColorScheme;
 use cocoa_ui::MainThreadMarker;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::Application;
-use waterui::window::WindowManager;
 use waterui_backend_core::Environment;
 use waterui_backend_core::scroll::ANIMATED_ROW_SCROLL_APPROACH;
+use waterui_backend_core::window::WindowManager;
 
 #[cfg(any(target_os = "macos", catalyst))]
 use crate::theme::{ThemeSignals, install as install_theme, refresh as refresh_theme_signals};
@@ -253,7 +253,11 @@ pub fn spawned_window(
 /// Hosts real content through embedding's shared mount/primary-content/layout path.
 #[cfg(target_os = "ios")]
 #[must_use]
-pub fn mount_uikit(mtm: MainThreadMarker, view: waterui::AnyView, env: &Environment) -> UIKitMount {
+pub fn mount_uikit(
+    mtm: MainThreadMarker,
+    view: waterui_core::AnyView,
+    env: &Environment,
+) -> UIKitMount {
     mount_uikit_window(mtm, view, env, spawned_window(mtm))
 }
 
@@ -264,7 +268,7 @@ pub fn mount_uikit(mtm: MainThreadMarker, view: waterui::AnyView, env: &Environm
 #[must_use]
 pub fn mount_uikit_window(
     mtm: MainThreadMarker,
-    view: waterui::AnyView,
+    view: waterui_core::AnyView,
     env: &Environment,
     window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
 ) -> UIKitMount {
@@ -353,7 +357,7 @@ impl core::fmt::Debug for RealizedScene {
 #[must_use]
 pub fn realize_into_shown_scene(
     mtm: MainThreadMarker,
-    declaration: waterui::window::Window<impl waterui::handler::ViewBuilder>,
+    declaration: waterui_backend_core::window::Window<impl waterui_core::handler::ViewBuilder>,
     env: &Environment,
     window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
 ) -> RealizedScene {
@@ -376,7 +380,7 @@ pub fn realize_into_shown_scene(
         controller.observe_color_scheme(move |scheme| crate::theme::refresh(&theme, scheme));
     let veil = crate::windows::Veil::cover(
         &window,
-        &waterui::graphics::Color::new(waterui::theme::color::Background).resolve(&env),
+        &waterui_graphics::Color::new(waterui_controls::theme::color::Background).resolve(&env),
     );
     let host = crate::windows::realize(
         &declaration,
@@ -414,7 +418,7 @@ pub fn content_frame(
 #[must_use]
 pub fn mount_uikit_in(
     mtm: MainThreadMarker,
-    view: waterui::AnyView,
+    view: waterui_core::AnyView,
     env: &Environment,
     frame: cocoa_ui::Rect,
 ) -> UIKitMount {
@@ -461,7 +465,7 @@ impl Drop for EmbeddedMount {
 #[must_use]
 pub fn mount_uikit_embedded(
     mtm: MainThreadMarker,
-    view: waterui::AnyView,
+    view: waterui_core::AnyView,
     env: &Environment,
     content_first: bool,
 ) -> EmbeddedMount {
@@ -506,15 +510,15 @@ pub fn mount_uikit_embedded(
 }
 
 #[cfg(target_os = "macos")]
-use waterui::Signal;
+use nami::Signal;
 #[cfg(target_os = "macos")]
-use waterui::color::Color;
+use nami::{Binding, binding};
 #[cfg(target_os = "macos")]
-use waterui::reactive::{Binding, binding};
-#[cfg(target_os = "macos")]
-use waterui::window::{WindowBackground, WindowState, WindowStyle};
+use waterui_backend_core::window::{WindowBackground, WindowState, WindowStyle};
 #[cfg(target_os = "macos")]
 use waterui_core::layout::Size;
+#[cfg(target_os = "macos")]
+use waterui_graphics::color::Color;
 
 /// Checks that connecting a `WindowChannel` drains pre-queued windows as
 /// typed `RootWindow` declarations without erasing through `Environment`.
@@ -522,7 +526,7 @@ use waterui_core::layout::Size;
 /// # Panics
 /// Panics if the queued window declaration is lost or altered.
 pub fn channel_connects_typed_declarations(_mtm: MainThreadMarker) {
-    use waterui::window::Window;
+    use waterui_backend_core::window::Window;
 
     let mut env = Environment::new();
     crate::dispatch::install(&mut env);
@@ -531,7 +535,7 @@ pub fn channel_connects_typed_declarations(_mtm: MainThreadMarker) {
     let declarations = crate::windows::connect_windows(channel, &env);
     assert_eq!(declarations.len(), 1);
     assert_eq!(
-        waterui::reactive::Signal::snapshot(&declarations[0].title).as_str(),
+        nami::Signal::snapshot(&declarations[0].title).as_str(),
         "Queued Root"
     );
 }
@@ -620,12 +624,12 @@ pub fn presentable_fixture_window(
 pub fn bind_window_background(
     container: &cocoa_ui::PlatformView,
     content: &cocoa_ui::PlatformView,
-    resolved: &waterui::reactive::Computed<waterui::window::ResolvedWindowBackground>,
+    resolved: &nami::Computed<waterui_backend_core::window::ResolvedWindowBackground>,
     env: &Environment,
     mtm: MainThreadMarker,
 ) -> (
     crate::contract::KeepAlive,
-    std::rc::Rc<core::cell::Cell<Option<waterui::graphics::color::WorkingColor>>>,
+    std::rc::Rc<core::cell::Cell<Option<waterui_graphics::color::WorkingColor>>>,
 ) {
     let painted = std::rc::Rc::new(core::cell::Cell::new(None));
     let mut keepalive = crate::contract::KeepAlive::default();
@@ -651,8 +655,8 @@ pub fn bind_window_background(
 /// Panics if the window cannot be realized or an assertion fails.
 #[cfg(target_os = "macos")]
 pub fn a_declared_window_realizes_its_declaration(mtm: MainThreadMarker) {
-    use waterui::component::text::Text;
-    use waterui::window::Window;
+    use waterui_backend_core::window::Window;
+    use waterui_text::Text;
 
     let (mut env, _theme) = window_environment(mtm);
     env.insert(crate::first_paint::FirstPaint::default());
@@ -669,7 +673,7 @@ pub fn a_declared_window_realizes_its_declaration(mtm: MainThreadMarker) {
                 let closed = alloc::rc::Rc::clone(&closed);
                 async move {
                     *closed.borrow_mut() = true;
-                    waterui::window::CloseReply::Close
+                    waterui_backend_core::window::CloseReply::Close
                 }
             }
         });
@@ -728,17 +732,20 @@ pub mod toolbar_reach {
         NSScrollView, NSTextField, NSView, NSWindowStyleMask, NSWindowToolbarStyle,
     };
     use cocoa_ui::{MainThreadMarker, Retained};
-    use waterui::Str;
-    use waterui::ViewExt as _;
-    use waterui::component::list::List;
-    use waterui::id::SelfId;
-    use waterui::navigation::{
-        NavigationLink, NavigationPath, NavigationStack, NavigationView, Tab, TabStyle, Tabs,
+    use nami::binding;
+    use waterui_backend_core::navigation::{
+        NavigationLink, NavigationPath, NavigationStack, NavigationTitleDisplayMode,
+        NavigationView, Tab, TabStyle, Tabs,
     };
-    use waterui::prelude::{scroll, text, vstack, zstack};
-    use waterui::reactive::binding;
-    use waterui::window::WindowStyle;
+    use waterui_backend_core::window::WindowStyle;
+    use waterui_controls::list::List;
+    use waterui_core::Str;
+    use waterui_core::id::SelfId;
     use waterui_core::layout::Size;
+    use waterui_layout::frame::Frame;
+    use waterui_layout::scroll::scroll;
+    use waterui_layout::stack::{vstack, zstack};
+    use waterui_text::text;
 
     use super::{
         ListSurface, MAIN_QUEUE_DEADLINE, ScrollSurface, pump_main_until, row_item,
@@ -799,13 +806,13 @@ pub mod toolbar_reach {
     /// waits until the window carries its unified toolbar over a full-size
     /// content view — and the search row when `searchable` — then lays the
     /// tree out and hands `check` the content view and its edges.
-    fn realized<V: waterui::View>(
+    fn realized<V: waterui_core::View>(
         mtm: MainThreadMarker,
         content: impl Fn() -> V + 'static,
         searchable: bool,
         check: impl FnOnce(&NSView, &Edges),
     ) {
-        use waterui::window::Window;
+        use waterui_backend_core::window::Window;
 
         let (mut env, _theme) = window_environment(mtm);
         env.insert(crate::first_paint::FirstPaint::default());
@@ -939,18 +946,21 @@ pub mod toolbar_reach {
 
     /// The fixtures' scrolling content: the marker over a column tall
     /// enough to overflow the window, so the scroller is tiled.
-    fn tall_scroll() -> impl waterui::View {
-        scroll(vstack((text(MARKER), text("rest").height(2000.0))))
+    fn tall_scroll() -> impl waterui_core::View {
+        scroll(vstack((
+            text(MARKER),
+            Frame::new(text("rest")).height(2000.0),
+        )))
     }
 
     /// `liquid_glass`'s page shape: a backdrop behind the scroll.
-    fn backdrop_scroll() -> impl waterui::View {
+    fn backdrop_scroll() -> impl waterui_core::View {
         zstack((text("backdrop"), tall_scroll()))
     }
 
     /// The fixtures' list: three plain rows.
-    fn rows() -> impl waterui::View {
-        List::content(vec![row_item as fn() -> waterui::component::text::Text; 3])
+    fn rows() -> impl waterui_core::View {
+        List::content(vec![row_item as fn() -> waterui_text::Text; 3])
     }
 
     /// Window → `NavigationStack` → page whose content is a `List`.
@@ -974,7 +984,7 @@ pub mod toolbar_reach {
             || {
                 NavigationStack::new(NavigationView::new(
                     "Inbox",
-                    List::content(vec![row_item as fn() -> waterui::component::text::Text; 60]),
+                    List::content(vec![row_item as fn() -> waterui_text::Text; 60]),
                 ))
             },
             false,
@@ -1021,9 +1031,9 @@ pub mod toolbar_reach {
 
     /// `Tabs` whose first tab is a `NavigationStack` over `inbox` —
     /// the picker sits in the window toolbar.
-    fn tabbed<V: waterui::View>(
+    fn tabbed<V: waterui_core::View>(
         inbox: impl Fn() -> NavigationView<V> + 'static,
-    ) -> impl waterui::View {
+    ) -> impl waterui_core::View {
         Tabs::new(
             &binding(0usize),
             (
@@ -1072,7 +1082,9 @@ pub mod toolbar_reach {
     /// The navigation example's structure: automatic-style `Tabs` whose
     /// Inbox tab is a path-backed `NavigationStack` whose root page carries a
     /// large title, a subtitle and a search field in the bar around `content`.
-    fn inbox_tabs<V: waterui::View>(content: impl Fn() -> V + 'static) -> impl waterui::View {
+    fn inbox_tabs<V: waterui_core::View>(
+        content: impl Fn() -> V + 'static,
+    ) -> impl waterui_core::View {
         let content = std::rc::Rc::new(content);
         Tabs::new(
             &binding(0usize),
@@ -1080,9 +1092,8 @@ pub mod toolbar_reach {
                 Tab::new("Inbox", move || {
                     NavigationStack::with_path(
                         NavigationPath::<u64>::new(),
-                        content()
-                            .navigation_title("Inbox")
-                            .large_title()
+                        NavigationView::new("Inbox", content())
+                            .navigation_title_display_mode(NavigationTitleDisplayMode::Large)
                             .navigation_subtitle("3 unread")
                             .searchable(&binding(Str::from("")))
                             .search_prompt("Search mail"),
@@ -1277,50 +1288,58 @@ impl tracing::Subscriber for ErrorLog {
 /// `native_app` harnesses.
 #[must_use]
 pub fn render_environment() -> Environment {
-    use waterui::graphics::color::WorkingColor;
-    use waterui::reactive::{SignalExt, binding};
-    use waterui::text::font::{Body, Caption, FontSlot, Subheadline};
+    use nami::{SignalExt, binding};
+    use waterui_graphics::color::WorkingColor;
+    use waterui_text::font::{Body, Caption, FontSlot, Subheadline};
 
     let mut env = Environment::new();
     crate::dispatch::install(&mut env);
-    waterui::theme::install_color_scheme(
+    waterui_controls::theme::install_color_scheme(
         &mut env,
-        binding(waterui::theme::ColorScheme::Light).computed(),
+        binding(waterui_controls::theme::ColorScheme::Light).computed(),
     );
     let black = || binding(WorkingColor::BLACK).computed();
-    waterui::theme::install_color_signal::<waterui::theme::color::Foreground>(&mut env, black());
+    waterui_controls::theme::install_color_signal::<waterui_controls::theme::color::Foreground>(
+        &mut env,
+        black(),
+    );
     // The richer fixtures (list rows, stacked text) resolve muted and
     // accent roles plus the caption/subheadline slots — install them so
     // a theme miss can't masquerade as a render failure.
-    waterui::theme::install_color_signal::<waterui::theme::color::SurfaceVariant>(
+    waterui_controls::theme::install_color_signal::<waterui_controls::theme::color::SurfaceVariant>(
         &mut env,
         black(),
     );
-    waterui::theme::install_color_signal::<waterui::theme::color::MutedForeground>(
+    waterui_controls::theme::install_color_signal::<waterui_controls::theme::color::MutedForeground>(
         &mut env,
         black(),
     );
-    waterui::theme::install_color_signal::<waterui::theme::color::TertiaryForeground>(
+    waterui_controls::theme::install_color_signal::<
+        waterui_controls::theme::color::TertiaryForeground,
+    >(&mut env, black());
+    waterui_controls::theme::install_color_signal::<
+        waterui_controls::theme::color::DisabledForeground,
+    >(&mut env, black());
+    waterui_controls::theme::install_color_signal::<
+        waterui_controls::theme::color::UnemphasizedSelection,
+    >(&mut env, black());
+    waterui_controls::theme::install_color_signal::<waterui_controls::theme::color::Accent>(
         &mut env,
         black(),
     );
-    waterui::theme::install_color_signal::<waterui::theme::color::DisabledForeground>(
-        &mut env,
-        black(),
-    );
-    waterui::theme::install_color_signal::<waterui::theme::color::UnemphasizedSelection>(
-        &mut env,
-        black(),
-    );
-    waterui::theme::install_color_signal::<waterui::theme::color::Accent>(&mut env, black());
     // A selectable list's rows re-theme onto the selection role.
-    waterui::theme::install_color_signal::<waterui::theme::color::SelectionForeground>(
+    waterui_controls::theme::install_color_signal::<
+        waterui_controls::theme::color::SelectionForeground,
+    >(&mut env, black());
+    waterui_controls::theme::install_font_signal::<Body>(
         &mut env,
-        black(),
+        binding(Body::DEFAULT).computed(),
     );
-    waterui::theme::install_font_signal::<Body>(&mut env, binding(Body::DEFAULT).computed());
-    waterui::theme::install_font_signal::<Caption>(&mut env, binding(Caption::DEFAULT).computed());
-    waterui::theme::install_font_signal::<Subheadline>(
+    waterui_controls::theme::install_font_signal::<Caption>(
+        &mut env,
+        binding(Caption::DEFAULT).computed(),
+    );
+    waterui_controls::theme::install_font_signal::<Subheadline>(
         &mut env,
         binding(Subheadline::DEFAULT).computed(),
     );
@@ -2163,16 +2182,16 @@ pub fn list_row_top(table: &ListSurface, row: usize) -> cocoa_ui::Point {
 /// offset into `offset` — with the leaf that owns its watchers.
 #[must_use]
 pub fn scroll_surface(
-    controller: &waterui::layout::scroll::ScrollController<waterui_core::layout::Point>,
-    offset: &waterui::reactive::Binding<waterui_core::layout::Point>,
+    controller: &waterui_layout::scroll::ScrollController<waterui_core::layout::Point>,
+    offset: &nami::Binding<waterui_core::layout::Point>,
 ) -> (
     crate::contract::NativeLeaf,
     cocoa_ui::Retained<ScrollSurface>,
 ) {
     use objc2::Message;
-    use waterui::layout::frame::Frame;
-    use waterui::layout::scroll::scroll;
-    use waterui::prelude::text;
+    use waterui_layout::frame::Frame;
+    use waterui_layout::scroll::scroll;
+    use waterui_text::text;
 
     let leaf = render(
         scroll(Frame::new(text("document")).height(2000.0))
@@ -2189,20 +2208,20 @@ pub fn scroll_surface(
 
 /// The list suites' row body — identical one-line rows; the cases assert
 /// positions, not labels.
-pub fn row_item() -> waterui::component::text::Text {
-    waterui::prelude::text("row")
+pub fn row_item() -> waterui_text::Text {
+    waterui_text::text("row")
 }
 
 /// The list suites' table, rendered but not mounted: `rows` in a list
 /// driven by `controller`, with the leaf that owns its wiring.
 #[must_use]
-pub fn row_list<V: waterui::View>(
+pub fn row_list<V: waterui_core::View>(
     rows: Vec<fn() -> V>,
-    controller: &waterui::layout::scroll::ScrollController<usize>,
+    controller: &waterui_layout::scroll::ScrollController<usize>,
 ) -> (crate::contract::NativeLeaf, cocoa_ui::Retained<ListSurface>) {
     use objc2::Message;
-    use waterui::component::list::List;
-    use waterui::id::SelfId;
+    use waterui_controls::list::List;
+    use waterui_core::id::SelfId;
 
     let ids: Vec<SelfId<usize>> = (0..rows.len()).map(SelfId::new).collect();
     let leaf = render(
@@ -2221,8 +2240,8 @@ pub fn row_list<V: waterui::View>(
 #[must_use]
 pub fn sectioned_row_list() -> (crate::contract::NativeLeaf, cocoa_ui::Retained<ListSurface>) {
     use objc2::Message;
-    use waterui::component::list::{List, Section};
-    use waterui::views::ForEach;
+    use waterui_controls::list::{List, Section};
+    use waterui_core::views::ForEach;
 
     let leaf = render(List::content((
         Section::new("A").content(ForEach::new(["a1", "a2"], |_| row_item())),
@@ -2245,7 +2264,7 @@ pub mod menus {
     use cocoa_ui::appkit::Application;
     use cocoa_ui::objc2_app_kit::{NSApplication, NSEventModifierFlags};
     use cocoa_ui::objc2_foundation::NSString;
-    use waterui::component::menu::{CloseWindowPlacement, Shortcut};
+    use waterui_controls::menu::{CloseWindowPlacement, Shortcut};
 
     /// One row of a built menu — what a case asserts without touching
     /// `NSMenuItem`.
@@ -2352,7 +2371,7 @@ pub mod menus {
 /// the published hierarchy without driving the inspect gesture.
 pub fn inspector_tree(
     root: &cocoa_ui::PlatformView,
-) -> Vec<waterui::inspector::protocol::TreeNode> {
+) -> Vec<waterui_backend_core::inspector::protocol::TreeNode> {
     crate::inspector::recordable_tree(root)
 }
 
@@ -2366,11 +2385,11 @@ pub fn inspector_tree(
 pub mod chrome_top {
     use cocoa_ui::objc2_app_kit::{NSSegmentedControl, NSTextField, NSView};
     use cocoa_ui::{MainThreadMarker, Retained};
-    use waterui::navigation::{NavigationView, Tab, TabStyle, Tabs};
-    use waterui::prelude::text;
-    use waterui::reactive::binding;
-    use waterui::window::WindowStyle;
+    use nami::binding;
+    use waterui_backend_core::navigation::{NavigationView, Tab, TabStyle, Tabs};
+    use waterui_backend_core::window::WindowStyle;
     use waterui_core::layout::Size;
+    use waterui_text::text;
 
     use super::{MAIN_QUEUE_DEADLINE, pump_main_until, window_environment};
 
@@ -2424,12 +2443,12 @@ pub mod chrome_top {
 
     /// Realizes `content` as a borderless window through the production
     /// root, lays it out and hands `check` the content view.
-    fn realized<V: waterui::View>(
+    fn realized<V: waterui_core::View>(
         mtm: MainThreadMarker,
         content: impl Fn() -> V + 'static,
         check: impl FnOnce(&NSView),
     ) {
-        use waterui::window::Window;
+        use waterui_backend_core::window::Window;
 
         let (mut env, _theme) = window_environment(mtm);
         env.insert(crate::first_paint::FirstPaint::default());

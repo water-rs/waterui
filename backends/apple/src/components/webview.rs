@@ -42,11 +42,11 @@ use cocoa_ui::uikit::HostView;
 #[cfg(feature = "webview")]
 use cocoa_ui::{MainThreadMarker, web_kit};
 #[cfg(feature = "webview")]
-use waterui::Str;
+use nami::watcher::BoxWatcherGuard;
 #[cfg(feature = "webview")]
-use waterui::reactive::watcher::BoxWatcherGuard;
+use nami::{Computed, Signal};
 #[cfg(feature = "webview")]
-use waterui::reactive::{Computed, Signal};
+use waterui_core::Str;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };

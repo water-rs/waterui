@@ -4,8 +4,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 #[cfg(hydrolysis_cherenkov)]
-use waterui::ContentLedger;
-use waterui::view_renderer::{RenderError, RenderRequest, RenderResult, ViewRenderer};
+use waterui_capture::ContentLedger;
+use waterui_capture::view_renderer::{RenderError, RenderRequest, RenderResult, ViewRenderer};
 use waterui_core::{Environment, View};
 #[cfg(hydrolysis_cherenkov)]
 use waterui_text::FontCollection;
@@ -359,7 +359,7 @@ impl ViewRenderer for HydrolysisOffscreenRenderer {
                 ledger
                     .wait(
                         request.content_deadline(),
-                        waterui::task::sleep(request.content_deadline()),
+                        waterui_backend_core::task::sleep(request.content_deadline()),
                         || {
                             renderer.drain_producer_wakes();
                             let _ = renderer.flush_window_tree(
@@ -368,7 +368,7 @@ impl ViewRenderer for HydrolysisOffscreenRenderer {
                                 kurbo::Affine::IDENTITY,
                                 kurbo::Affine::IDENTITY,
                             );
-                            waterui::task::yield_now()
+                            waterui_backend_core::task::yield_now()
                         },
                     )
                     .await?;

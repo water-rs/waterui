@@ -19,12 +19,12 @@ use core::cell::Cell;
 use cocoa_ui::material;
 use cocoa_ui::view;
 use cocoa_ui::{PlatformView, Rect, Retained};
-use waterui::background::{MaterialBackground, MaterialGroup};
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_shape::background::{MaterialBackground, MaterialGroup};
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal::{self, Placement};

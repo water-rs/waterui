@@ -15,15 +15,15 @@ use cocoa_ui::layer;
 use cocoa_ui::objc2_core_graphics::CGColor;
 use cocoa_ui::path::{EdgeMask, border_path};
 use cocoa_ui::{PlatformView, Rect, Retained, view};
-use waterui::border::Border;
-use waterui::graphics::color::WorkingColor;
-use waterui::layout::EdgeSet;
-use waterui::reactive::{Computed, Signal};
+use nami::{Computed, Signal};
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_graphics::color::WorkingColor;
+use waterui_layout::EdgeSet;
+use waterui_shape::border::Border;
 
 use crate::animation::with_platform_animation;
 use crate::contract::{Held, Mounted, NativeLeaf};

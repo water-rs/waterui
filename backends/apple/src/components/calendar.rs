@@ -22,17 +22,17 @@ use core::ops::RangeInclusive;
 
 use cocoa_ui::date::{CalendarSelectionMode, DateParts, YearMonth};
 use cocoa_ui::{PlatformView, Rect};
+use nami::{Binding, Computed, Signal};
 #[cfg(feature = "calendar")]
-use waterui::component::form::calendar::clamp_date_to_range;
-use waterui::component::form::picker::date::Date;
-use waterui::component::label::ControlLabel;
-use waterui::reactive::{Binding, Computed, Signal};
-#[cfg(target_os = "ios")]
-use waterui::resolve::Resolvable;
+use waterui_backend_core::form::calendar::clamp_date_to_range;
+use waterui_backend_core::form::picker::date::Date;
+use waterui_controls::label::ControlLabel;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
+#[cfg(target_os = "ios")]
+use waterui_core::resolve::Resolvable;
 
 use crate::contract::{Held, Mounted, NativeLeaf, RenderContext};
 use crate::proposal;
@@ -261,7 +261,7 @@ fn parts_set(days: &BTreeSet<Date>) -> impl Iterator<Item = DateParts> + '_ {
 }
 
 /// The calendar's accessible name: the label's text without bidi marks.
-fn plain(text: &waterui::text::styled::StyledStr) -> alloc::string::String {
+fn plain(text: &waterui_text::styled::StyledStr) -> alloc::string::String {
     cocoa_ui::text::strip_bidi_controls(&text.to_plain())
 }
 
@@ -274,25 +274,25 @@ mod appearance {
     use cocoa_ui::appkit::{
         CalendarColorRole, CalendarColors, CalendarNavigation, CalendarNavigationLabels,
     };
-    use waterui::component::form::calendar::{
+    use nami::{Computed, Signal, SignalExt};
+    use waterui_backend_core::form::calendar::{
         calendar_next_month_label, calendar_previous_month_label, calendar_selected_month_label,
     };
-    use waterui::component::label::Label;
-    use waterui::graphics::color::WorkingColor;
-    use waterui::reactive::{Computed, Signal, SignalExt};
-    use waterui::resolve::Resolvable;
-    use waterui::text::styled::StyledStr;
-    use waterui::theme::color::{
+    use waterui_controls::label::Label;
+    use waterui_controls::theme::color::{
         Accent, Border, DisabledForeground, Foreground, MutedForeground, SelectionContainer,
         SelectionForeground, TertiaryForeground, UnemphasizedSelection,
     };
+    use waterui_core::resolve::Resolvable;
+    use waterui_graphics::color::WorkingColor;
+    use waterui_text::styled::StyledStr;
 
     use super::{CalendarLeaf, plain};
     use crate::contract::NativeLeaf;
     use crate::theme::{platform_color, token_color};
 
     /// Every theme token the calendar draws with, by role.
-    fn tokens(env: &waterui::Environment) -> [(CalendarColorRole, Computed<WorkingColor>); 9] {
+    fn tokens(env: &waterui_core::Environment) -> [(CalendarColorRole, Computed<WorkingColor>); 9] {
         [
             (
                 CalendarColorRole::Foreground,
@@ -330,7 +330,7 @@ mod appearance {
     /// The platform colour a role's token draws as: the text tokens as
     /// `AppKit`'s dynamic label colours when they are the theme's own.
     fn color_of(
-        env: &waterui::Environment,
+        env: &waterui_core::Environment,
         role: CalendarColorRole,
         token: &Computed<WorkingColor>,
     ) -> cocoa_ui::Retained<cocoa_ui::objc2_app_kit::NSColor> {
@@ -344,7 +344,7 @@ mod appearance {
     }
 
     /// The colours the calendar starts with.
-    pub(super) fn colors(env: &waterui::Environment) -> CalendarColors {
+    pub(super) fn colors(env: &waterui_core::Environment) -> CalendarColors {
         let [
             foreground,
             muted,
@@ -372,7 +372,7 @@ mod appearance {
     /// Pushes each token's changes to its role alone.
     pub(super) fn watch_colors(
         leaf: &mut NativeLeaf,
-        env: &waterui::Environment,
+        env: &waterui_core::Environment,
         calendar: &Rc<CalendarLeaf>,
     ) {
         for (role, token) in tokens(env) {
@@ -389,8 +389,8 @@ mod appearance {
 
     /// The spoken text of each navigation button, in the environment's
     /// locale.
-    fn labels(env: &waterui::Environment) -> [(CalendarNavigation, Computed<StyledStr>); 3] {
-        let spoken = |mut label: Label<waterui::component::label::TitleLabel>| {
+    fn labels(env: &waterui_core::Environment) -> [(CalendarNavigation, Computed<StyledStr>); 3] {
+        let spoken = |mut label: Label<waterui_controls::label::TitleLabel>| {
             label.resolve_in_place(env);
             label.accessibility_label()
         };
@@ -411,7 +411,7 @@ mod appearance {
     }
 
     /// The navigation labels the calendar starts with.
-    pub(super) fn navigation_labels(env: &waterui::Environment) -> CalendarNavigationLabels {
+    pub(super) fn navigation_labels(env: &waterui_core::Environment) -> CalendarNavigationLabels {
         let [previous, selection, next] = labels(env).map(|(_, text)| plain(&text.snapshot()));
         CalendarNavigationLabels {
             previous,
@@ -423,7 +423,7 @@ mod appearance {
     /// Pushes each navigation label's changes to its button alone.
     pub(super) fn watch_navigation_labels(
         leaf: &mut NativeLeaf,
-        env: &waterui::Environment,
+        env: &waterui_core::Environment,
         calendar: &Rc<CalendarLeaf>,
     ) {
         for (button, text) in labels(env) {
@@ -606,9 +606,9 @@ pub(super) fn render_calendar<S: CalendarSelection>(
     }
     // `Accent` tints the navigation, as on every `UIKit` control.
     #[cfg(target_os = "ios")]
-    leaf.bind(&waterui::theme::color::Accent.resolve(env), {
+    leaf.bind(&waterui_controls::theme::color::Accent.resolve(env), {
         let calendar = Rc::clone(&calendar);
-        move |color: waterui::graphics::color::WorkingColor| {
+        move |color: waterui_graphics::color::WorkingColor| {
             cocoa_ui::view::set_tint_color(
                 calendar.calendar_view(),
                 Some(&crate::theme::platform_color(&color)),
@@ -633,7 +633,7 @@ pub(super) fn render_calendar<S: CalendarSelection>(
 /// `Calendar`'s handler.
 #[cfg(feature = "calendar")]
 mod component {
-    use waterui::component::form::calendar::CalendarConfig;
+    use waterui_backend_core::form::calendar::CalendarConfig;
 
     use super::{CalendarSpec, Held, NativeLeaf, RenderContext, render_calendar};
 

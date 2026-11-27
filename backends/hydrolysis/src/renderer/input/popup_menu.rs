@@ -20,15 +20,15 @@ use core::time::Duration;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use nami::Signal;
 #[cfg(feature = "date-picker")]
-use waterui::form::Calendar;
-#[cfg(feature = "menu")]
-use waterui::theme::color::DisabledForeground;
+use waterui_backend_core::form::Calendar;
 #[cfg(any(feature = "picker", feature = "color-picker", feature = "date-picker"))]
 use waterui_controls::button;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_controls::button::ButtonStyle;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::Shortcut;
+#[cfg(feature = "menu")]
+use waterui_controls::theme::color::DisabledForeground;
 #[cfg(feature = "date-picker")]
 use waterui_controls::{Stepper, label::TitleLabel, stepper::stepper};
 #[cfg(feature = "date-picker")]
@@ -108,7 +108,7 @@ impl<E: crate::text::TextEngine> PopupWindowManager<E> {
     /// opened the popup (water-rs/hydrolysis#140), so its `.state(&value)`
     /// and `.with(...)` overlays reach the item actions' extractors exactly
     /// as they do for inline views.
-    pub(crate) fn show<C: ViewBuilder, T: waterui::window::WindowToolbar>(
+    pub(crate) fn show<C: ViewBuilder, T: waterui_backend_core::window::WindowToolbar>(
         &self,
         window: Window<C, T>,
         env: &Environment,
@@ -409,14 +409,19 @@ fn animated_popup_panel<V: View>(
     #[cfg(not(feature = "menu"))]
     let (initial_scale, enter_animation) = (0.96, popup_enter_animation());
     let scale = Binding::<f32>::new(initial_scale);
-    content
-        .opacity(opacity.with(enter_animation.clone()))
-        .scale(scale.with(enter_animation))
-        .on_appear(move || {
-            opacity.set(1.0);
-            scale.set(1.0);
-        })
-        .with(State(group))
+    let content = Metadata::new(content, Opacity::new(opacity.with(enter_animation.clone())));
+    let content = Metadata::new(content, Scale::uniform(scale.with(enter_animation)));
+    let content = Metadata::new(
+        content,
+        waterui_interaction::event::LifeCycleHook::new(
+            waterui_interaction::event::LifeCycle::Appear,
+            move || {
+                opacity.set(1.0);
+                scale.set(1.0);
+            },
+        ),
+    );
+    waterui_core::env::With::new(content, State(group))
 }
 
 /// Marker on the wrapped menu rows: a `PopupWindowManager` menu's panel is
@@ -555,7 +560,12 @@ fn popup_menu_command_label(
             Some(subtitle) => OneOf2::A(
                 vstack((
                     Text::new(styled_label.clone()),
-                    text_view(subtitle).caption().muted(),
+                    waterui_core::env::Installed::new(
+                        text_view(subtitle).caption(),
+                        waterui_controls::theme::ForegroundOverride::new(
+                            waterui_controls::theme::color::MutedForeground,
+                        ),
+                    ),
                 ))
                 .alignment(HorizontalAlignment::Leading)
                 .spacing(0.0),
@@ -621,7 +631,10 @@ fn popup_menu_command_row(
         },
     );
     if disabled {
-        OneOf2::A(button.foreground(Color::new(DisabledForeground)))
+        OneOf2::A(waterui_core::env::Installed::new(
+            button,
+            waterui_controls::theme::ForegroundOverride::new(Color::new(DisabledForeground)),
+        ))
     } else {
         OneOf2::B(button)
     }
@@ -638,9 +651,9 @@ fn popup_menu_command_row(
 fn shortcut_hint_styled(shortcut: &Shortcut, disabled: bool, font: Option<Font>) -> StyledStr {
     let styled = StyledStr::plain(shortcut.to_string()).foreground({
         if disabled {
-            Color::new(waterui::theme::color::DisabledForeground)
+            Color::new(waterui_controls::theme::color::DisabledForeground)
         } else {
-            Color::new(waterui::theme::color::MutedForeground)
+            Color::new(waterui_controls::theme::color::MutedForeground)
         }
     });
     match font {
@@ -830,19 +843,25 @@ impl<E: crate::text::TextEngine> View for PopupMenuContent<E> {
             row_top += row_height;
         }
         let menu_content: waterui_layout::stack::VStack<(Vec<_>,)> = rows.into_iter().collect();
-        menu_content
-            .alignment(HorizontalAlignment::Leading)
-            .spacing(0.0)
-            .padding_with(EdgeInsets::symmetric(metrics.vertical_padding, 0.0))
-            // A menu row's label is body text that happens to be tappable,
-            // not button chrome: it draws in the foreground colour, with the
-            // destructive role's explicit error colour still winning.
-            .with(ListRowChrome)
+        waterui_core::env::With::new(
+            waterui_core::env::With::new(
+                waterui_layout::padding::Padding::new(
+                    EdgeInsets::symmetric(metrics.vertical_padding, 0.0),
+                    menu_content
+                        .alignment(HorizontalAlignment::Leading)
+                        .spacing(0.0),
+                ),
+                // A menu row's label is body text that happens to be tappable,
+                // not button chrome: it draws in the foreground colour, with the
+                // destructive role's explicit error colour still winning.
+                ListRowChrome,
+            ),
             // A menu row is not a button: its inset is the theme's menu-item
             // inset (`md.comp.menu.list-item.leading-space`/`trailing-space`,
             // 12 dp in M3) and its state layer the foreground colour over a
             // square, containerless surface.
-            .with(MenuRowChrome)
+            MenuRowChrome,
+        )
     }
 }
 
@@ -861,24 +880,26 @@ pub fn anchored_popup_menu_view<E: TextEngine>(
     popup_opener: Option<PopupWindowManager<E>>,
 ) -> impl View + use<E> {
     let (width, height) = popup_menu_size(&nodes, look.layout(), &text);
-    Metadata::new(
-        Frame::new(popup_menu_content::<E>(
-            nodes,
-            PopupMenuPlacement {
-                depth: 0,
-                metrics: look.layout(),
-                text,
-                popup_origin: origin,
-                width,
-            },
-            theme,
-            popup_opener,
-        ))
-        .width(f64_as_f32(width))
-        .height(f64_as_f32(height)),
-        PopupMenuSurface { selected_row: None },
+    waterui_core::env::With::new(
+        Metadata::new(
+            Frame::new(popup_menu_content::<E>(
+                nodes,
+                PopupMenuPlacement {
+                    depth: 0,
+                    metrics: look.layout(),
+                    text,
+                    popup_origin: origin,
+                    width,
+                },
+                theme,
+                popup_opener,
+            ))
+            .width(f64_as_f32(width))
+            .height(f64_as_f32(height)),
+            PopupMenuSurface { selected_row: None },
+        ),
+        State(group),
     )
-    .with(State(group))
 }
 
 #[expect(
@@ -906,22 +927,24 @@ pub fn popup_menu_window<E: crate::text::TextEngine>(
     let look = look.clone();
     let popup_content = move || {
         animated_popup_panel(
-            Metadata::new(
-                popup_menu_content::<E>(
-                    nodes_for_content.clone(),
-                    PopupMenuPlacement {
-                        depth,
-                        metrics: look.layout(),
-                        text,
-                        popup_origin: origin,
-                        width,
-                    },
-                    &theme,
-                    Some(popup_opener.clone()),
+            waterui_layout::padding::Padding::new(
+                crate::num_cast::f64_as_f32(margin),
+                Metadata::new(
+                    popup_menu_content::<E>(
+                        nodes_for_content.clone(),
+                        PopupMenuPlacement {
+                            depth,
+                            metrics: look.layout(),
+                            text,
+                            popup_origin: origin,
+                            width,
+                        },
+                        &theme,
+                        Some(popup_opener.clone()),
+                    ),
+                    PopupMenuSurface { selected_row: None },
                 ),
-                PopupMenuSurface { selected_row: None },
-            )
-            .padding_with(crate::num_cast::f64_as_f32(margin)),
+            ),
             group_for_content.clone(),
             look.get_presentation_motion(),
         )
@@ -1008,10 +1031,12 @@ impl<E: crate::text::TextEngine> View for SemanticPopupMenuContent<E> {
             }
         }
         let menu_content: waterui_layout::stack::VStack<(Vec<_>,)> = rows.into_iter().collect();
-        menu_content
-            .alignment(HorizontalAlignment::Leading)
-            .spacing(0.0)
-            .with(State(group))
+        waterui_core::env::With::new(
+            menu_content
+                .alignment(HorizontalAlignment::Leading)
+                .spacing(0.0),
+            State(group),
+        )
     }
 }
 
@@ -1083,10 +1108,12 @@ pub fn semantic_picker_menu_window(
             );
         }
         let menu_content: waterui_layout::stack::VStack<(Vec<_>,)> = rows.into_iter().collect();
-        menu_content
-            .alignment(HorizontalAlignment::Leading)
-            .spacing(0.0)
-            .with(State(group_for_content.clone()))
+        waterui_core::env::With::new(
+            menu_content
+                .alignment(HorizontalAlignment::Leading)
+                .spacing(0.0),
+            State(group_for_content.clone()),
+        )
     };
     let popup = Window::new("WaterUI Picker Menu", popup_content)
         .state(&state_for_content)
@@ -1155,14 +1182,22 @@ pub fn picker_menu_window(
             );
         }
         let menu_content: waterui_layout::stack::VStack<(Vec<_>,)> = rows.into_iter().collect();
-        let rows = menu_content
-            .alignment(HorizontalAlignment::Leading)
-            .spacing(0.0)
-            .padding_with(EdgeInsets::symmetric(layout.vertical_padding, 0.0))
-            .with(ListRowChrome)
-            .with(MenuRowChrome);
-        let panel = Metadata::new(rows, PopupMenuSurface { selected_row })
-            .padding_with(crate::num_cast::f64_as_f32(margin));
+        let rows = waterui_core::env::With::new(
+            waterui_core::env::With::new(
+                waterui_layout::padding::Padding::new(
+                    EdgeInsets::symmetric(layout.vertical_padding, 0.0),
+                    menu_content
+                        .alignment(HorizontalAlignment::Leading)
+                        .spacing(0.0),
+                ),
+                ListRowChrome,
+            ),
+            MenuRowChrome,
+        );
+        let panel = waterui_layout::padding::Padding::new(
+            crate::num_cast::f64_as_f32(margin),
+            Metadata::new(rows, PopupMenuSurface { selected_row }),
+        );
         animated_popup_panel(
             panel,
             group_for_content.clone(),
@@ -1273,19 +1308,18 @@ fn color_picker_window_base(
                 let group = group_for_content.clone();
                 let swatch_color = color.clone();
                 swatches.push(
-                    Frame::new(
-                        button(label)
-                            .style(ButtonStyle::Borderless)
-                            .action(move || {
-                                selected.set(color.clone());
-                                group.close_all();
-                            })
-                            .install(LabelDisplayMode::Hidden)
-                            .background(
-                                RoundedRectangle::new(CornerRadius::fraction(0.2))
-                                    .fill(swatch_color),
-                            ),
-                    )
+                    Frame::new(waterui_shape::background::IntoBackground::apply_background(
+                        RoundedRectangle::new(CornerRadius::fraction(0.2)).fill(swatch_color),
+                        waterui_core::env::Installed::new(
+                            button(label)
+                                .style(ButtonStyle::Borderless)
+                                .action(move || {
+                                    selected.set(color.clone());
+                                    group.close_all();
+                                }),
+                            LabelDisplayMode::Hidden,
+                        ),
+                    ))
                     .width(crate::num_cast::f64_as_f32(swatch))
                     .height(crate::num_cast::f64_as_f32(swatch)),
                 );
@@ -1331,14 +1365,14 @@ fn color_picker_window_base(
         }
 
         let content: waterui_layout::stack::VStack<(Vec<_>,)> = row_views.into_iter().collect();
-        let panel = content
-            .alignment(HorizontalAlignment::Leading)
-            .spacing(gap)
-            .padding_with(EdgeInsets::all(16.0))
-            .background(
-                RoundedRectangle::new(CornerRadius::fraction(0.05))
-                    .fill(Color::new(Surface).with_opacity(0.96)),
-            );
+        let panel = waterui_shape::background::IntoBackground::apply_background(
+            RoundedRectangle::new(CornerRadius::fraction(0.05))
+                .fill(Color::new(Surface).with_opacity(0.96)),
+            waterui_layout::padding::Padding::new(
+                EdgeInsets::all(16.0),
+                content.alignment(HorizontalAlignment::Leading).spacing(gap),
+            ),
+        );
         animated_popup_panel(
             panel,
             group_for_content.clone(),
@@ -1550,14 +1584,16 @@ fn date_picker_window_base(
         ));
 
         let content: waterui_layout::stack::VStack<(Vec<_>,)> = sections.into_iter().collect();
-        let panel = content
-            .alignment(HorizontalAlignment::Leading)
-            .spacing(16.0)
-            .padding_with(EdgeInsets::all(24.0))
-            .background(
-                RoundedRectangle::new(CornerRadius::fraction(0.04))
-                    .fill(Color::new(Surface).with_opacity(0.96)),
-            );
+        let panel = waterui_shape::background::IntoBackground::apply_background(
+            RoundedRectangle::new(CornerRadius::fraction(0.04))
+                .fill(Color::new(Surface).with_opacity(0.96)),
+            waterui_layout::padding::Padding::new(
+                EdgeInsets::all(24.0),
+                content
+                    .alignment(HorizontalAlignment::Leading)
+                    .spacing(16.0),
+            ),
+        );
         animated_popup_panel(
             panel,
             group_for_content.clone(),
@@ -1656,7 +1692,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             plain_label,
             action: waterui_core::handler::SharedAction::new(
                 move |env: waterui_core::Environment| {
-                    let Some(inspector) = env.get::<waterui::inspector::InspectorRuntime>() else {
+                    let Some(inspector) =
+                        env.get::<waterui_backend_core::inspector::InspectorRuntime>()
+                    else {
                         return;
                     };
                     inspector.inspect_node(waterui_inspector_protocol::NodeId(node.0));
@@ -2175,11 +2213,11 @@ impl<E: crate::text::TextEngine> Clone for ContextMenuTarget<E> {
     }
 }
 
-#[cfg(any(feature = "date-picker", feature = "color-picker"))]
-use waterui::shape::{RoundedRectangle, ShapeExt as _};
-#[cfg(any(feature = "date-picker", feature = "color-picker"))]
-use waterui::theme::color::Surface;
 #[cfg(feature = "color-picker")]
 use waterui_controls::label::LabelDisplayMode;
+#[cfg(any(feature = "date-picker", feature = "color-picker"))]
+use waterui_controls::theme::color::Surface;
+#[cfg(any(feature = "date-picker", feature = "color-picker"))]
+use waterui_shape::{RoundedRectangle, ShapeExt as _};
 #[cfg(feature = "date-picker")]
 use waterui_text::text;

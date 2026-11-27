@@ -12,13 +12,13 @@
 
 use core::cell::RefCell;
 
+use nami::{Binding, Signal};
 #[cfg(target_os = "ios")]
-use waterui::navigation::{Bar, NavigationView};
-use waterui::navigation::{
+use waterui_backend_core::navigation::{Bar, NavigationView};
+use waterui_backend_core::navigation::{
     NavigationSplitLayout, ResolvedNavigationView,
     split::{NavigationSplitDetailBuilder as DetailBuilder, SlotBuilder},
 };
-use waterui::reactive::{Binding, Signal};
 #[cfg(target_os = "macos")]
 use waterui_core::Native;
 use waterui_core::id::Id;
@@ -111,8 +111,10 @@ mod platform {
     use cocoa_ui::objc2_ui_kit::{UINavigationController, UISplitViewControllerColumn};
     use cocoa_ui::uikit::{HostView, NavContentController, SplitController};
     use cocoa_ui::view;
-    use waterui::navigation::{NavigationSplitColumnVisibility, NavigationSplitLayout};
-    use waterui::reactive::Signal;
+    use nami::Signal;
+    use waterui_backend_core::navigation::{
+        NavigationSplitColumnVisibility, NavigationSplitLayout,
+    };
 
     use crate::contract::KeepAlive;
 
@@ -358,7 +360,9 @@ mod platform {
     use cocoa_ui::appkit::{Column, ColumnWidth, HostView, SplitViewController, WindowToolbar};
     use cocoa_ui::objc2_app_kit::NSWindowStyleMask;
     use cocoa_ui::{MainThreadMarker, Rect, Retained, view};
-    use waterui::navigation::{NavigationSplitColumnVisibility, NavigationSplitLayout};
+    use waterui_backend_core::navigation::{
+        NavigationSplitColumnVisibility, NavigationSplitLayout,
+    };
 
     use crate::contract::KeepAlive;
 
@@ -397,9 +401,7 @@ mod platform {
         let mtm = ctx.mtm();
         let nav = SplitViewController::new(mtm);
 
-        let sidebar_env = ctx
-            .env()
-            .extending(waterui::component::list::SidebarContent);
+        let sidebar_env = ctx.env().extending(waterui_controls::list::SidebarContent);
         let sidebar_leaf = ctx.with_env(&sidebar_env).realize(sidebar.build());
         let columns = Columns {
             renderer: ctx.renderer(),

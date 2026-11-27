@@ -6,12 +6,12 @@
 
 use std::time::Duration;
 
-use waterui::Environment;
-use waterui::inspector::FrameRecorder;
+use waterui_backend_core::inspector::FrameRecorder;
+use waterui_core::Environment;
 use waterui_inspector_protocol::{FrameKind, FrameSample};
 
 #[cfg(feature = "accessibility")]
-use waterui::inspector::TreeRecorder;
+use waterui_backend_core::inspector::TreeRecorder;
 #[cfg(feature = "accessibility")]
 use waterui_inspector_protocol::{Bounds, NodeId, NodeState, TreeNode};
 
@@ -38,7 +38,8 @@ pub(super) fn publish_frame(
 
     let phases = &profile.phases();
     let counters = &profile.counters();
-    let refresh_hz = refresh_rate_hz.unwrap_or_else(|| waterui::task::RefreshRate::HEADLESS.hz());
+    let refresh_hz =
+        refresh_rate_hz.unwrap_or_else(|| waterui_backend_core::task::RefreshRate::HEADLESS.hz());
 
     recorder.record(FrameSample {
         kind: frame_kind(mode),

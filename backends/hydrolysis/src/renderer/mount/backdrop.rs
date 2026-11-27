@@ -58,7 +58,7 @@ pub struct BackdropGroupKey {
     /// The members' colour scheme, resolved at flush: a subtree may
     /// install its own scheme, so members at one level in one scope can
     /// differ — the group runs one constant scheme's chain.
-    pub(crate) scheme: waterui::theme::ColorScheme,
+    pub(crate) scheme: waterui_controls::theme::ColorScheme,
     /// The install canvas the members' content mounts under: `None`
     /// under the surface root, `Some(frame)` under a filtered node's
     /// frame layer.
@@ -1098,7 +1098,10 @@ impl<G, E: crate::text::TextEngine> BackdropGroups<BackdropGroupKey, MaterialRun
     /// The colour scheme `member`'s backdrop group is keyed by — `None`
     /// while the member holds no membership. A test-facing answer.
     #[cfg(all(test, hydrolysis_gpu_painter))]
-    pub(crate) fn backdrop_scheme(&self, member: LayerId) -> Option<waterui::theme::ColorScheme> {
+    pub(crate) fn backdrop_scheme(
+        &self,
+        member: LayerId,
+    ) -> Option<waterui_controls::theme::ColorScheme> {
         self.members.get(&member).map(|entry| entry.key.scheme)
     }
 

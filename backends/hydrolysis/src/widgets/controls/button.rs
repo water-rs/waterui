@@ -32,18 +32,18 @@ use nami::{Signal, SignalExt};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use waterui_controls::ControlSize;
 #[cfg(feature = "menu")]
-use waterui::metadata::anchored_overlay::{
+use waterui_controls::anchored_overlay::{
     AnchorEdge, AnchorPlacement, Clamp, Dismissal, EdgeAlignment,
 };
-use waterui::theme::Tint;
-use waterui_controls::ControlSize;
 use waterui_controls::button::{ButtonConfig, ButtonRole, ButtonStyle};
 use waterui_controls::label::{ControlLabel, LabelDisplayMode};
 #[cfg(feature = "menu")]
 use waterui_controls::menu::ResolvedMenu;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::ResolvedMenuItem;
+use waterui_controls::theme::Tint;
 use waterui_core::Environment;
 #[cfg(feature = "menu")]
 use waterui_core::backend::ChildSlot as _;
@@ -183,7 +183,7 @@ fn lower_menu_row(look: &ButtonLook, horizontal_inset: f32) -> ButtonLook {
     let layer = theme_chrome.state_layer();
     let chrome = Chrome::new(
         Surface::clear(CornerShape::radius(0.0)),
-        StateLayer::new(Color::new(waterui::theme::color::Foreground)).opacities(
+        StateLayer::new(Color::new(waterui_controls::theme::color::Foreground)).opacities(
             layer.hover,
             layer.focus,
             layer.pressed,
@@ -267,7 +267,7 @@ fn lower_floating(look: &ButtonLook, floating: &FloatingLook) -> ButtonLook {
 fn role_environment(role: Option<ButtonRole>, env: &Environment) -> Cow<'_, Environment> {
     if role == Some(ButtonRole::Destructive) {
         let mut tinted = env.clone();
-        tinted.insert(Tint::new(Color::new(waterui::theme::color::Error)));
+        tinted.insert(Tint::new(Color::new(waterui_controls::theme::color::Error)));
         Cow::Owned(tinted)
     } else {
         Cow::Borrowed(env)
@@ -282,7 +282,7 @@ fn role_label_color(role: Option<ButtonRole>, style: ButtonStyle) -> Option<Colo
             style,
             ButtonStyle::BorderedProminent | ButtonStyle::GlassProminent
         ))
-    .then(|| Color::new(waterui::theme::color::Error))
+    .then(|| Color::new(waterui_controls::theme::color::Error))
 }
 
 /// The spec of a `style` button of `size` in `env`.
@@ -324,7 +324,7 @@ fn retained_label_color(
     env: &Environment,
 ) -> Option<Color> {
     if env.get::<ListRowChrome>().is_some() {
-        return Some(Color::new(waterui::theme::color::Foreground));
+        return Some(Color::new(waterui_controls::theme::color::Foreground));
     }
     let color = look.label().get_color()?.clone();
     let frame = Rc::clone(&chrome.frame);
@@ -1251,7 +1251,7 @@ fn render_title<E: crate::text::TextEngine, S>(
     let paint = rendered.parts.chrome().label_paint();
     if paint.is_none() {
         let color = if env.get::<ListRowChrome>().is_some() {
-            Some(Color::new(waterui::theme::color::Foreground))
+            Some(Color::new(waterui_controls::theme::color::Foreground))
         } else if !rendered.flags.contains(InteractionState::DISABLED) {
             role_label_color(role, style)
                 .or_else(|| look_color(&rendered.look, rendered.flags, frame))
@@ -1750,17 +1750,17 @@ mod tests {
     use kurbo::Rect;
     use nami::{Signal as _, SignalExt as _, constant};
     use std::borrow::Cow;
-    use waterui::Color;
-    use waterui::theme::{color::Error as ThemeError, install_color_signal};
     use waterui_controls::ControlSize;
     use waterui_controls::button::{ButtonRole, ButtonStyle};
     #[cfg(feature = "menu")]
     use waterui_controls::menu::{Menu, ResolvedMenu};
+    use waterui_controls::theme::{color::Error as ThemeError, install_color_signal};
     use waterui_core::Environment;
     use waterui_core::animation::Animation;
     #[cfg(feature = "menu")]
     use waterui_core::backend::peel_native;
     use waterui_core::layout::{ProposalSize, Size};
+    use waterui_graphics::Color;
     use waterui_interaction::interaction::{InteractionState, StateValue};
 
     /// The trigger spec of `menu` resolved in `env`.
@@ -1816,7 +1816,7 @@ mod tests {
         let accent = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
         let red = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
         let mut env = Environment::new();
-        waterui::theme::install_color_signal::<waterui::theme::color::Accent>(
+        waterui_controls::theme::install_color_signal::<waterui_controls::theme::color::Accent>(
             &mut env,
             nami::constant(accent).computed(),
         );
@@ -1825,7 +1825,7 @@ mod tests {
         };
         assert_eq!(tint_of(&spec(&env), &env), accent.components);
 
-        let tinted = env.extending(waterui::theme::Tint::new(Color::new(
+        let tinted = env.extending(waterui_controls::theme::Tint::new(Color::new(
             waterui_graphics::color::Working(red),
         )));
         assert_eq!(tint_of(&spec(&tinted), &tinted), red.components);
@@ -1844,7 +1844,7 @@ mod tests {
     #[test]
     fn a_tint_signal_change_reaches_the_look_without_requesting_it_again() {
         let source = nami::Binding::new(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
-        let tint = waterui::theme::Tint::new(
+        let tint = waterui_controls::theme::Tint::new(
             source.map(|color| Color::new(waterui_graphics::color::Working(color))),
         );
         let env = Environment::new().extending(tint);

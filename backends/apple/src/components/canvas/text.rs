@@ -33,19 +33,19 @@ use cocoa_ui::objc2_core_text::{
 };
 use cocoa_ui::objc2_foundation::{NSNumber, NSRange, NSString};
 use kurbo::Rect;
-use waterui::Str;
-use waterui::graphics::color::WorkingColor;
-use waterui::reactive::Signal as _;
-use waterui::resolve::Resolvable as _;
-use waterui::text::StyledStr;
-use waterui::theme::color::Foreground;
+use nami::Signal as _;
+use waterui_controls::theme::color::Foreground;
+use waterui_core::Str;
 use waterui_core::layout::{HorizontalAlignment, Size};
+use waterui_core::resolve::Resolvable as _;
 use waterui_graphics::backend::draw::{
     Draw as _, Fixed, FontId, Glyph, GlyphRun, GlyphStyle, Paint, Picture,
 };
 use waterui_graphics::backend::{
     Handle, ResourceError, TextBackend, TextRegistration, TextRequest,
 };
+use waterui_graphics::color::WorkingColor;
+use waterui_text::StyledStr;
 
 use super::resources::{Registry, TextHandle};
 use crate::components::font::platform_font;

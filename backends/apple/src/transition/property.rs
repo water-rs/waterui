@@ -11,7 +11,7 @@ use alloc::rc::Rc;
 use core::cell::RefCell;
 
 use cocoa_ui::{PlatformView, Retained, view};
-use waterui::reactive::Signal as _;
+use nami::Signal as _;
 use waterui_core::layout::{LayoutDirection, Size};
 use waterui_structural_transition::{
     TransitionGeometry, TransitionPhase, TransitionProperties, TransitionState,
@@ -133,7 +133,7 @@ impl PropertyTarget {
             && sample.blur.is_finite()
             && sample.blur >= 0.0)
         {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "waterui-apple: a transition sampled {sample:?} — every property must be finite \
                  and the blur radius non-negative; the sample is not applied"
             );
@@ -186,7 +186,7 @@ pub struct InsertionRun {
     /// runtime — reported once at creation and never retried.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     blur: Option<(
-        waterui::reactive::Binding<f32>,
+        nami::Binding<f32>,
         Option<crate::components::filtered::LiveEffect>,
     )>,
     /// The `captures_content` realization (§2.7): the window overlay and
@@ -245,7 +245,7 @@ impl InsertionRun {
         // ended at once at identity.
         #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
         if state.captures_content() {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "waterui-apple: a pixel transition needs the filtered pipeline \
                  (the view_effect or applied_filter feature)"
             );
@@ -377,9 +377,9 @@ impl InsertionRun {
     /// returning to 0 keeps the effect — one per instance.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     fn update_blur(&mut self, sample: &TransitionProperties) {
-        use waterui::reactive::Signal as _;
+        use nami::Signal as _;
         if self.blur.is_none() && sample.blur > 0.0 {
-            let radius = waterui::reactive::Binding::new(sample.blur);
+            let radius = nami::Binding::new(sample.blur);
             let mut guards = waterui_graphics::backend::ParamGuards::default();
             let effect = waterui_graphics::backend::AnyEffect::filter(
                 waterui_graphics::backend::filtrate::filters::Blur(guards.bind(radius.clone())),
@@ -406,7 +406,7 @@ impl InsertionRun {
     #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
     fn update_blur(&self, sample: &TransitionProperties) {
         if sample.blur > 0.0 && !self.blur_warned.replace(true) {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "waterui-apple: a blur transition needs the filtered pipeline \
                  (the view_effect or applied_filter feature)"
             );

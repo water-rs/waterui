@@ -18,13 +18,13 @@ use core::cell::Cell;
 
 use cocoa_ui::view::bounds;
 use cocoa_ui::{PlatformView, Rect, focus, view};
-use waterui::component::focus::Focused;
-use waterui::reactive::Signal;
+use nami::Signal;
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_interaction::focus::Focused;
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 
@@ -50,7 +50,7 @@ struct FocusSync {
     /// The child's single focus anchor.
     target: focus::FocusTarget,
     /// The `Focused` binding: requested focus out, platform focus back in.
-    binding: waterui::reactive::Binding<bool>,
+    binding: nami::Binding<bool>,
     /// Whether a deferred sync is already queued on the main queue.
     scheduled: Cell<bool>,
 }
@@ -228,7 +228,7 @@ pub fn realize_focused_metadata(
 fn require_single_target(anchors: Vec<focus::FocusTarget>) -> Option<focus::FocusTarget> {
     let count = anchors.len();
     if count != 1 {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "Metadata<Focused> requires exactly one TextField or SecureField focus anchor in its \
              subtree, found {count}; {}",
             if count == 0 {

@@ -263,7 +263,7 @@ pub fn menu_picker_label_view<E: crate::text::TextEngine>(
     let font = (!label.has_custom_content()).then(|| Font::from(waterui_text::font::Caption));
     crate::renderer::held_with_foreground(
         label.build_with_font(font),
-        waterui::Color::new(waterui::theme::color::MutedForeground),
+        waterui_graphics::Color::new(waterui_controls::theme::color::MutedForeground),
     )
 }
 

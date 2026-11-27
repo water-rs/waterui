@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use nami::{Binding, Computed};
 use wasm_bindgen::{JsCast, closure::Closure};
-use waterui::webview::{
+use waterui_backend_core::webview::{
     BackendEvent, Url, WatcherGuard, WatcherSet, WebViewConfig, WebViewController, WebViewEvent,
     WebViewHandle, WebViewOpenError,
 };

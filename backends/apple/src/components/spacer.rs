@@ -12,10 +12,10 @@
 //! `spacer_min(n)` reserved nothing under compression; reading the payload is
 //! the one deliberate difference.
 
-use waterui::layout::{Spacer, stack::Axis};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_layout::{Spacer, stack::Axis};
 
 use crate::contract::NativeLeaf;
 

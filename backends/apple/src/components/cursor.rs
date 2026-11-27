@@ -12,14 +12,14 @@ use core::cell::RefCell;
 
 use cocoa_ui::Rect;
 use cocoa_ui::view;
-use waterui::cursor::Cursor;
-#[cfg(target_os = "macos")]
-use waterui::cursor::CursorStyle;
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_interaction::cursor::Cursor;
+#[cfg(target_os = "macos")]
+use waterui_interaction::cursor::CursorStyle;
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;

@@ -12,7 +12,7 @@
 
 use nami::{Binding, Computed, Signal, SignalExt as _};
 use wasm_bindgen::{JsCast, closure::Closure};
-use waterui::theme::ColorScheme;
+use waterui_controls::theme::ColorScheme;
 use web_sys::{Event, MediaQueryList};
 
 /// The media query the page answers for the dark scheme.

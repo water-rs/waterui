@@ -89,14 +89,22 @@ pub fn navigation_look(theme: &Rc<dyn WidgetTheme>, env: &Environment) -> Naviga
 /// The height of a bar showing its title in `display_mode`, under `metrics`.
 #[cfg(feature = "navigation")]
 pub fn navigation_base_bar_height(
-    display_mode: waterui::navigation::NavigationTitleDisplayMode,
+    display_mode: waterui_backend_core::navigation::NavigationTitleDisplayMode,
     metrics: NavigationMetrics,
 ) -> f64 {
     f64::from(match display_mode {
-        waterui::navigation::NavigationTitleDisplayMode::Automatic => metrics.automatic_bar_height,
-        waterui::navigation::NavigationTitleDisplayMode::Inline => metrics.inline_bar_height,
-        waterui::navigation::NavigationTitleDisplayMode::Medium => metrics.medium_bar_height,
-        waterui::navigation::NavigationTitleDisplayMode::Large => metrics.large_bar_height,
+        waterui_backend_core::navigation::NavigationTitleDisplayMode::Automatic => {
+            metrics.automatic_bar_height
+        }
+        waterui_backend_core::navigation::NavigationTitleDisplayMode::Inline => {
+            metrics.inline_bar_height
+        }
+        waterui_backend_core::navigation::NavigationTitleDisplayMode::Medium => {
+            metrics.medium_bar_height
+        }
+        waterui_backend_core::navigation::NavigationTitleDisplayMode::Large => {
+            metrics.large_bar_height
+        }
     })
 }
 
@@ -901,9 +909,9 @@ mod tests {
     use crate::theme::InputFieldMetrics;
     use crate::theme::WidgetTheme;
     use std::rc::Rc;
-    use waterui::theme::install_font_signal;
     use waterui::{Binding, Computed};
     use waterui_controls::text_field::field;
+    use waterui_controls::theme::install_font_signal;
     use waterui_core::{AnyView, Str};
     use waterui_form::secure::{Secure, secure};
     use waterui_text::font::{Body, FontWeight, ResolvedFont};

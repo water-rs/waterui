@@ -1665,13 +1665,11 @@ mod render {
 
     /// The canvas the text test draws: the three alignments about one
     /// anchor, a width that wraps, and `label` as live text.
-    fn text_gallery(
-        label: &waterui::reactive::Binding<String>,
-    ) -> waterui::graphics::canvas::Canvas {
-        use waterui::SignalExt as _;
-        use waterui::graphics::canvas::{Canvas, Path, StrokeStyle, TextPlacement};
-        use waterui::text::StyledStr;
+    fn text_gallery(label: &nami::Binding<String>) -> waterui_graphics::canvas::Canvas {
+        use nami::SignalExt as _;
         use waterui_core::layout::{HorizontalAlignment, Point as P, Rect as R};
+        use waterui_graphics::canvas::{Canvas, Path, StrokeStyle, TextPlacement};
+        use waterui_text::StyledStr;
 
         let styled = |text: &str| StyledStr::from(text.to_owned());
         Canvas::new({
@@ -1727,11 +1725,11 @@ mod render {
         use std::any::Any;
 
         use cocoa_ui::MainThreadMarker;
-        use waterui::View as _;
-        use waterui::graphics::canvas::CanvasView;
-        use waterui::reactive::binding;
+        use nami::binding;
+        use waterui_core::View as _;
         use waterui_graphics::backend::SceneResources;
         use waterui_graphics::backend::{SceneFrame, SceneUpdate};
+        use waterui_graphics::canvas::CanvasView;
 
         use super::super::text::CoreText;
 
@@ -1739,7 +1737,7 @@ mod render {
         // creates fonts, attributed strings and `CALayer`s, none of which
         // belongs to a view; no view or window is touched.
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
-        let mut env = waterui::Environment::new();
+        let mut env = waterui_core::Environment::new();
         let _theme = crate::theme::install(&mut env, cocoa_ui::ColorScheme::Dark);
         let label = binding::<String>(String::from("Live"));
         let canvas = text_gallery(&label);
@@ -1804,18 +1802,18 @@ mod render {
     #[test]
     fn canvas_text_keeps_its_styles() {
         use cocoa_ui::MainThreadMarker;
-        use waterui::graphics::canvas::TextPlacement;
-        use waterui::graphics::color::Srgb;
-        use waterui::text::StyledStr;
         use waterui_core::layout::Point as P;
         use waterui_graphics::backend::SceneResources;
+        use waterui_graphics::canvas::TextPlacement;
+        use waterui_graphics::color::Srgb;
+        use waterui_text::StyledStr;
 
         use super::super::text::CoreText;
 
         // SAFETY: the case lays text out and renders layers offscreen; it
         // touches no view or window.
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
-        let mut env = waterui::Environment::new();
+        let mut env = waterui_core::Environment::new();
         let _theme = crate::theme::install(&mut env, cocoa_ui::ColorScheme::Dark);
         let text = StyledStr::from("plain ")
             + StyledStr::from("bold").bold(true)
@@ -1971,13 +1969,13 @@ mod render {
     /// crate derives, so the sheets are expected to look the same.
     #[test]
     fn morph_sequences_render_in_square_and_wide_boxes() {
-        use waterui::shape::{
-            Capsule, Circle, CornerRadius, Ellipse, MorphShape, Rectangle, RoundedRectangle,
-            ShapeExt as _,
-        };
         use waterui_graphics::backend::SceneResources;
         use waterui_graphics::backend::draw::LayoutSize;
         use waterui_graphics::color::Color;
+        use waterui_shape::{
+            Capsule, Circle, CornerRadius, Ellipse, MorphShape, Rectangle, RoundedRectangle,
+            ShapeExt as _,
+        };
 
         type Morph = fn(Color) -> MorphShape;
         const GAP: f32 = 8.0;

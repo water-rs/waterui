@@ -7,7 +7,7 @@ use super::*;
 use crate::renderer::recording::transform_paint;
 use nami::Computed;
 #[cfg(feature = "menu")]
-use waterui::app::Quit;
+use waterui_backend_core::app::Quit;
 #[cfg(feature = "menu")]
 use waterui_controls::NoopSlot;
 
@@ -83,7 +83,9 @@ fn command_node<S>(command: &ResolvedCommand<S>) -> PopupMenuNode {
     // span colour survives the button's environment-level foreground,
     // so the theme's error colour wins (water-rs/hydrolysis#200).
     if command.role() == Some(ButtonRole::Destructive) {
-        styled_label = styled_label.foreground(waterui::Color::new(waterui::theme::color::Error));
+        styled_label = styled_label.foreground(waterui_graphics::Color::new(
+            waterui_controls::theme::color::Error,
+        ));
     }
     let plain_label = styled_label.to_plain().to_string();
     let semantic_text = command.semantic_label().semantic_text().clone();

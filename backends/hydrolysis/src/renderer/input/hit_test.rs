@@ -8,16 +8,16 @@ use crate::theme::{InteractionFocusBinding, InteractionMotion, ModalInteraction}
 use kurbo::Point;
 use nami::Signal as _;
 use std::path::PathBuf;
-use waterui::Url;
-use waterui::drag_drop::{DragPayload, DropInfo, Files};
-use waterui::gesture::PointerButton as WuiPointerButton;
 use waterui_backend_core::gesture::GesturePlacement;
 #[cfg(feature = "menu")]
 use waterui_backend_core::gesture::LONG_PRESS_SLOP;
 use waterui_core::contract_violation;
 use waterui_graphics::input::{Code, GesturePhase, ScrollPhase, ScrollUnit};
+use waterui_interaction::drag_drop::{DragPayload, DropInfo, Files};
+use waterui_interaction::gesture::PointerButton as WuiPointerButton;
 use waterui_interaction::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_layout::scroll::Axis as ScrollAxis;
+use waterui_url::Url;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct DropTargetKey {

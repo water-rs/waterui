@@ -33,7 +33,7 @@ pub mod property;
 pub mod retire;
 pub mod slots;
 
-use waterui::reactive::Signal;
+use nami::Signal;
 use waterui_backend_core::Environment;
 use waterui_core::layout::{LayoutDirection, layout_direction};
 use waterui_structural_transition::{ReduceMotion, TransitionSpec};
@@ -80,7 +80,7 @@ pub struct SnapshotDemand;
 mod tests {
     use core::time::Duration;
 
-    use waterui::reactive::{Binding, Signal as _};
+    use nami::{Binding, Signal as _};
     use waterui_backend_core::Environment;
     use waterui_core::animation::Animation;
     use waterui_core::layout::{LayoutDirection, Size};

@@ -28,9 +28,9 @@ use jni::vm::JavaVM;
 use jni::{jni_sig, jni_str};
 use nami::Signal;
 use nami::watcher::Context;
-use waterui::Str;
-use waterui::accessibility::AccessibilityRole;
+use waterui_accessibility::AccessibilityRole;
 use waterui_backend_core::ProvidedSemantics;
+use waterui_core::Str;
 #[cfg(any(hydrolysis_gpu_painter, hydrolysis_hwui))]
 use waterui_core::contract_violation;
 use waterui_core::layout::{

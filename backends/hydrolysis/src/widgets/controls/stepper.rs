@@ -185,7 +185,7 @@ pub fn stepper_accessibility<E: crate::text::TextEngine, S>(
             node.set_label(label);
         }
         let default_value = if env
-            .get::<waterui::accessibility::AccessibilityValue>()
+            .get::<waterui_accessibility::AccessibilityValue>()
             .is_some()
         {
             None

@@ -25,18 +25,18 @@ use std::{cell::RefCell, rc::Rc};
     not(hydrolysis_uikit),
     not(target_os = "android")
 ))]
-use waterui::app::AppParts;
+use waterui_backend_core::app::AppParts;
 #[cfg(hydrolysis_run)]
-use waterui::app::{App, AppMenuBar};
-use waterui::app::{WindowSink, Windows};
-use waterui::window::WindowParts;
+use waterui_backend_core::app::{App, AppMenuBar};
+use waterui_backend_core::app::{WindowSink, Windows};
+use waterui_backend_core::window::WindowParts;
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(hydrolysis_winit),
     not(hydrolysis_uikit),
     not(target_os = "android")
 ))]
-use waterui::window::WindowState;
+use waterui_backend_core::window::WindowState;
 use waterui_core::Environment;
 use waterui_core::Retain;
 use waterui_core::handler::ViewBuilder;
@@ -284,7 +284,7 @@ fn subscribe_window_declaration_signals<E: crate::text::TextEngine, C, T>(
         core.refresh_watch(&window.state),
         core.refresh_watch(&window.style),
         core.refresh_watch(&window.resolved_background(env)),
-        core.refresh_watch(&waterui::theme::current_color_scheme(env)),
+        core.refresh_watch(&waterui_controls::theme::current_color_scheme(env)),
         core.refresh_watch(&window.level),
         core.refresh_watch(&window.attention),
         core.refresh_watch(&window.icon),
@@ -312,9 +312,9 @@ fn init_global_executor() {
 /// Only compiled when `hydrolysis/inspector` is enabled off wasm32; otherwise
 /// runners call [`init_global_executor`] alone.
 #[cfg(hydrolysis_inspector)]
-fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> {
+fn init_main_thread_executors() -> Option<waterui_backend_core::inspector::InspectorRuntime> {
     init_global_executor();
-    waterui::inspector::maybe_init_from_env("hydrolysis")
+    waterui_backend_core::inspector::maybe_init_from_env("hydrolysis")
 }
 
 /// Physical pixels per logical pixel for offscreen rendering, from
@@ -412,6 +412,38 @@ fn exit_without_gpu(error: impl core::error::Error + Send + Sync + 'static) -> !
     std::process::exit(GPU_UNAVAILABLE_EXIT_CODE)
 }
 
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(hydrolysis_winit),
+    not(hydrolysis_uikit),
+    not(target_os = "android")
+))]
+use self::headless::HeadlessSurface;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(hydrolysis_winit),
+    not(hydrolysis_uikit),
+    not(target_os = "android")
+))]
+use crate::platform::HeadlessColorFormat;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(hydrolysis_winit),
+    not(hydrolysis_uikit),
+    not(target_os = "android")
+))]
+use waterui_backend_core::{
+    install_application_resources,
+    task::{RefreshRate, RuntimeProbe, monitored_local_executor_with_probes as monitored_local},
+};
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(hydrolysis_winit),
+    not(hydrolysis_uikit),
+    not(target_os = "android")
+))]
+use waterui_controls::theme::ColorScheme;
+
 // The headless offscreen `run` never exists on Android: `hydrolysis::run`
 // must not silently dispatch an app to the one-shot offscreen pump there.
 // The Android host's entry point is `runner::android` — a missing `run` is a
@@ -441,9 +473,6 @@ pub fn run<W: Windows, M: AppMenuBar>(
     env: Environment,
     style: impl crate::Style,
 ) {
-    use crate::platform::HeadlessColorFormat;
-    use headless::HeadlessSurface;
-
     init_tracing();
     #[cfg(hydrolysis_inspector)]
     let inspector = init_main_thread_executors();
@@ -453,9 +482,9 @@ pub fn run<W: Windows, M: AppMenuBar>(
     #[cfg(hydrolysis_inspector)]
     let inspector_probe = inspector
         .as_ref()
-        .map(|inspector| inspector.task_probe() as std::sync::Arc<dyn waterui::task::RuntimeProbe>);
+        .map(|inspector| inspector.task_probe() as std::sync::Arc<dyn RuntimeProbe>);
     #[cfg(not(hydrolysis_inspector))]
-    let inspector_probe: Option<std::sync::Arc<dyn waterui::task::RuntimeProbe>> = None;
+    let inspector_probe: Option<std::sync::Arc<dyn RuntimeProbe>> = None;
     // This path renders each window once offscreen and returns; it owns no event
     // loop, so it supplies the headless executor rather than a platform one.
     // Keep a handle on the executor: the render loop below has to drive it, or
@@ -468,9 +497,9 @@ pub fn run<W: Windows, M: AppMenuBar>(
     let _executor_teardown = executor::DrainExecutorOnDrop::new(local_executor.clone());
     // This host paces frames itself rather than vsyncing against a panel, so
     // the executor budgets at the headless rate.
-    let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
+    let _ = try_init_local_executor(monitored_local(
         local_executor.clone(),
-        waterui::task::RefreshRate::HEADLESS,
+        RefreshRate::HEADLESS,
         inspector_probe,
     ));
 
@@ -492,9 +521,9 @@ pub fn run<W: Windows, M: AppMenuBar>(
         termination: _,
     } = app.into_parts();
     let mut env = env;
-    waterui::install_application_resources(&mut env);
+    install_application_resources(&mut env);
     #[cfg(hydrolysis_inspector)]
-    waterui::inspector::install(&mut env, inspector);
+    waterui_backend_core::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     #[cfg(any(test, hydrolysis_platform_services))]
@@ -513,7 +542,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
     // A headless host has no platform appearance: the scheme is Light
     // unless the application installs its own.
     let _ = env.get_or_insert_with::<ReduceMotion, _>(Default::default);
-    crate::theme::install_theme_tokens(&mut env, Some(&style), waterui::theme::ColorScheme::Light);
+    crate::theme::install_theme_tokens(&mut env, Some(&style), ColorScheme::Light);
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
     // The application's fonts, discovered once. Every window's renderer is
     // seeded from this collection, and a self-drawn component that typesets

@@ -32,16 +32,19 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::theme::{DialogLook, ModalInteraction};
-use waterui::accessibility::AccessibilityRole;
-use waterui::dialog::{Dialog, DialogAction};
-use waterui::theme::color::Scrim;
-use waterui::{Computed, Plugin, SignalExt as _, Str, ViewExt as _};
+use nami::{Computed, SignalExt as _};
+use waterui_accessibility::{AccessibilityHidden, AccessibilityLabel, AccessibilityRole};
+use waterui_controls::dialog::{Dialog, DialogAction};
+use waterui_controls::theme::color::Scrim;
 use waterui_controls::{ButtonRole, ButtonStyle, button};
 use waterui_core::handler::shared_action;
-use waterui_core::{Environment, OneOf2, View};
+use waterui_core::plugin::Plugin;
+use waterui_core::{Environment, Metadata, OneOf2, Str, View};
 use waterui_graphics::color::Color;
+use waterui_interaction::gesture::{GestureObserver, TapGesture};
+use waterui_layout::background::BackgroundView;
 use waterui_layout::frame::Frame;
-use waterui_layout::padding::EdgeInsets;
+use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_layout::stack::{HorizontalAlignment, hstack, vstack, zstack};
 use waterui_shape::{RoundedRectangle, ShapeExt as _};
 use waterui_text::text::text;
@@ -263,11 +266,10 @@ fn dialog_card(dialog: &Dialog, label: Computed<Str>, look: &DialogLook) -> impl
     let headline = text(dialog.title().clone())
         .headline()
         .color(look.title_color.clone());
-    let actions_row = Frame::new(
-        hstack(buttons)
-            .spacing(look.actions_spacing)
-            .padding_with(EdgeInsets::new(look.actions_top_padding, 0.0, 0.0, 0.0)),
-    )
+    let actions_row = Frame::new(Padding::new(
+        EdgeInsets::new(look.actions_top_padding, 0.0, 0.0, 0.0),
+        hstack(buttons).spacing(look.actions_spacing),
+    ))
     .max_width(f32::INFINITY)
     .alignment(look.actions_alignment);
     let contents = match dialog.message_text() {
@@ -287,15 +289,14 @@ fn dialog_card(dialog: &Dialog, label: Computed<Str>, look: &DialogLook) -> impl
         ),
     };
 
-    Frame::new(
-        contents
-            .padding_with(look.content_padding.clone())
-            .background(
-                RoundedRectangle::new(look.corner_radius).fill(look.container_color.clone()),
-            )
-            .a11y_label(label)
-            .a11y_role(AccessibilityRole::Dialog),
-    )
+    let card = BackgroundView::new(
+        Padding::new(look.content_padding.clone(), contents),
+        RoundedRectangle::new(look.corner_radius).fill(look.container_color.clone()),
+    );
+    Frame::new(Metadata::new(
+        Metadata::new(card, AccessibilityLabel::new(label)),
+        AccessibilityRole::Dialog,
+    ))
     .min_width(look.min_width)
     .max_width(look.max_width)
 }
@@ -309,9 +310,15 @@ pub fn dialog_modal_layer(dialog: &Dialog, look: DialogLook) -> impl View + use<
         // The scrim is a pointer target only: the card's own cancel
         // action and Escape carry dismissal for assistive technology, so
         // the backdrop must not become a focusable element ahead of them.
-        Color::new(Scrim)
-            .on_tap(move |env: Environment| scrim_dialog.run_cancel(&env))
-            .a11y_hidden(true),
+        Metadata::new(
+            Metadata::new(
+                Color::new(Scrim),
+                GestureObserver::without_event(TapGesture::new(), move |env: Environment| {
+                    scrim_dialog.run_cancel(&env);
+                }),
+            ),
+            AccessibilityHidden::new(true),
+        ),
         DialogCard {
             dialog: dialog.clone(),
             look,
@@ -378,7 +385,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 #[cfg(test)]
 mod tests {
     use nami::Binding;
-    use waterui::dialog::Dialog;
+    use waterui_controls::dialog::Dialog;
     use waterui_core::{AnyView, Environment, Native, View};
     use waterui_layout::{ProposalSize, container::FixedContainer};
 

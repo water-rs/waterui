@@ -587,7 +587,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use waterui::{Binding, SignalExt, binding};
+    use nami::{Binding, SignalExt, binding};
 
     use waterui_graphics::backend::draw::{
         Command, Draw, FontId, ImageId, ImageLimits, Paint, Recorder, WorkingColor,

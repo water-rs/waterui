@@ -212,7 +212,7 @@ pub fn describe(command: &Command) -> Option<Node> {
 /// filter is not applied.
 pub fn reject_group_filter(group: &Group) {
     if group.filter.is_some() {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "a canvas group records no filter; got {:?}; the filter is not applied",
             group.filter
         );
