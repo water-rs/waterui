@@ -715,29 +715,29 @@ fn report_uninstalled_families(
 
 fn font_family(family: Option<&str>) -> parley::FontFamily<'static> {
     family.map_or_else(
-        || parley::style::GenericFamily::SansSerif.into(),
+        || parley::style::GenericFamily::SystemUi.into(),
         |family| parley::FontFamily::Source(std::borrow::Cow::Owned(family.to_string())),
     )
 }
 
 /// The `font-family` value an emoji-presentation range shapes with: the
 /// `emoji` generic family first, then the family list the range's own style
-/// resolved — `sans-serif` when nothing more specific applied.
+/// resolved — `system-ui` when nothing more specific applied.
 fn emoji_font_family(family: Option<&str>) -> parley::FontFamily<'static> {
-    let sans_serif = || {
+    let system_ui = || {
         vec![parley::FontFamilyName::Generic(
-            parley::GenericFamily::SansSerif,
+            parley::GenericFamily::SystemUi,
         )]
     };
-    let own = family.map_or_else(sans_serif, |family| {
+    let own = family.map_or_else(system_ui, |family| {
         parley::FontFamilyName::parse_css_list(family)
             .map(|name| name.map(parley::FontFamilyName::into_owned))
             .collect::<Result<Vec<_>, _>>()
             .unwrap_or_else(|error| {
                 contract_violation!(
-                    "font family {family:?} is not a CSS family list: {error:?}; the emoji range falls back to sans-serif"
+                    "font family {family:?} is not a CSS family list: {error:?}; the emoji range falls back to system-ui"
                 );
-                sans_serif()
+                system_ui()
             })
     });
     let mut names = Vec::with_capacity(own.len() + 1);

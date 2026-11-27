@@ -2422,6 +2422,9 @@ pub trait LayerVisitor<E: crate::text::TextEngine> {
     /// A recorded run, painted in `world`.
     #[cfg(test)]
     fn run(&mut self, _world: kurbo::Affine, _recording: &crate::renderer::recording::Recording) {}
+    /// A live layer, painted in `world`.
+    #[cfg(test)]
+    fn live_layer(&mut self, _world: kurbo::Affine) {}
     /// The single-colour rectangles a run fills
     /// ([`Recording::solid_rects`](crate::renderer::recording::Recording::solid_rects)),
     /// painted in `world` under `alphas`.
@@ -2567,8 +2570,12 @@ fn visit_list<E: crate::text::TextEngine>(
         } else if let Some(live) = lives.iter().find(|live| live.attached().id() == *id) {
             let world = world * live.transform;
             #[cfg(test)]
-            if let Some(recording) = live.source.as_ref().and_then(|source| source.recording()) {
-                visitor.run(world, recording);
+            {
+                visitor.live_layer(world);
+                if let Some(recording) = live.source.as_ref().and_then(|source| source.recording())
+                {
+                    visitor.run(world, recording);
+                }
             }
             visitor.solid_rects(world, alphas, &live.solid);
         } else if let Some((layer, props)) = &layers.inner

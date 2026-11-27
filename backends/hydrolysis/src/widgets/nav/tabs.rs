@@ -24,8 +24,8 @@ use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Signal, SignalExt as _};
 use waterui::component::badge::BadgeValue;
 use waterui::navigation::tab::{TabItem, TabStyle, TabsLayout};
-use waterui::theme::ForegroundOverride;
 use waterui::theme::color::Foreground;
+use waterui::theme::{ForegroundOverride, install_font_signal};
 use waterui_controls::label::LabelDisplayMode;
 use waterui_core::Environment;
 use waterui_core::contract_violation;
@@ -34,6 +34,7 @@ use waterui_core::layout::{LayoutDirection, ProposalSize, Size as LayoutSize, Vi
 use waterui_core::plugin::Plugin;
 use waterui_core::views::AnyViewsSnapshot;
 use waterui_graphics::color::Color;
+use waterui_text::font::Body;
 
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
@@ -280,7 +281,7 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
         self.reconcile();
         for tab in &mut self.tabs {
             let item_env = tab_reactive_env(tab.tag, &self.selection, look, env);
-            let label_env = tab_label_env(&item_env);
+            let label_env = tab_label_env(&item_env, look);
             tab.label.ensure_built(renderer, &label_env);
             if let Some(icon) = &mut tab.icon {
                 icon.ensure_built(renderer, &item_env);
@@ -454,7 +455,10 @@ pub fn measure_tabs_node<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    let label_env = tab_label_env(env);
+    // Decide the layout once from the bar's own extent so the measured bar
+    // and the drawn bar answer the same layout (see `tabs_decide_placement`).
+    let look = state.peek(theme, env);
+    let label_env = tab_label_env(env, Some(&look));
     let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = state
         .tabs
         .iter()
@@ -467,9 +471,6 @@ pub fn measure_tabs_node<E: crate::text::TextEngine>(
             (label_size, icon_size)
         })
         .collect();
-    // Decide the layout once from the bar's own extent so the measured bar
-    // and the drawn bar answer the same layout (see `tabs_decide_placement`).
-    let look = state.peek(theme, env);
     let margin = bottom_floating_margin(&look, state.style);
     let (layout, metrics, compact_width) = tabs_decide_placement(
         &look,
@@ -676,7 +677,7 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
     // with `layout`, `theme_metrics`, and `bar_geometry`.
     let [bar] = &chrome.bars;
     let content_rect = chrome.content;
-    let measure_label_env = tab_label_env(env);
+    let measure_label_env = tab_label_env(env, Some(&look));
     let (bar_surface, divider, items_rect) = (
         bar_geometry.bar_surface,
         bar_geometry.divider,
@@ -755,6 +756,31 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
     )
     .clone();
     let live = Rc::clone(parts.tabs());
+
+    // Place the selected tab's content before recording the tab bar so a
+    // translucent or floating bar backdrop captures the content behind it, and
+    // so tab button hit targets register after content targets (higher
+    // hit-test priority).
+    if let Some(selected_index) = selected_index
+        && content_rect.width() > 0.0
+        && content_rect.height() > 0.0
+    {
+        let mut st = state.borrow_mut();
+        let render_ctx = ctx.render_context();
+        // §7.1: tab content is chrome-hosted — it inherits the widget's
+        // boundaries on the edges the tab bar leaves reachable, with the
+        // bar's edge docked on the band's inner edge.
+        let content_area = chrome.content_area;
+        st.tabs[selected_index].content.place(
+            ctx.renderer_mut(),
+            render_ctx,
+            env,
+            bounded_proposal(content_rect),
+            content_rect,
+            content_area,
+        );
+    }
+
     // Each item binds its own interaction on its own touch target, and its
     // chrome follows what the handles report.
     let targets: Vec<_> = plans
@@ -857,7 +883,7 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
                 |ctx| {
                     let render_ctx = ctx.render_context();
                     let item_env = tab_item_env(env, &look, Some(index) == selected_index);
-                    let item_label_env = tab_label_env(&item_env);
+                    let item_label_env = tab_label_env(&item_env, Some(&look));
                     let mut st = state.borrow_mut();
                     // The icon draws whether or not the label has text to show.
                     if let (Some(icon), Some(icon_rect)) = (&mut st.tabs[index].icon, icon_rect) {
@@ -897,26 +923,6 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
         }
     }
     parts.push_over_labels(ctx.renderer_mut(), render_ctx);
-
-    if let Some(selected_index) = selected_index
-        && content_rect.width() > 0.0
-        && content_rect.height() > 0.0
-    {
-        let mut st = state.borrow_mut();
-        let render_ctx = ctx.render_context();
-        // §7.1: tab content is chrome-hosted — it inherits the widget's
-        // boundaries on the edges the tab bar leaves reachable, with the
-        // bar's edge docked on the band's inner edge.
-        let content_area = chrome.content_area;
-        st.tabs[selected_index].content.place(
-            ctx.renderer_mut(),
-            render_ctx,
-            env,
-            bounded_proposal(content_rect),
-            content_rect,
-            content_area,
-        );
-    }
 }
 
 /// The handler of a draggable tab's press: a press on the selected tab that
@@ -973,10 +979,15 @@ fn tab_track(
     }))
 }
 
-/// The environment a tab's label builds under: the bar owns the icon's
-/// placement, so the label always renders its title alone.
-fn tab_label_env(env: &Environment) -> Environment {
-    env.extending(LabelDisplayMode::TitleOnly)
+/// The environment a tab's label builds, measures, and places under: the bar
+/// owns the icon's placement, so the label always renders its title alone, and
+/// `Body` is overridden when `look` sets [`TabsLook::label_font`].
+fn tab_label_env(env: &Environment, look: Option<&TabsLook>) -> Environment {
+    let mut scoped = env.extending(LabelDisplayMode::TitleOnly);
+    if let Some(font) = look.and_then(TabsLook::get_label_font) {
+        install_font_signal::<Body>(&mut scoped, font.resolve(env));
+    }
+    scoped
 }
 
 fn tab_foreground_env(env: &Environment, color: Color) -> Environment {
@@ -1009,7 +1020,7 @@ fn resolve_tabs_layout<E: TextEngine>(
 ) -> (TabItemLayout, TabsMetrics, Option<f64>, f64) {
     let margin = bottom_floating_margin(look, style);
     if style != TabStyle::Sidebar && matches!(look.get_bar_width(), TabBarWidth::Compact { .. }) {
-        let measure_label_env = tab_label_env(env);
+        let measure_label_env = tab_label_env(env, Some(look));
         let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = {
             let mut st = state.borrow_mut();
             st.prebuild_labels_for_look(ctx.renderer_mut(), env, Some(look));

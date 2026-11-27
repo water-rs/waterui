@@ -154,10 +154,17 @@ fn explicit_family_list_is_preserved_for_parley_css_parsing() {
 }
 
 #[test]
-fn missing_family_uses_sans_serif_generic() {
+fn missing_family_uses_system_ui_generic() {
     assert_eq!(
         font_family(None),
-        parley::FontFamily::from(parley::style::GenericFamily::SansSerif)
+        parley::FontFamily::from(parley::style::GenericFamily::SystemUi)
+    );
+    assert_eq!(
+        emoji_font_family(None),
+        parley::FontFamily::List(std::borrow::Cow::Owned(vec![
+            parley::FontFamilyName::Generic(parley::GenericFamily::Emoji),
+            parley::FontFamilyName::Generic(parley::GenericFamily::SystemUi),
+        ]))
     );
 }
 
