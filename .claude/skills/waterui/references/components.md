@@ -832,7 +832,9 @@ Validation wraps a validatable control (`TextField`, `Stepper`, `Slider`): the b
 accepts only values the validator passes, and the failure reason shows under the control.
 `Required` and a `Range` are validators; combine with `.and(..)` / `.or(..)`. A text field is backed by styled text, so lift a plain-text
 validator with `Plain(..)`. `SecureField` (`secure(label, &Binding<Secure>)`) edits a
-password without exposing it in `Debug`:
+password without exposing it in `Debug`; it defaults to `ContentType::Password` and shares
+`.prompt(..)`, `.content_type(..)` (e.g. `ContentType::NewPassword`), `.submit_label(..)`,
+and `.on_submit(..)` with `TextField`:
 
 ```rust
 use waterui::form::valid::{Plain, Required, ValidatableView};

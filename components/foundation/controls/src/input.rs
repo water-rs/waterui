@@ -1,5 +1,151 @@
 //! Shared keyboard, capitalization, autocorrection, submit-key, and autofill metadata for text input.
 
+use waterui_core::Environment;
+use waterui_core::handler::{Handler, SharedAction};
+use waterui_text::{IntoText, Text, TextConfig};
+
+/// Shared authoring-time input configuration carried by both
+/// `TextField` and `SecureField`: placeholder prompt, autofill content type,
+/// software-keyboard Return-key label, and Return/Enter submit handler.
+#[derive(Debug, Clone, Default)]
+pub struct FieldInput {
+    prompt: Text,
+    content_type: Option<ContentType>,
+    submit_label: SubmitLabel,
+    on_submit: Option<SharedAction>,
+}
+
+impl FieldInput {
+    /// Creates an empty input configuration with no content type, empty prompt,
+    /// [`SubmitLabel::Return`], and no submit handler.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates an input configuration with a default [`ContentType`].
+    #[must_use]
+    pub fn with_content_type(content_type: ContentType) -> Self {
+        Self {
+            content_type: Some(content_type),
+            ..Self::default()
+        }
+    }
+
+    /// Sets the placeholder prompt shown when the field is empty.
+    pub fn set_prompt(&mut self, prompt: impl IntoText) {
+        self.prompt = prompt.into_text();
+    }
+
+    /// Sets the semantic content type declared for autofill.
+    pub const fn set_content_type(&mut self, content_type: ContentType) {
+        self.content_type = Some(content_type);
+    }
+
+    /// Sets the label and action shown on the software keyboard's Return key.
+    pub const fn set_submit_label(&mut self, label: SubmitLabel) {
+        self.submit_label = label;
+    }
+
+    /// Sets the handler run when the user submits the field with Return or Enter.
+    pub fn set_on_submit<Args>(&mut self, action: impl Handler<Args, ()>) {
+        self.on_submit = Some(SharedAction::new(action));
+    }
+
+    /// Returns the declared semantic content type, if any.
+    #[must_use]
+    pub const fn content_type(&self) -> Option<ContentType> {
+        self.content_type
+    }
+
+    /// Returns the configured Return-key label.
+    #[must_use]
+    pub const fn submit_label(&self) -> SubmitLabel {
+        self.submit_label
+    }
+
+    /// Resolves the prompt against `env` into a backend-facing [`ResolvedFieldInput`].
+    #[must_use]
+    pub fn resolve(self, env: &Environment) -> ResolvedFieldInput {
+        ResolvedFieldInput {
+            prompt: self.prompt.resolve(env),
+            content_type: self.content_type,
+            submit_label: self.submit_label,
+            on_submit: self.on_submit,
+        }
+    }
+
+    /// Resolves the prompt against a fresh default [`Environment`].
+    #[must_use]
+    pub fn into_unscoped(self) -> ResolvedFieldInput {
+        self.resolve(&Environment::new())
+    }
+}
+
+/// Resolved input configuration shared by `TextFieldConfig` and `SecureFieldConfig`.
+#[derive(Debug, Clone)]
+pub struct ResolvedFieldInput {
+    prompt: TextConfig,
+    content_type: Option<ContentType>,
+    submit_label: SubmitLabel,
+    on_submit: Option<SharedAction>,
+}
+
+impl ResolvedFieldInput {
+    /// The resolved placeholder text shown when the field is empty.
+    #[must_use]
+    pub const fn prompt(&self) -> &TextConfig {
+        &self.prompt
+    }
+
+    /// The semantic content type the field declares for autofill.
+    #[must_use]
+    pub const fn content_type(&self) -> Option<ContentType> {
+        self.content_type
+    }
+
+    /// The label and action shown on the software keyboard's Return key.
+    #[must_use]
+    pub const fn submit_label(&self) -> SubmitLabel {
+        self.submit_label
+    }
+
+    /// The action run when the user submits the field with Return or Enter.
+    #[must_use]
+    pub const fn on_submit(&self) -> Option<&SharedAction> {
+        self.on_submit.as_ref()
+    }
+
+    /// Takes the resolved input apart into `(prompt, content_type, submit_label, on_submit)`.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        TextConfig,
+        Option<ContentType>,
+        SubmitLabel,
+        Option<SharedAction>,
+    ) {
+        (
+            self.prompt,
+            self.content_type,
+            self.submit_label,
+            self.on_submit,
+        )
+    }
+}
+
+impl From<ResolvedFieldInput> for FieldInput {
+    fn from(value: ResolvedFieldInput) -> Self {
+        Self {
+            prompt: Text::from(value.prompt),
+            content_type: value.content_type,
+            submit_label: value.submit_label,
+            on_submit: value.on_submit,
+        }
+    }
+}
+
 /// Enum representing the type of keyboard to use for text input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

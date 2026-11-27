@@ -1188,11 +1188,15 @@ pub fn components_block_31() -> impl View {
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_form_validation_prose() {
-    use waterui::form::secure::Secure;
+    use waterui::form::secure::{ContentType, Secure, SubmitLabel};
     use waterui::form::valid::{Required, Validator};
 
     let password = Binding::new(Secure::default());
-    let _ = secure("Password", &password);
+    let _ = secure("Password", &password)
+        .prompt("At least 12 characters")
+        .content_type(ContentType::NewPassword)
+        .submit_label(SubmitLabel::Done)
+        .on_submit(|| {});
     // `Required` validates several text types, so `.and` names the one it combines over.
     let _ = Validator::<Str>::and(Required, Required);
     let _ = <Required as Validator<Str>>::validate;
