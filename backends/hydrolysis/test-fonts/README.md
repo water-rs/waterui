@@ -44,6 +44,12 @@ Roboto, from the release the `water` CLI's font registry ships to applications
 (<https://github.com/googlefonts/roboto/releases/download/v2.138/roboto-android.zip>),
 licensed under the Apache License 2.0 (see `LICENSE` beside the files).
 
+Inter (`Inter-Regular.ttf`, `Inter-Medium.ttf`, `Inter-SemiBold.ttf`,
+`Inter-Bold.ttf`), from the `Inter` 4.0 release pinned in the CLI font registry
+(<https://github.com/rsms/inter/releases/download/v4.0/Inter-4.0.zip>), licensed
+under the SIL Open Font License 1.1; the static faces carry family name `Inter`
+across fontconfig, DirectWrite, and CoreText for weights 400–700.
+
 `NotoSans*-Regular` faces, `pyftsubset` subsets of the Noto Sans families the
 CLI ships to applications (`fonts-noto-cjk` and `fonts-noto-core` upstreams,
 <https://github.com/googlefonts/noto-cjk> and

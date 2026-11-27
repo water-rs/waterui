@@ -168,6 +168,14 @@ enum Op {
         transform: Affine,
         picture: cherenkov_record::Picture,
     },
+    #[cfg(all(target_vendor = "apple", hydrolysis_cherenkov))]
+    Image {
+        transform: Affine,
+        rect: Rect,
+        key: u64,
+        image: ImageData<Rgba8>,
+        sampling: cherenkov_record::Sampling,
+    },
     /// A platform text layout, drawn through the retained lease the painter
     /// handed over — the HWUI seam (water-rs/waterui#1811).
     #[cfg(any(test, hydrolysis_hwui))]
@@ -613,6 +621,44 @@ impl SceneResources {
         Ok(id)
     }
 
+    /// Registers a pre-built `ImageData<Rgba8>` (such as a Display P3 tinted
+    /// SF Symbol bitmap) under `key_id`, reusing existing uploads across frames.
+    #[cfg(all(target_vendor = "apple", hydrolysis_cherenkov))]
+    pub(crate) fn register_image_data(
+        &self,
+        names: &mut LoweringNames<'_>,
+        key_id: u64,
+        data: &ImageData<Rgba8>,
+    ) -> Result<ImageId, ResourceError> {
+        let key = ImageKey {
+            blob: key_id,
+            width: data.width(),
+            height: data.height(),
+            format: 0xFF,
+            alpha: u8::from(data.premultiplied),
+        };
+        if let Some(cached) = names.images.get(&key) {
+            return names
+                .table
+                .name(&cached.registered)
+                .ok_or_else(image_off_target);
+        }
+        let cached = if let Some(cached) = self.images.get(key) {
+            cached
+        } else {
+            let registered = self.inner.image(data.clone())?;
+            self.image_registrations
+                .set(self.image_registrations.get() + 1);
+            self.images.insert(key, registered)
+        };
+        let id = names
+            .table
+            .name(&cached.registered)
+            .ok_or_else(image_off_target)?;
+        names.images.insert(key, cached);
+        Ok(id)
+    }
+
     /// The engine paint for `brush`, registering any image it names and
     /// holding it for `names`' recording.
     ///
@@ -809,6 +855,25 @@ impl Recording {
         self.ops.push(Op::Picture { transform, picture });
     }
 
+    /// Draws a pre-built `ImageData<Rgba8>` into `rect` under `transform`.
+    #[cfg(all(target_vendor = "apple", hydrolysis_cherenkov))]
+    pub(crate) fn draw_image(
+        &mut self,
+        transform: Affine,
+        rect: Rect,
+        key: u64,
+        image: ImageData<Rgba8>,
+        sampling: cherenkov_record::Sampling,
+    ) {
+        self.ops.push(Op::Image {
+            transform,
+            rect,
+            key,
+            image,
+            sampling,
+        });
+    }
+
     /// Draws the platform text layout `resource` leases, under `transform`
     /// and clipped to `clip` in layout-local coordinates.
     /// Its default-coloured runs draw with `paint`, live, when given.
@@ -904,6 +969,8 @@ impl Recording {
                 | Op::BlurredRoundedRect { transform, .. }
                 | Op::LiveShadow { transform, .. }
                 | Op::Picture { transform, .. } => *transform = placement * *transform,
+                #[cfg(all(target_vendor = "apple", hydrolysis_cherenkov))]
+                Op::Image { transform, .. } => *transform = placement * *transform,
                 #[cfg(any(test, hydrolysis_hwui))]
                 Op::Text { transform, .. } => *transform = placement * *transform,
                 #[cfg(any(feature = "menu", test))]
@@ -1378,6 +1445,27 @@ fn lower(
                 });
             }
             Op::Picture { transform, picture } => recorder.picture(picture, *transform),
+            #[cfg(all(target_vendor = "apple", hydrolysis_cherenkov))]
+            Op::Image {
+                transform,
+                rect,
+                key,
+                image,
+                sampling,
+            } => {
+                let Ok(id) = resources
+                    .register_image_data(names, *key, image)
+                    .inspect_err(|error| {
+                        tracing::warn!(
+                            %error,
+                            "hydrolysis renderer: the engine did not register an image; the image op is skipped"
+                        );
+                    })
+                else {
+                    continue;
+                };
+                recorder.transform(*transform, |r| r.image(id, *rect, *sampling));
+            }
             #[cfg(any(test, hydrolysis_hwui))]
             Op::Text {
                 resource,
@@ -1973,6 +2061,8 @@ fn op_compact_static_cost(op: &Op) -> Option<usize> {
         #[cfg(any(feature = "menu", test))]
         Op::PopLayer => Some(1),
         Op::Picture { picture, .. } => picture_compact_static_cost(picture),
+        #[cfg(all(target_vendor = "apple", hydrolysis_cherenkov))]
+        Op::Image { .. } => None,
     }
 }
 

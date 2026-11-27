@@ -42,9 +42,8 @@ mod native_layout;
 #[cfg(preview_entry)]
 pub mod preview;
 pub mod resources;
-mod sf_symbol;
 
-pub use sf_symbol::SfSymbol;
+pub use waterui_backend_core::SfSymbol;
 
 #[cfg(target_os = "macos")]
 pub use apple_content::objc2_app_kit;

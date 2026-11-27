@@ -1,11 +1,11 @@
-//! Type-safe Apple SF Symbols provided directly by `waterui-apple`.
+//! Type-safe Apple SF Symbols shared by Apple-targeting backends.
 //!
-//! [`SfSymbol`] is realized natively through the Apple backend's
-//! backend-provided component path (`NativeView::realize_provided` via
-//! `AppleBackend::provided` / `provided_dyn`), never through `AppleView` /
-//! `AppleContent` or a cross-platform `SystemIcon` fallback. Every symbol in
-//! Apple's catalog is exposed as an associated constant gated on the build's
-//! Apple deployment target so nonexistent or too-new symbols fail to compile.
+//! [`SfSymbol`] exists only on Apple targets (`target_vendor = "apple"`). It is
+//! realized natively by `waterui-apple` and through the OS symbol catalog by
+//! `hydrolysis` on macOS and iOS, never through a cross-platform `SystemIcon`
+//! fallback. Every symbol in Apple's catalog is exposed as an associated
+//! constant gated on the build's Apple deployment target so nonexistent or
+//! too-new symbols fail to compile.
 
 use alloc::string::String;
 use core::any::Any;
@@ -77,7 +77,21 @@ impl From<SfSymbol> for String {
 /// [`SfSymbol`] catalog name without mounting a platform view or erasing to `AnyView`.
 #[derive(Debug, Default)]
 pub struct SfSymbolProbe {
-    pub(crate) name: Option<&'static str>,
+    name: Option<&'static str>,
+}
+
+impl SfSymbolProbe {
+    /// Creates an empty probe.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { name: None }
+    }
+
+    /// Returns the captured SF Symbol catalog name, if an [`SfSymbol`] answered the probe.
+    #[must_use]
+    pub const fn name(&self) -> Option<&'static str> {
+        self.name
+    }
 }
 
 impl NativeView for SfSymbol {
@@ -85,15 +99,9 @@ impl NativeView for SfSymbol {
         StretchAxis::None
     }
 
-    fn realize_provided(self, context: &mut dyn Any, env: &Environment) -> Result<(), Self> {
+    fn realize_provided(self, context: &mut dyn Any, _env: &Environment) -> Result<(), Self> {
         if let Some(probe) = context.downcast_mut::<SfSymbolProbe>() {
             probe.name = Some(self.name);
-            return Ok(());
-        }
-        if let Some(slot) = context.downcast_mut::<crate::apple_content::AppleProvidedSlot>() {
-            slot.leaf = Some(crate::components::image::realize_sf_symbol(
-                self, env, slot.mtm,
-            ));
             return Ok(());
         }
         Err(self)
@@ -141,10 +149,14 @@ mod tests {
     }
 
     #[test]
-    fn realize_provided_declines_non_apple_slots_on_static_and_erased_paths() {
+    fn realize_provided_answers_probe_and_declines_foreign_slots() {
         use waterui_core::backend::ErasedPayload;
 
         let env = Environment::new();
+        let mut probe = SfSymbolProbe::new();
+        assert_eq!(SfSymbol::HOUSE.realize_provided(&mut probe, &env), Ok(()));
+        assert_eq!(probe.name(), Some("house"));
+
         let mut foreign = 0_u8;
         assert_eq!(
             SfSymbol::HOUSE.realize_provided(&mut foreign, &env),

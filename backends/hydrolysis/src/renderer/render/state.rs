@@ -25,6 +25,8 @@ pub struct HydroState<E: crate::text::TextEngine> {
     /// measurement reads it through [`Self::measuring_text`], so a cached
     /// layout that measured text is laid out again when a face arrives.
     pub(crate) font_revision: nami::Binding<u64>,
+    #[cfg(all(target_vendor = "apple", hydrolysis_cherenkov))]
+    pub(crate) sf_symbols: crate::widgets::visual::sf_symbol::SfSymbolCache,
 }
 
 impl<E: crate::text::TextEngine> HydroState<E> {
@@ -36,6 +38,8 @@ impl<E: crate::text::TextEngine> HydroState<E> {
             counters: FrameWorkCounters::default(),
             layout_dependencies: None,
             font_revision: nami::Binding::new(0),
+            #[cfg(all(target_vendor = "apple", hydrolysis_cherenkov))]
+            sf_symbols: crate::widgets::visual::sf_symbol::SfSymbolCache::new(),
         }
     }
 

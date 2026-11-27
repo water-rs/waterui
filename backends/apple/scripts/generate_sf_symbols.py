@@ -3,8 +3,8 @@
 
 Reads Apple's `CoreGlyphs.bundle/Contents/Resources/name_availability.plist`,
 maps every SF Symbol name to a collision-free Rust `SCREAMING_SNAKE_CASE`
-constant on `waterui_apple::SfSymbol`, gates each constant on its release key,
-and writes the committed Rust sources under `backends/apple/src/`.
+constant on `waterui_backend_core::SfSymbol`, gates each constant on its release
+key, and writes the committed Rust sources under `backends/core/src/`.
 """
 
 from __future__ import annotations
@@ -238,7 +238,7 @@ def main() -> int:
         data = plistlib.load(fh)
     releases_src, catalog_src = build_sources(data)
 
-    src_dir = pathlib.Path(__file__).resolve().parent.parent / "src"
+    src_dir = pathlib.Path(__file__).resolve().parent.parent.parent / "core" / "src"
     releases_path = src_dir / "sf_symbol_releases.rs"
     catalog_path = src_dir / "sf_symbol_catalog.rs"
 

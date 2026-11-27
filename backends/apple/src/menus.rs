@@ -20,7 +20,7 @@ use waterui_controls::IconSlot;
 use waterui_core::layout::ProposalSize;
 
 use crate::contract::{Held, RenderContext};
-use crate::sf_symbol::SfSymbolProbe;
+use waterui_backend_core::SfSymbolProbe;
 
 #[cfg(target_os = "macos")]
 pub type PlatformMenuImage = cocoa_ui::objc2_app_kit::NSImage;
@@ -39,7 +39,7 @@ pub fn resolve_menu_icon(
     };
     let mut probe = SfSymbolProbe::default();
     if slot.probe(&mut probe, env)
-        && let Some(symbol) = probe.name
+        && let Some(symbol) = probe.name()
     {
         return (Some(String::from(symbol)), None);
     }

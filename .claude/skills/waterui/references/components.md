@@ -471,10 +471,12 @@ Label::new(text!("{sender}, {subject}"), move || message_row(message.clone()))
 ```
 
 `.icon(..)` accepts any cloneable view, not only an icon-set glyph. On Apple
-platforms, `waterui_apple::SfSymbol::HOUSE` (and the rest of Apple's typed
-catalog) is realized natively by the Apple backend and projected directly into
-menus, toolbars, and tab bars; other icons are rasterized when placed in
-platform chrome. `.icon(..)` panics on a `Label::new` label.
+platforms, `SfSymbol::HOUSE` (defined in `waterui-backend-core` under
+`target_vendor = "apple"` and re-exported by both `waterui-apple` and
+`hydrolysis`) is realized natively by the Apple backend — and projected directly
+into menus, toolbars, and tab bars — as well as through the OS symbol catalog by
+Hydrolysis on macOS and iOS; other icons are rasterized when placed in platform
+chrome. `.icon(..)` panics on a `Label::new` label.
 
 ## Menus, commands, context menus
 

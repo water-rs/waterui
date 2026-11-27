@@ -71,6 +71,8 @@ pub mod overlay;
 #[cfg(all(test, feature = "runtime"))]
 mod parked_executor;
 pub mod scroll;
+#[cfg(target_vendor = "apple")]
+mod sf_symbol;
 #[cfg(feature = "runtime")]
 pub mod task;
 #[cfg(feature = "runtime")]
@@ -146,6 +148,8 @@ pub use dynamic::DynamicNode;
 pub use hooked::SlotView;
 pub use hooked::{Hooked, HookedFamily};
 pub use native_backend::{NativeBackend, Realize, report_unprovided};
+#[cfg(target_vendor = "apple")]
+pub use sf_symbol::{SfSymbol, SfSymbolProbe};
 pub use waterui_core::backend::{HookSlot, HookableParent, ParentHookScope, offer_hookable_parent};
 pub use waterui_meta::mark_reached;
 

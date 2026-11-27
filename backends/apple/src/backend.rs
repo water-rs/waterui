@@ -1321,9 +1321,10 @@ impl NativeBackend for AppleBackend {
         )
     }
 
-    // `AppleView<T>` and `SfSymbol` are components `waterui-apple` provides outside
-    // `NativeBackend` via `NativeView::realize_provided` against `AppleProvidedSlot`;
-    // every other payload outside `NativeBackend` is a contract violation.
+    // `SfSymbol` (from `waterui-backend-core`) and `AppleView<T>` (via
+    // `AppleProvidedSlot`) are components `waterui-apple` provides outside
+    // `NativeBackend`; every other payload outside `NativeBackend` is a
+    // contract violation.
 
     fn provided<T: NativeView + 'static>(
         &mut self,
@@ -1332,6 +1333,12 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let _ = self.entry(env);
+        let native = match waterui_core::backend::cast::<T, crate::SfSymbol>(native) {
+            Ok(symbol) => {
+                return crate::components::image::realize_sf_symbol(symbol, env, self.mtm);
+            }
+            Err(native) => native,
+        };
         let mut slot = crate::apple_content::AppleProvidedSlot {
             mtm: self.mtm,
             leaf: None,
@@ -1352,6 +1359,9 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         let _ = self.entry(env);
+        if let Some(symbol) = native.take::<crate::SfSymbol>() {
+            return crate::components::image::realize_sf_symbol(symbol, env, self.mtm);
+        }
         let mut slot = crate::apple_content::AppleProvidedSlot {
             mtm: self.mtm,
             leaf: None,

@@ -34,8 +34,8 @@ use waterui_core::layout::ProposalSize;
 
 use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext, Renderer};
 use crate::proposal::{Placement, deliver};
-use crate::sf_symbol::SfSymbolProbe;
 use crate::transition::live::LiveChild;
+use waterui_backend_core::SfSymbolProbe;
 
 use super::extract_title_text;
 
@@ -245,7 +245,7 @@ fn bar_item(item: ResolvedNavigationToolbarItem<Held>, ctx: &RenderContext<'_>) 
     let icon = icon.map(|slot| {
         let mut probe = SfSymbolProbe::default();
         if slot.probe(&mut probe, ctx.env())
-            && let Some(symbol) = probe.name
+            && let Some(symbol) = probe.name()
         {
             BarItemIcon::System(String::from(symbol))
         } else {

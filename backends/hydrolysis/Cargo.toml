@@ -148,13 +148,41 @@ accesskit_ios = { version = "0.2.2", default-features = false, optional = true }
 # Routes a panic's message and location through `tracing`, so it reaches the
 # unified log on a device whose stderr nothing reads.
 tracing-panic = { workspace = true, optional = true }
+# Runtime SF Symbol catalog lookup and rasterization on iOS (`SfSymbol`).
+objc2-foundation = { workspace = true, optional = true, features = ["NSGeometry", "NSString"] }
+objc2-ui-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+    "UIFont",
+    "UIGraphics",
+    "UIImage",
+    "UIImageConfiguration",
+    "UIImageSymbolConfiguration",
+], optional = true }
+
+# Shared Apple-platform SF Symbol contract (`hydrolysis::SfSymbol`) and
+# CoreGraphics bitmap rasterization for Cherenkov builds. Linking
+# `waterui-backend-core` unconditionally on Apple targets mirrors Android's
+# `AndroidView` re-export so Apple consumers can depend on `hydrolysis` with
+# `default-features = false`.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+waterui-backend-core = { workspace = true, default-features = false }
+waterui-icon = { workspace = true, optional = true }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["CFCGTypes"], optional = true }
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+    "CGBitmapContext",
+    "CGColorSpace",
+    "CGContext",
+    "CGImage",
+], optional = true }
+
+[target.'cfg(not(any(target_os = "android", target_vendor = "apple")))'.dependencies]
+# Non-Android, non-Apple builds link `waterui-backend-core` only when a runtime
+# painter (`gpu` or `cpu`) or component feature is enabled.
+waterui-backend-core = { workspace = true, default-features = false, optional = true }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-# Non-Android builds link `waterui-backend-core` only when a runtime painter
-# (`gpu` or `cpu`) or component feature is enabled; Android links it
-# unconditionally so plugin crates using `AndroidContent` / `AndroidView` can
-# depend on `hydrolysis` with `default-features = false`.
-waterui-backend-core = { workspace = true, default-features = false, optional = true }
 waterui-accessibility = { workspace = true, optional = true }
 
 # The GPU video player realizing `Video` off the web (the `video-gpu`
@@ -203,13 +231,18 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSAppearance",
     "NSApplication",
     "NSEvent",
+    "NSFont",
     "NSGraphics",
+    "NSGraphicsContext",
+    "NSImage",
     "NSResponder",
     "NSScreen",
     "NSView",
     "NSVisualEffectView",
     "NSWindow",
     "NSWorkspace",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
     "objc2-quartz-core",
 ] }
 objc2-foundation = { workspace = true, optional = true, features = [
@@ -565,6 +598,12 @@ gpu = [
     "waterui-backend-core/runtime",
     "dep:waterui-watcher-set",
     "dep:cocoa-ui",
+    "dep:objc2-app-kit",
+    "dep:objc2-core-foundation",
+    "dep:objc2-core-graphics",
+    "dep:objc2-foundation",
+    "dep:objc2-ui-kit",
+    "dep:waterui-icon",
     "dep:tracing-panic",
     "waterui-backend-core/gpu",
     "waterui-graphics/gpu",
@@ -611,6 +650,12 @@ cpu = [
     "dep:softbuffer",
     "dep:icu_properties",
     "dep:icu_locale",
+    "dep:objc2-app-kit",
+    "dep:objc2-core-foundation",
+    "dep:objc2-core-graphics",
+    "dep:objc2-foundation",
+    "dep:objc2-ui-kit",
+    "dep:waterui-icon",
     "waterui-text/engine",
 ]
 # Development inspector endpoint and frame/tree recorders, enabled by the CLI

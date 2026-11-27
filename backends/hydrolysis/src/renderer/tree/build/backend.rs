@@ -17,7 +17,11 @@ use waterui_backend_core::{
 };
 #[cfg(waterui_feature = "navigation")]
 use waterui_core::backend::MapSlots;
-#[cfg(any(feature = "menu", hydrolysis_video_plane))]
+#[cfg(any(
+    feature = "menu",
+    hydrolysis_video_plane,
+    all(target_vendor = "apple", hydrolysis_cherenkov)
+))]
 use waterui_core::backend::cast;
 use waterui_core::backend::{ChildSlot, ErasedPayload};
 use waterui_core::metadata::MetadataKey;
@@ -1776,6 +1780,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             Ok(()) => return provided::realize_hydro_provided_slot(self.renderer, slot, env),
             Err(native) => native,
         };
+        #[cfg(all(target_vendor = "apple", hydrolysis_cherenkov))]
+        let native = match cast::<T, waterui_backend_core::SfSymbol>(native) {
+            Ok(symbol) => {
+                mark_reached!("sf_symbol");
+                return RenderNode::build_sf_symbol(symbol, env, self.renderer);
+            }
+            Err(native) => native,
+        };
         // The GPU video player's host (owned by external `waterui-video-gpu`).
         #[cfg(hydrolysis_video_plane)]
         let native = match cast::<T, waterui_video_gpu::AndroidVideoSurfaceHost>(native) {
@@ -1840,6 +1852,11 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let mut slot = provided::HydroProvidedSlot::default();
         if native.realize_provided(&mut slot, env) {
             return provided::realize_hydro_provided_slot(self.renderer, slot, env);
+        }
+        #[cfg(all(target_vendor = "apple", hydrolysis_cherenkov))]
+        if let Some(symbol) = native.take::<waterui_backend_core::SfSymbol>() {
+            mark_reached!("sf_symbol");
+            return RenderNode::build_sf_symbol(symbol, env, self.renderer);
         }
         #[cfg(hydrolysis_video_plane)]
         if let Some(host) = native.take::<waterui_video_gpu::AndroidVideoSurfaceHost>() {
