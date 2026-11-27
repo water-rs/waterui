@@ -135,7 +135,7 @@ without driving the app, the `preview` tool renders a `#[preview]` function or a
 expression like `text("hi")` and returns the PNG directly. Its arguments mirror
 `water preview`: `target` (a function path such as `views::home`, or the expression
 when `expr: true`), `frame` (`WIDTHxHEIGHT`, default `375x667`), `backend`
-(`apple`/`hydrolysis`), `theme` (`material3`), `platform`
+(`apple`/`hydrolysis`), `theme` (`material3`/`glass`), `platform`
 (`ios`/`macos`/`android`/`linux`/`windows`), `device` (Android only),
 `content_timeout` (seconds, default `10`). Frame benchmarks are a CLI concern —
 `water bench`, not MCP.

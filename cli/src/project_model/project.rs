@@ -628,6 +628,17 @@ impl Project {
         &self.manifest
     }
 
+    /// Return a copy whose in-memory manifest carries `theme` as its Hydrolysis
+    /// widget-theme selection, without writing `Water.toml`.
+    ///
+    /// Command-line overrides apply before the managed backend is generated;
+    /// the project's manifest on disk remains the persistent default.
+    #[must_use]
+    pub fn with_hydrolysis_theme(mut self, theme: crate::backend::HydrolysisTheme) -> Self {
+        self.manifest.set_hydrolysis_theme(theme);
+        self
+    }
+
     /// The framework this project resolves generated code against — the
     /// channel selection `Water.toml` records, or the checkout `waterui_path`
     /// names.
@@ -3997,6 +4008,13 @@ impl Manifest {
     #[must_use]
     pub const fn hydrolysis(&self) -> Option<&crate::backend::HydrolysisConfig> {
         self.hydrolysis.as_ref()
+    }
+
+    /// Set the Hydrolysis widget theme selection (`[hydrolysis] theme`).
+    pub fn set_hydrolysis_theme(&mut self, theme: crate::backend::HydrolysisTheme) {
+        self.hydrolysis
+            .get_or_insert_with(crate::backend::HydrolysisConfig::default)
+            .set_theme(theme);
     }
 
     /// Path to local `WaterUI` repository for dev mode.

@@ -172,6 +172,7 @@ bundle_identifier = "dev.example.myapp"
 backend = "hydrolysis"
 
 [hydrolysis]                              # optional
+theme = "material3"                       # widget theme: "material3" (default) or "glass"
 painter = "gpu"                           # Android painter: "gpu" (default) or "hwui"
 
 [web]                                     # optional: only the CLI reads it
@@ -416,6 +417,7 @@ water run --logs debug                 # stream device logs at debug and above
 water run --native-logs                # include native platform logs too — noisy
 water run --env NAME                   # export NAME from this shell into the launched app (repeatable)
 water run --release                    # also --profiling (optimized + symbols) and --debug (fully unoptimized)
+water run --backend hydrolysis --theme glass   # one run overrides [hydrolysis] theme (material3 | glass)
 water run --platform android --painter hwui  # Android + hydrolysis only: the painter (gpu | hwui)
 water run --no-dev-server              # an include_web! mount renders the staged bundle, not the dev server
 water run --tui                        # run in this terminal on the experimental TUI backend
@@ -472,7 +474,9 @@ the defaults below apply. `water create` leaves the tables absent.
 
 `apple` and `hydrolysis` are the mainline backends; `gtk4` (the Linux default) and `winui` are
 experimental, with no stability guarantee, and the CLI asks for confirmation (`-y`) before
-building with one. On Android, `[hydrolysis] painter` (or `--painter`) picks `gpu` or `hwui`.
+building with one. `[hydrolysis] theme` picks the widget theme (`material3` by default,
+or `glass`); `water run --theme` overrides it for that run. On Android,
+`[hydrolysis] painter` (or `--painter`) picks `gpu` or `hwui`.
 
 Previews support only `apple` on iOS/macOS and `hydrolysis` on macOS/Linux/Windows/Android.
 A resolved backend without preview support is an error, not a fallback. For Linux

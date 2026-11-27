@@ -447,4 +447,8 @@ is an error; see [backend selection](project.md#platforms-and-backends).
 
 ```bash
 water preview my_view --backend hydrolysis --theme material3 --output preview.png
+water preview my_view --backend hydrolysis --theme glass --output preview-glass.png
 ```
+
+Interactive Hydrolysis runs use `[hydrolysis] theme` in `Water.toml`, with
+`water run --theme material3|glass` as a one-run override.

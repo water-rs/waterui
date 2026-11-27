@@ -71,6 +71,19 @@ impl HydrolysisRender {
     }
 }
 
+/// The widget theme a Hydrolysis application runs with — `[hydrolysis] theme` in
+/// `Water.toml`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum HydrolysisTheme {
+    /// Material Design 3, the framework default.
+    #[default]
+    Material3,
+    /// The translucent glass theme package (`hydrolysis-glass`).
+    Glass,
+}
+
 /// The `[hydrolysis]` table: selections the project author declares for
 /// the Hydrolysis backend.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -84,6 +97,9 @@ pub struct HydrolysisConfig {
     /// ([`HydrolysisRender::default_for`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     render: Option<HydrolysisRender>,
+    /// The widget theme the generated launcher constructs. Absent means Material 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    theme: Option<HydrolysisTheme>,
 }
 impl HydrolysisConfig {
     /// A `HydrolysisConfig` carrying each of its fields.
@@ -91,8 +107,24 @@ impl HydrolysisConfig {
     pub const fn new(
         painter: Option<crate::hydrolysis::android::HydrolysisAndroidPainter>,
         render: Option<HydrolysisRender>,
+        theme: Option<HydrolysisTheme>,
     ) -> Self {
-        Self { painter, render }
+        Self {
+            painter,
+            render,
+            theme,
+        }
+    }
+
+    /// The widget theme the generated launcher constructs, when the project chose one.
+    #[must_use]
+    pub const fn theme(&self) -> Option<HydrolysisTheme> {
+        self.theme
+    }
+
+    /// Set the widget theme the generated launcher constructs.
+    pub const fn set_theme(&mut self, theme: HydrolysisTheme) {
+        self.theme = Some(theme);
     }
 
     /// The Cherenkov render backends a desktop or offscreen build compiles,
@@ -250,4 +282,18 @@ pub async fn reinit_backend<B: Backend>(project: &Project) -> Result<B, FailToIn
 
     // Re-scaffold templates (cache dirs untouched)
     B::init(project).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HydrolysisConfig, HydrolysisTheme};
+
+    #[test]
+    fn hydrolysis_config_parses_widget_theme() {
+        let config: HydrolysisConfig = toml::from_str("theme = \"glass\"").expect("theme parses");
+        assert_eq!(config.theme(), Some(HydrolysisTheme::Glass));
+
+        let config: HydrolysisConfig = toml::from_str("").expect("empty config parses");
+        assert_eq!(config.theme(), None);
+    }
 }

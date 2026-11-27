@@ -168,6 +168,12 @@ pub struct Args {
     #[arg(short, long, value_enum)]
     backend: Option<TargetBackend>,
 
+    /// Widget theme the Hydrolysis app runs with (material3, glass).
+    /// Only valid with `--backend hydrolysis`; `[hydrolysis] theme` in
+    /// `Water.toml` is the project default when omitted.
+    #[arg(long, value_enum)]
+    theme: Option<waterui_cli::backend::HydrolysisTheme>,
+
     /// Android painter the Hydrolysis host draws with (gpu, hwui).
     /// Only valid with `--platform android --backend hydrolysis`; the
     /// `[hydrolysis] painter` table in `Water.toml` is the project
@@ -260,6 +266,7 @@ impl std::fmt::Debug for Args {
             .field("features", &self.features)
             .field("platform", &self.platform)
             .field("backend", &self.backend)
+            .field("theme", &self.theme)
             .field("painter", &self.painter)
             .field("device", &self.device)
             .field("path", &self.path)
@@ -555,6 +562,9 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
     {
         bail!("--painter only applies to `--platform android --backend hydrolysis`");
     }
+    if args.theme.is_some() && backend != TargetBackend::Hydrolysis {
+        bail!("--theme only applies to `--backend hydrolysis`");
+    }
 
     if backend.is_experimental()
         && !super::confirm_experimental_backend(shell, backend_name(backend), args.yes)?
@@ -562,6 +572,11 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
         return Ok(None);
     }
 
+    let project = if let Some(theme) = args.theme {
+        project.with_hydrolysis_theme(theme)
+    } else {
+        project
+    };
     let project = Box::pin(super::ensure_generated_backend(shell, project, backend)).await?;
 
     Ok(Some(RunContext {
@@ -1769,6 +1784,7 @@ mod tests {
             features: super::super::FeatureArgs::default(),
             platform: None,
             backend: None,
+            theme: None,
             painter: None,
             device: None,
             path: PathBuf::from("."),
@@ -1791,6 +1807,16 @@ mod tests {
         for secret in ["SECRET_NAME", "secret-value", "OTHER_DECL"] {
             assert!(!debug.contains(secret), "{debug}");
         }
+    }
+
+    #[test]
+    fn args_parse_the_hydrolysis_theme_override() {
+        let args = run_args(&["--theme", "glass"]);
+        assert_eq!(
+            args.theme,
+            Some(waterui_cli::backend::HydrolysisTheme::Glass)
+        );
+        assert_eq!(run_args(&[]).theme, None);
     }
 
     #[test]
