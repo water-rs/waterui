@@ -36,7 +36,7 @@ use objc2_ui_kit::{
     UINavigationBarDelegate, UINavigationController, UINavigationControllerDelegate,
     UINavigationItem, UINavigationItemLargeTitleDisplayMode, UIScrollView, UISearchBar,
     UISearchBarDelegate, UISearchController, UISearchControllerDelegate, UISearchResultsUpdating,
-    UITransitionContextFromViewControllerKey, UIViewController,
+    UITransitionContextFromViewControllerKey, UIView, UIViewController,
     UIViewControllerTransitionCoordinator, UIViewControllerTransitionCoordinatorContext,
 };
 
