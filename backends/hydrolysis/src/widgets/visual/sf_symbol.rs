@@ -440,7 +440,8 @@ fn with_ios_symbol<R>(
 #[cfg(target_os = "ios")]
 fn platform_measure_symbol(name: &str, point_size: f32, weight: FontWeight) -> Option<LayoutSize> {
     with_ios_symbol(name, point_size, weight, |image| {
-        let size = image.size();
+        // SAFETY: `image` is a valid `UIImage` returned by UIKit; `size` reads its point dimensions.
+        let size = unsafe { image.size() };
         Some(LayoutSize::new(
             f64_as_f32(size.width.max(0.0)),
             f64_as_f32(size.height.max(0.0)),
@@ -458,7 +459,8 @@ fn platform_rasterize_symbol(
     use objc2_ui_kit::{UIGraphicsPopContext, UIGraphicsPushContext};
 
     with_ios_symbol(name, point_size, weight, |image| {
-        let pt_size = image.size();
+        // SAFETY: `image` is a valid `UIImage` returned by UIKit; `size` reads its point dimensions.
+        let pt_size = unsafe { image.size() };
         if pt_size.width <= 0.0 || pt_size.height <= 0.0 {
             return None;
         }
@@ -476,12 +478,14 @@ fn platform_rasterize_symbol(
             CGContext::translate_ctm(Some(&cg_ctx), 0.0, f64::from(height_u32));
             CGContext::scale_ctm(Some(&cg_ctx), scale_x, -scale_y);
 
-            UIGraphicsPushContext(&cg_ctx);
+            // SAFETY: `cg_ctx` is a valid bitmap `CGContext` that stays alive until popped below.
+            unsafe { UIGraphicsPushContext(&cg_ctx) };
             image.drawInRect(CGRect::new(
                 CGPoint::ZERO,
                 CGSize::new(pt_size.width, pt_size.height),
             ));
-            UIGraphicsPopContext();
+            // SAFETY: Balances the matching `UIGraphicsPushContext` call immediately above.
+            unsafe { UIGraphicsPopContext() };
         }
         Some(CachedMask {
             point_size: LayoutSize::new(f64_as_f32(pt_size.width), f64_as_f32(pt_size.height)),
