@@ -741,13 +741,6 @@ impl PendingState {
         }
     }
 
-    fn fork_for_clone(&self) -> Self {
-        Self {
-            in_flight: binding(false),
-            mirror: Rc::new(RefCell::new(self.mirror.borrow().clone())),
-        }
-    }
-
     fn is_pending(&self) -> bool {
         self.in_flight.snapshot()
     }
@@ -787,6 +780,7 @@ impl Drop for PendingGuard {
 /// Pending-state storage carried by a [`Button`]: either a live tracker owned
 /// by `.pending(..)` / `.action_async(..)`, or a read-only signal preserved
 /// across a [`ButtonConfig`] / [`ButtonStyleTarget`] round-trip.
+#[derive(Clone)]
 enum ButtonPending {
     Live(PendingState),
     Signal(Computed<bool>),
@@ -797,13 +791,6 @@ impl ButtonPending {
         match self {
             Self::Live(state) => state.signal(),
             Self::Signal(signal) => signal.clone(),
-        }
-    }
-
-    fn fork_for_clone(&self) -> Self {
-        match self {
-            Self::Live(state) => Self::Live(state.fork_for_clone()),
-            Self::Signal(signal) => Self::Signal(signal.clone()),
         }
     }
 }
@@ -841,6 +828,7 @@ fn button_interaction_signals(
     (report, interaction)
 }
 
+#[cfg(feature = "toggle")]
 pub(crate) fn interaction_signals(
     env: &Environment,
 ) -> (Binding<InteractionState>, Computed<InteractionState>) {
@@ -1603,7 +1591,7 @@ impl<L: Clone, Action: Clone, Style: Clone> Clone for Button<L, Action, Style> {
             explicit_style: self.explicit_style,
             role: self.role,
             size: self.size,
-            pending: self.pending.as_ref().map(ButtonPending::fork_for_clone),
+            pending: self.pending.clone(),
         }
     }
 }
