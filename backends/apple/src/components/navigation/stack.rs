@@ -457,24 +457,7 @@ mod platform {
             let state = Rc::new(RefCell::new(view.take_state()));
             let transition = page_transition(view.transition(), &self.transition);
             let mut keep = KeepAlive::default();
-            let built_items = Rc::new(crate::components::navigation::BuiltBarItems::build(
-                &bar,
-                &mut keep,
-                |item, keep| self.button(item, keep),
-            ));
-            let mut page = self.nav_page(&bar, &built_items, root, &state);
-            built_items.watch_visibility(&mut keep, {
-                let controller = controller.clone();
-                let built_items = Rc::clone(&built_items);
-                move || {
-                    let title_view = built_items.visible_title_view();
-                    let leading = built_items.visible_leading();
-                    let trailing = built_items.visible_trailing();
-                    let bottom = built_items.visible_bottom();
-                    controller.set_items(title_view.as_deref(), &leading, &trailing, &bottom);
-                }
-            });
-            keep.keep(built_items);
+            let mut page = self.nav_page(&bar, root, &controller, &mut keep, &state);
             if let Some(search) = bar.search.as_ref() {
                 page.search = Some(attach_search(
                     search,
@@ -542,24 +525,43 @@ mod platform {
         }
 
         /// Assembles the `NavPage` record from a page's bar state —
-        /// title, principal, item buttons and large-title mode — plus
+        /// title, principal, item buttons and large-title mode — watches each
+        /// item's reactive visibility to refresh `controller`, and attaches
         /// the back affordance a non-root page carries.
         fn nav_page(
             &self,
             bar: &BarState,
-            items: &crate::components::navigation::BuiltBarItems,
             root: bool,
+            controller: &Retained<NavContentController>,
+            keep: &mut KeepAlive,
             state: &Rc<RefCell<NavigationDestinationState>>,
         ) -> NavPage {
+            let built_items = Rc::new(crate::components::navigation::BuiltBarItems::build(
+                bar,
+                keep,
+                |item, keep| self.button(item, keep),
+            ));
             let mut page = NavPage {
                 title: bar.title.text.clone().unwrap_or_default(),
-                title_view: items.visible_title_view(),
+                title_view: built_items.visible_title_view(),
                 subtitle: bar.subtitle.text.clone(),
-                leading: items.visible_leading(),
-                trailing: items.visible_trailing(),
-                bottom: items.visible_bottom(),
+                leading: built_items.visible_leading(),
+                trailing: built_items.visible_trailing(),
+                bottom: built_items.visible_bottom(),
                 ..NavPage::default()
             };
+            built_items.watch_visibility(keep, {
+                let controller = controller.clone();
+                let built_items = Rc::clone(&built_items);
+                move || {
+                    let title_view = built_items.visible_title_view();
+                    let leading = built_items.visible_leading();
+                    let trailing = built_items.visible_trailing();
+                    let bottom = built_items.visible_bottom();
+                    controller.set_items(title_view.as_deref(), &leading, &trailing, &bottom);
+                }
+            });
+            keep.keep(built_items);
             page.large_title = match bar.display_mode {
                 NavigationTitleDisplayMode::Automatic => LargeTitle::Automatic,
                 NavigationTitleDisplayMode::Inline => LargeTitle::Inline,
