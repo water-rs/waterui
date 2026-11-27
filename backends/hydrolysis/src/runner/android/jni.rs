@@ -104,7 +104,7 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// 35 passes the initial `Settings.Global.ANIMATOR_DURATION_SCALE == 0` flag
 /// through `nativeCreateSession` and adds `nativeSetReduceMotion` to push
 /// live system setting changes.
-pub const JNI_SCHEMA: jint = 35;
+pub const JNI_SCHEMA: jint = 36;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]

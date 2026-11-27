@@ -6,6 +6,8 @@ use crate::renderer::measure_secure_field_size_with_label_size;
 #[cfg(feature = "text-field")]
 use crate::renderer::measure_text_field_size_with_label_size;
 use crate::renderer::text_editing::CaretPaints;
+#[cfg(feature = "text-field")]
+use crate::renderer::text_editing::TextInputOptions;
 use crate::renderer::{
     HeldChild, HydroState, HydrolysisRenderer, RetainedSubview, TextInputModel,
     TextInputTargetRegistration, TextSelectionSlot, WidgetRenderContext, clamp_to_char_boundary,
@@ -335,11 +337,19 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
             .field
             .bind(ctx, &interaction_key, field_rect, env, disabled, is_focused);
     let selection_slot = Rc::clone(&state.selection_slot);
+    let input_options = TextInputOptions {
+        keyboard: state.config.keyboard(),
+        content_type: state.config.content_type(),
+        autocapitalization: state.config.autocapitalization(),
+        autocorrect: state.config.autocorrect(),
+        submit_label: state.config.submit_label(),
+    };
     let input_model = TextInputModel::TextField {
         value: value_binding.clone(),
         line_limit,
         selection_menu,
         on_submit,
+        input: input_options,
     };
     let (prompt, value, preedit, preedit_caret) = {
         let (preedit, preedit_caret) = if is_focused {
@@ -1331,6 +1341,13 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
                     line_limit,
                     selection_menu,
                     on_submit,
+                    input: TextInputOptions {
+                        keyboard: state.config.keyboard(),
+                        content_type: state.config.content_type(),
+                        autocapitalization: state.config.autocapitalization(),
+                        autocorrect: state.config.autocorrect(),
+                        submit_label: state.config.submit_label(),
+                    },
                 },
                 selection: Rc::clone(&state.selection_slot),
                 env: env.clone(),

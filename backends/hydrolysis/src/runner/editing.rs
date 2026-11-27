@@ -37,6 +37,7 @@ use std::ops::Range;
 
 #[cfg(any(android_platform, test))]
 use crate::renderer::TextContextMenuAction;
+use crate::renderer::text_editing::TextInputOptions;
 use crate::renderer::{FocusedEditorSnapshot, InteractionKey, SemanticCore};
 use crate::text::{TextLayout as _, TextPosition};
 
@@ -115,6 +116,7 @@ pub struct EditingState {
     pub(crate) password: bool,
     pub(crate) single_line: bool,
     pub(crate) has_submit: bool,
+    pub(crate) input: TextInputOptions,
 }
 
 /// The cursor-anchor payload a subscribed IME receives: the insertion
@@ -225,6 +227,7 @@ pub struct EditingSession {
     password: bool,
     single_line: bool,
     has_submit: bool,
+    input: TextInputOptions,
     /// `requestCursorUpdates` subscription: mode bits and (API 33+) filter.
     #[cfg(any(android_platform, test))]
     cursor_update_mode: i32,
@@ -303,6 +306,7 @@ impl EditingSession {
             password: self.password,
             single_line: self.single_line,
             has_submit: self.has_submit,
+            input: self.input,
         }
     }
 
@@ -356,7 +360,8 @@ impl EditingSession {
                 || self.sel_start != 0
                 || self.sel_end != 0
                 || self.composing.is_some()
-                || self.has_submit;
+                || self.has_submit
+                || self.input != TextInputOptions::default();
             self.text.clear();
             self.sel_start = 0;
             self.sel_end = 0;
@@ -364,6 +369,7 @@ impl EditingSession {
             self.password = false;
             self.single_line = false;
             self.has_submit = false;
+            self.input = TextInputOptions::default();
             if changed {
                 self.revision += 1;
                 self.dirty = true;
@@ -377,7 +383,8 @@ impl EditingSession {
             || composing != self.composing
             || single_line != self.single_line
             || snap.password != self.password
-            || snap.has_submit != self.has_submit;
+            || snap.has_submit != self.has_submit
+            || snap.input != self.input;
         // While mirror mutations await their deferred batch flush the
         // renderer's snapshot is stale — adopting it would destroy the
         // ops' edits. The mirror stays authoritative until the flush runs.
@@ -389,6 +396,7 @@ impl EditingSession {
             self.single_line = single_line;
             self.password = snap.password;
             self.has_submit = snap.has_submit;
+            self.input = snap.input;
             if changed {
                 self.revision += 1;
                 self.dirty = true;
@@ -1469,5 +1477,63 @@ mod tests {
         let filtered = session.anchor_info(&snapshot).expect("subscribed");
         assert_eq!(filtered.char_bounds, []);
         assert!(filtered.editor_bounds.is_none());
+    }
+
+    #[test]
+    fn editing_state_carries_resolved_input_options() {
+        use waterui_controls::input::{Capitalization, ContentType, KeyboardType, SubmitLabel};
+
+        let email_val = Binding::new(Str::default());
+        let price_val = Binding::new(Str::default());
+        let name_val = Binding::new(Str::default());
+        let view = AnyView::new(waterui_layout::stack::vstack((
+            field("Email", &email_val)
+                .content_type(ContentType::EmailAddress)
+                .size(300.0, 60.0),
+            field("Price", &price_val)
+                .keyboard(KeyboardType::Decimal)
+                .submit_label(SubmitLabel::Done)
+                .size(300.0, 60.0),
+            field("Name", &name_val)
+                .autocapitalization(Capitalization::Words)
+                .autocorrect(false)
+                .submit_label(SubmitLabel::Next)
+                .size(300.0, 60.0),
+        )));
+        let mut runtime = runtime_with(view);
+        let start = Instant::now();
+        settled(&mut runtime, start);
+
+        let mut session = EditingSession::new();
+        press_text_input(&mut runtime, 0);
+        settled(&mut runtime, start + Duration::from_millis(100));
+        assert!(sync(&mut session, &runtime));
+        let email_state = session.state();
+        assert_eq!(email_state.input.keyboard, KeyboardType::Email);
+        assert_eq!(
+            email_state.input.content_type,
+            Some(ContentType::EmailAddress)
+        );
+        assert_eq!(email_state.input.autocapitalization, Capitalization::None);
+        assert!(!email_state.input.autocorrect);
+        assert_eq!(email_state.input.submit_label, SubmitLabel::Return);
+
+        press_text_input(&mut runtime, 1);
+        settled(&mut runtime, start + Duration::from_millis(200));
+        assert!(sync(&mut session, &runtime));
+        let price_state = session.state();
+        assert_eq!(price_state.input.keyboard, KeyboardType::Decimal);
+        assert_eq!(price_state.input.autocapitalization, Capitalization::None);
+        assert!(!price_state.input.autocorrect);
+        assert_eq!(price_state.input.submit_label, SubmitLabel::Done);
+
+        press_text_input(&mut runtime, 2);
+        settled(&mut runtime, start + Duration::from_millis(300));
+        assert!(sync(&mut session, &runtime));
+        let name_state = session.state();
+        assert_eq!(name_state.input.keyboard, KeyboardType::Text);
+        assert_eq!(name_state.input.autocapitalization, Capitalization::Words);
+        assert!(!name_state.input.autocorrect);
+        assert_eq!(name_state.input.submit_label, SubmitLabel::Next);
     }
 }

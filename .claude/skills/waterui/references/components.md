@@ -333,12 +333,20 @@ field("Email", &address)                    // &Binding<Str>
 field("Search", &query).on_submit(handler)  // Return in a line-limited field runs it
 TextField::new("Username", &name).prompt("Enter your username")   // placeholder ≠ label
 TextField::new("Notes", &notes).line_limit(None::<NonZeroUsize>) // multi-line: Return inserts a line break
-use waterui::component::text_field::{ContentType, KeyboardType};   // NOT in the prelude
+use waterui::component::text_field::{
+    Capitalization, ContentType, KeyboardType, SubmitLabel,
+};   // NOT in the prelude
 // .content_type declares what the field means, for autofill — it is what
-// makes Apple offer the received SMS code; pair it with .keyboard(..)
+// makes Apple offer the received SMS code, and implies keyboard, capitalization
+// and autocorrection defaults unless overridden
 TextField::new("Verification code", &code)
     .keyboard(KeyboardType::Number)
     .content_type(ContentType::OneTimeCode)
+field("Name", &name)
+    .autocapitalization(Capitalization::Words)
+    .autocorrect(false)
+    .submit_label(SubmitLabel::Next)
+field("Price", &price).keyboard(KeyboardType::Decimal)
 // .selection_menu adds commands to the selected-text menu; a command takes the
 // field's live selection as a handler parameter
 TextField::new("Note", &note).selection_menu((

@@ -33,7 +33,7 @@ use objc2_foundation::{NSRange, NSString};
 use waterui_backend_core::Environment;
 use waterui_controls::input::ContentType;
 #[cfg(target_os = "ios")]
-use waterui_controls::input::KeyboardType;
+use waterui_controls::input::{Capitalization, KeyboardType, SubmitLabel};
 use waterui_controls::menu::ResolvedMenuItem;
 use waterui_controls::text_field::TextFieldConfig;
 use waterui_controls::text_selection::{CustomTextSelection, TextSelection};
@@ -68,6 +68,7 @@ mod platform {
     pub(super) use cocoa_ui::objc2_ui_kit::{NSTextAlignment, UIColor};
     pub(super) use cocoa_ui::uikit::colors;
     pub(super) use cocoa_ui::uikit::text_field::Keyboard;
+    pub(super) use cocoa_ui::uikit::text_input::{Autocapitalization, Autocorrection, ReturnKey};
     pub(super) use cocoa_ui::uikit::{HostView, TextField};
 }
 
@@ -315,18 +316,67 @@ fn apply_alignment(field: &TextField, alignment: HorizontalAlignment) {
 #[cfg(target_os = "ios")]
 /// A kind the backend does not know is a contract violation of the
 /// framework above; the plain text keyboard is used.
-fn keyboard(kind: &KeyboardType) -> platform::Keyboard {
+fn keyboard(kind: KeyboardType) -> platform::Keyboard {
     match kind {
         KeyboardType::Text => platform::Keyboard::Text,
         KeyboardType::Email => platform::Keyboard::Email,
         KeyboardType::URL => platform::Keyboard::Url,
         KeyboardType::Number => platform::Keyboard::Number,
+        KeyboardType::Decimal => platform::Keyboard::Decimal,
         KeyboardType::PhoneNumber => platform::Keyboard::PhoneNumber,
         _ => {
             waterui_core::contract_violation!(
                 "unsupported WaterUI keyboard type; the text keyboard is used"
             );
             platform::Keyboard::Text
+        }
+    }
+}
+
+/// The `UIKit` autocapitalization mode a `Capitalization` asks for.
+#[cfg(target_os = "ios")]
+fn autocapitalization(kind: Capitalization) -> platform::Autocapitalization {
+    match kind {
+        Capitalization::None => platform::Autocapitalization::None,
+        Capitalization::Words => platform::Autocapitalization::Words,
+        Capitalization::Sentences => platform::Autocapitalization::Sentences,
+        Capitalization::Characters => platform::Autocapitalization::AllCharacters,
+        _ => {
+            waterui_core::contract_violation!(
+                "unsupported WaterUI capitalization mode; sentences is used"
+            );
+            platform::Autocapitalization::Sentences
+        }
+    }
+}
+
+/// The `UIKit` autocorrection setting for a resolved `autocorrect` boolean.
+#[cfg(target_os = "ios")]
+const fn autocorrection(enabled: bool) -> platform::Autocorrection {
+    if enabled {
+        platform::Autocorrection::Enabled
+    } else {
+        platform::Autocorrection::Disabled
+    }
+}
+
+/// The `UIKit` return-key type a `SubmitLabel` asks for.
+#[cfg(target_os = "ios")]
+fn return_key(label: SubmitLabel) -> platform::ReturnKey {
+    match label {
+        SubmitLabel::Return => platform::ReturnKey::Default,
+        SubmitLabel::Done => platform::ReturnKey::Done,
+        SubmitLabel::Go => platform::ReturnKey::Go,
+        SubmitLabel::Next => platform::ReturnKey::Next,
+        SubmitLabel::Search => platform::ReturnKey::Search,
+        SubmitLabel::Send => platform::ReturnKey::Send,
+        SubmitLabel::Join => platform::ReturnKey::Join,
+        SubmitLabel::Continue => platform::ReturnKey::Continue,
+        _ => {
+            waterui_core::contract_violation!(
+                "unsupported WaterUI submit label; the default return key is used"
+            );
+            platform::ReturnKey::Default
         }
     }
 }
@@ -590,6 +640,28 @@ impl SubView for TextFieldSubView {
     }
 }
 
+/// Applies the field's resolved input-trait configuration (`keyboard`,
+/// `autocapitalization`, `autocorrect`, `submit_label`, `content_type`) onto
+/// the platform text field.
+fn configure_input_traits(field: &TextField, config: &TextFieldConfig<Held>) {
+    #[cfg(target_os = "ios")]
+    {
+        field.set_keyboard(keyboard(config.keyboard()));
+        field.set_autocapitalization(autocapitalization(config.autocapitalization()));
+        field.set_autocorrection(autocorrection(config.autocorrect()));
+        field.set_return_key(return_key(config.submit_label()));
+    }
+    #[cfg(target_os = "macos")]
+    field.set_autocorrect(config.autocorrect());
+
+    // The declared content type is the whole one-time-code feature on
+    // both kits — `UITextContentType`/`NSTextContentType` is what the
+    // system offers an SMS code for.
+    if let Some(declared) = config.content_type() {
+        field.set_content_type(content_type(declared));
+    }
+}
+
 /// The `text_field` realization:
 /// `Native<TextFieldConfig>` maps to a container with the platform
 /// field and the mounted label child; binding, prompt, disabled state and
@@ -602,20 +674,11 @@ pub fn realize_text_field_config(
     let host = HostView::new(mtm, Rect::ZERO);
 
     #[cfg(target_os = "ios")]
-    let field = {
-        let field = TextField::new(mtm);
-        field.set_keyboard(keyboard(config.keyboard()));
-        field
-    };
+    let field = TextField::new(mtm);
     #[cfg(target_os = "macos")]
     let field = TextField::new(mtm, config.line_limit().snapshot().map(NonZeroUsize::get));
 
-    // The declared content type is the whole one-time-code feature on
-    // both kits — `UITextContentType`/`NSTextContentType` is what the
-    // system offers an SMS code for.
-    if let Some(declared) = config.content_type() {
-        field.set_content_type(content_type(declared));
-    }
+    configure_input_traits(&field, &config);
 
     let field_view: &PlatformView = &field;
     host.add_subview(field_view);
@@ -623,7 +686,8 @@ pub fn realize_text_field_config(
     // The label renders above the field; its semantic text names the
     // control while the visual label leaves the accessibility tree —
     // `WuiControlAccessibility`'s split.
-    let (label, value, prompt, _, _, selection_menu, line_limit, on_submit) = config.into_parts();
+    let (label, value, prompt, _, _, _, _, _, selection_menu, line_limit, on_submit) =
+        config.into_parts();
     #[cfg(not(target_os = "macos"))]
     let _ = line_limit;
     let accessibility_label = label.accessibility_label();
@@ -960,10 +1024,49 @@ mod tests {
             (KeyboardType::Email, platform::Keyboard::Email),
             (KeyboardType::URL, platform::Keyboard::Url),
             (KeyboardType::Number, platform::Keyboard::Number),
+            (KeyboardType::Decimal, platform::Keyboard::Decimal),
             (KeyboardType::PhoneNumber, platform::Keyboard::PhoneNumber),
         ];
         for (source, expected) in table {
-            assert_eq!(keyboard(&source), expected);
+            assert_eq!(keyboard(source), expected);
+        }
+    }
+
+    #[cfg(target_os = "ios")]
+    #[test]
+    fn capitalization_autocorrection_and_return_key_map_every_variant() {
+        assert_eq!(
+            autocapitalization(Capitalization::None),
+            platform::Autocapitalization::None
+        );
+        assert_eq!(
+            autocapitalization(Capitalization::Words),
+            platform::Autocapitalization::Words
+        );
+        assert_eq!(
+            autocapitalization(Capitalization::Sentences),
+            platform::Autocapitalization::Sentences
+        );
+        assert_eq!(
+            autocapitalization(Capitalization::Characters),
+            platform::Autocapitalization::AllCharacters
+        );
+
+        assert_eq!(autocorrection(true), platform::Autocorrection::Enabled);
+        assert_eq!(autocorrection(false), platform::Autocorrection::Disabled);
+
+        let labels = [
+            (SubmitLabel::Return, platform::ReturnKey::Default),
+            (SubmitLabel::Done, platform::ReturnKey::Done),
+            (SubmitLabel::Go, platform::ReturnKey::Go),
+            (SubmitLabel::Next, platform::ReturnKey::Next),
+            (SubmitLabel::Search, platform::ReturnKey::Search),
+            (SubmitLabel::Send, platform::ReturnKey::Send),
+            (SubmitLabel::Join, platform::ReturnKey::Join),
+            (SubmitLabel::Continue, platform::ReturnKey::Continue),
+        ];
+        for (source, expected) in labels {
+            assert_eq!(return_key(source), expected);
         }
     }
 

@@ -21,7 +21,10 @@ use std::ops::Range;
 use objc2::rc::Weak;
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::NSString;
-use objc2_ui_kit::{UITextInput, UITextInputDelegate};
+use objc2_ui_kit::{
+    UIReturnKeyType, UITextAutocapitalizationType, UITextAutocorrectionType, UITextInput,
+    UITextInputDelegate,
+};
 
 use super::input_view::InputView;
 use crate::ContentType;
@@ -87,6 +90,27 @@ pub enum ReturnKey {
     Continue,
 }
 
+impl ReturnKey {
+    /// The `UIReturnKeyType` this key maps onto.
+    #[must_use]
+    pub(crate) const fn native(self) -> UIReturnKeyType {
+        match self {
+            Self::Default => UIReturnKeyType::Default,
+            Self::Go => UIReturnKeyType::Go,
+            Self::Google => UIReturnKeyType::Google,
+            Self::Join => UIReturnKeyType::Join,
+            Self::Next => UIReturnKeyType::Next,
+            Self::Route => UIReturnKeyType::Route,
+            Self::Search => UIReturnKeyType::Search,
+            Self::Send => UIReturnKeyType::Send,
+            Self::Yahoo => UIReturnKeyType::Yahoo,
+            Self::Done => UIReturnKeyType::Done,
+            Self::EmergencyCall => UIReturnKeyType::EmergencyCall,
+            Self::Continue => UIReturnKeyType::Continue,
+        }
+    }
+}
+
 /// How the keyboard capitalizes typed text (`UITextAutocapitalizationType`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Autocapitalization {
@@ -101,6 +125,19 @@ pub enum Autocapitalization {
     AllCharacters,
 }
 
+impl Autocapitalization {
+    /// The `UITextAutocapitalizationType` this mode maps onto.
+    #[must_use]
+    pub(crate) const fn native(self) -> UITextAutocapitalizationType {
+        match self {
+            Self::None => UITextAutocapitalizationType::None,
+            Self::Words => UITextAutocapitalizationType::Words,
+            Self::Sentences => UITextAutocapitalizationType::Sentences,
+            Self::AllCharacters => UITextAutocapitalizationType::AllCharacters,
+        }
+    }
+}
+
 /// Whether the keyboard corrects typed text (`UITextAutocorrectionType`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Autocorrection {
@@ -111,6 +148,18 @@ pub enum Autocorrection {
     Disabled,
     /// Always correct.
     Enabled,
+}
+
+impl Autocorrection {
+    /// The `UITextAutocorrectionType` this setting maps onto.
+    #[must_use]
+    pub(crate) const fn native(self) -> UITextAutocorrectionType {
+        match self {
+            Self::Default => UITextAutocorrectionType::Default,
+            Self::Disabled => UITextAutocorrectionType::No,
+            Self::Enabled => UITextAutocorrectionType::Yes,
+        }
+    }
 }
 
 /// The `UITextInputTraits` a document asks the keyboard for.
