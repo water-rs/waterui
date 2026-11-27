@@ -125,15 +125,14 @@ impl TabsMetrics {
         button_min_width: f32,
         button_horizontal_inset: f32,
         icon_label_spacing: f32,
+        icon_size: f32,
     ) -> Self {
         Self {
             bar_height,
             button_min_width,
             button_horizontal_inset,
             icon_label_spacing,
-            // Matches `waterui_icon::DEFAULT_ICON_SIZE` while downstream style
-            // packages migrate to explicit `icon_size`.
-            icon_size: 24.0,
+            icon_size,
         }
     }
 }
@@ -751,23 +750,11 @@ mod tests {
             Surface, TabsLook, TabsMetrics,
         };
 
-        let legacy = TabsMetrics::new(48.0, 64.0, 12.0, 4.0);
-        assert_relative_eq!(legacy.icon_size, 24.0, epsilon = 1e-6);
+        let constructed = TabsMetrics::new(48.0, 64.0, 12.0, 4.0, 20.0);
+        assert_relative_eq!(constructed.icon_size, 20.0, epsilon = 1e-6);
 
-        let vertical = TabsMetrics {
-            bar_height: 62.0,
-            button_min_width: 64.0,
-            button_horizontal_inset: 12.0,
-            icon_label_spacing: 1.5,
-            icon_size: 23.0,
-        };
-        let horizontal = TabsMetrics {
-            bar_height: 48.0,
-            button_min_width: 64.0,
-            button_horizontal_inset: 16.0,
-            icon_label_spacing: 8.0,
-            icon_size: 18.0,
-        };
+        let vertical = TabsMetrics::new(62.0, 64.0, 12.0, 1.5, 23.0);
+        let horizontal = TabsMetrics::new(48.0, 64.0, 16.0, 8.0, 18.0);
         let motion = Motion::uniform(waterui_core::animation::Animation::linear(
             Duration::from_millis(10),
         ));
