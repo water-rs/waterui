@@ -55,7 +55,7 @@ water preview test --all                                         # every #[previ
 owe (a decoding image, a `Suspense` future) before failing with their names. `--offline`
 fails on a declared font missing from the cache instead of fetching it. `preview test`
 takes `--code` / `--code-file` (a Rust body receiving `app: &mut SemanticApp`),
-`--platform`, `--theme`, `--frame` and `--path`; its only theme is `material3`.
+`--platform`, `--theme`, `--frame` and `--path`; Hydrolysis themes are `material3` and `glass`.
 `--platform ios` renders the UIKit realization on the Mac itself through Mac Catalyst,
 under the iPad idiom, so it shows the iOS look without booting a simulator. It builds for
 the `aarch64-apple-ios-macabi` Rust target, which `water doctor --fix` installs.

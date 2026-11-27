@@ -598,6 +598,8 @@ pub struct TemplateContext {
     /// carries the same painter/host values the app scaffold's entry does.
     pub hydrolysis_android_embedded: Option<HydrolysisAndroidEmbeddedTemplateEntry>,
 
+    /// The widget theme generated Hydrolysis entry points construct.
+    pub hydrolysis_theme: crate::backend::HydrolysisTheme,
     /// `package.embedded` in `Water.toml` — the host links the backend's
     /// published artifact rather than the companion's sources, so the
     /// Apple companion's Cargo manifest enables `swiftui` only then.
@@ -630,6 +632,15 @@ impl TemplateContext {
     #[must_use]
     pub fn web_arg(&self) -> &str {
         self.web_frontend_arg.as_deref().unwrap_or("web")
+    }
+
+    /// Whether the generated Hydrolysis entry points construct the glass theme.
+    #[must_use]
+    pub const fn hydrolysis_theme_is_glass(&self) -> bool {
+        matches!(
+            self.hydrolysis_theme,
+            crate::backend::HydrolysisTheme::Glass
+        )
     }
 
     /// Build a template context for a new root project scaffold.
@@ -668,6 +679,7 @@ impl TemplateContext {
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
             hydrolysis_android_embedded: None,
+            hydrolysis_theme: crate::backend::HydrolysisTheme::Material3,
             embedded: false,
         }
     }
@@ -716,6 +728,10 @@ impl TemplateContext {
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
             hydrolysis_android_embedded: None,
+            hydrolysis_theme: manifest
+                .hydrolysis()
+                .and_then(crate::backend::HydrolysisConfig::theme)
+                .unwrap_or_default(),
         }
     }
 
@@ -769,6 +785,7 @@ impl TemplateContext {
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
             hydrolysis_android_embedded: None,
+            hydrolysis_theme: crate::backend::HydrolysisTheme::Material3,
             embedded: false,
         }
     }
@@ -1622,7 +1639,7 @@ mod tests {
     use include_dir::Dir;
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
 
     fn ctx(
         waterui_path: Option<PathBuf>,
@@ -1671,6 +1688,7 @@ mod tests {
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
             hydrolysis_android_embedded: None,
+            hydrolysis_theme: crate::backend::HydrolysisTheme::Material3,
             embedded: false,
             launch: LaunchTemplateEntry::default(),
         }
@@ -1680,6 +1698,17 @@ mod tests {
         // Generated crate names tag the project root, so any template that
         // renders one needs a root even when nothing else consumes it.
         ctx(None, None, Some(PathBuf::from("/tmp/test-app")))
+    }
+
+    fn write_local_glass_crate(temp: &TempDir) -> PathBuf {
+        let glass_crate = temp.path().join("glass-crate");
+        std::fs::create_dir_all(&glass_crate).expect("create glass crate dir");
+        std::fs::write(
+            glass_crate.join("Cargo.toml"),
+            "[package]\nname = \"hydrolysis-glass\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write local glass manifest");
+        glass_crate
     }
 
     /// `ctx` with `webview_enabled`/`engine` recorded for every desktop OS
@@ -2770,7 +2799,6 @@ mod tests {
 
     #[test]
     fn the_hydrolysis_manifest_gates_optional_glass_theme_feature() {
-        use std::fs;
         use std::path::Path;
 
         use tempfile::tempdir;
@@ -2797,13 +2825,7 @@ mod tests {
         );
 
         let temp = tempdir().expect("tempdir");
-        let glass_crate = temp.path().join("glass-crate");
-        fs::create_dir_all(&glass_crate).expect("create glass crate dir");
-        fs::write(
-            glass_crate.join("Cargo.toml"),
-            "[package]\nname = \"hydrolysis-glass\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-        )
-        .expect("write local glass manifest");
+        let glass_crate = write_local_glass_crate(&temp);
         let glass_ctx = base_ctx.with_project_root_path(glass_crate);
         let with_glass = rendered_outputs_with_painters(&glass_ctx, "waterui-test-hydrolysis")
             .expect("hydrolysis outputs render with local glass");
@@ -2855,6 +2877,78 @@ mod tests {
             .expect("preview_test_runtime.rs exists");
         assert!(preview_test_runtime.contains("config.hdr()"));
         assert!(!preview_test_runtime.contains("!config.hdr()"));
+    }
+
+    #[test]
+    fn hydrolysis_glass_theme_requires_the_scaffold_package() {
+        let mut glass_ctx = project_ctx();
+        glass_ctx.hydrolysis_theme = crate::backend::HydrolysisTheme::Glass;
+        let error = crate::templates::hydrolysis::rendered_outputs_with_painters(
+            &glass_ctx,
+            "waterui-test-hydrolysis-glass-missing",
+        )
+        .expect_err("a glass theme without the scaffold package must fail before compilation");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            error.to_string().contains("hydrolysis-glass"),
+            "the error names the missing package: {error}"
+        );
+    }
+
+    #[test]
+    fn hydrolysis_glass_theme_rewrites_entrypoints_and_links_the_theme() {
+        let temp = tempdir().expect("tempdir");
+        let glass_crate = write_local_glass_crate(&temp);
+        let mut glass_ctx = project_ctx().with_project_root_path(glass_crate);
+        glass_ctx.hydrolysis_theme = crate::backend::HydrolysisTheme::Glass;
+        let outputs = crate::templates::hydrolysis::rendered_outputs_with_painters(
+            &glass_ctx,
+            "waterui-test-hydrolysis-glass",
+        )
+        .expect("hydrolysis outputs render with the glass theme");
+
+        for relative in ["src/main.rs", "src/lib.rs"] {
+            let source = outputs
+                .iter()
+                .find_map(|(path, content)| {
+                    (path == Path::new(relative))
+                        .then(|| String::from_utf8(content.clone()).expect("UTF-8 source"))
+                })
+                .unwrap_or_else(|| panic!("hydrolysis {relative} output should exist"));
+            syn::parse_file(&source).unwrap_or_else(|error| {
+                panic!("generated {relative} must parse: {error}\n{source}")
+            });
+            assert!(
+                source.contains("hydrolysis_glass::Glass::from_environment(&env)"),
+                "generated {relative} constructs the glass theme before moving env:\n{source}"
+            );
+            assert!(
+                !source.contains("hydrolysis_m3::Material3::defaults()"),
+                "generated {relative} must not keep the Material 3 style:\n{source}"
+            );
+        }
+
+        let cargo_toml = outputs
+            .iter()
+            .find_map(|(path, content)| {
+                (path == Path::new("Cargo.toml"))
+                    .then(|| String::from_utf8(content.clone()).expect("Cargo.toml UTF-8"))
+            })
+            .expect("Cargo.toml exists");
+        let manifest = cargo_toml.parse::<toml::Table>().expect("manifest parses");
+        let native_glass = &manifest["target"]["cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\"), not(target_os = \"ios\")))"]
+            ["dependencies"]["hydrolysis-glass"];
+        assert!(
+            native_glass.get("optional").is_none(),
+            "a selected theme links unconditionally; optional preview linkage is only for Material 3 projects: {native_glass}"
+        );
+        let preview_feature = manifest["features"]["waterui-preview-glass"]
+            .as_array()
+            .expect("waterui-preview-glass feature must remain declared for preview builds");
+        assert!(
+            preview_feature.is_empty(),
+            "the preview feature needs no dep edge once the application theme links glass: {preview_feature:?}"
+        );
     }
 
     /// The wasm32 table bridges the browser's `<video>` element and the
@@ -6606,6 +6700,12 @@ pub mod hydrolysis {
         // output filename stem in the shared target directory.
         let mut lib = super::generated_lib(&["cdylib", "rlib"]);
         lib.name = Some(hydrolysis_library_target_name(package_name));
+        if ctx.hydrolysis_theme_is_glass() && !has_hydrolysis_glass_support(ctx)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "`[hydrolysis] theme` selects `glass`, but the framework this project resolves                  does not distribute the `hydrolysis-glass` scaffold package",
+            ));
+        }
         let mut features = BTreeMap::from([
             // Shared-runtime linkage for non-Windows development and preview builds.
             ("dev".to_string(), vec!["dep:waterui-dylib".to_string()]),
@@ -6635,7 +6735,11 @@ pub mod hydrolysis {
         if has_hydrolysis_glass_support(ctx)? {
             features.insert(
                 "waterui-preview-glass".to_string(),
-                vec!["dep:hydrolysis-glass".to_string()],
+                if ctx.hydrolysis_theme_is_glass() {
+                    Vec::new()
+                } else {
+                    vec!["dep:hydrolysis-glass".to_string()]
+                },
             );
         }
         // The painters: an Android build enables the resolved painter's
@@ -6968,13 +7072,8 @@ pub mod hydrolysis {
                 GeneratedDependencyValue::simple("0.21.1"),
             ),
         ]);
-        if let Some(glass) = optional_hydrolysis_glass_dependency(ctx)? {
-            dependencies.insert(
-                "hydrolysis-glass".to_string(),
-                GeneratedDependencyValue::detailed(
-                    glass.with_default_features(false).with_optional(),
-                ),
-            );
+        if let Some(glass) = hydrolysis_glass_dependency_value(ctx)? {
+            dependencies.insert("hydrolysis-glass".to_string(), glass);
         }
         Ok(dependencies)
     }
@@ -7072,15 +7171,24 @@ pub mod hydrolysis {
             ),
         ]);
         let mut dependencies = dependencies;
-        if let Some(glass) = optional_hydrolysis_glass_dependency(ctx)? {
-            dependencies.insert(
-                "hydrolysis-glass".to_string(),
-                GeneratedDependencyValue::detailed(
-                    glass.with_default_features(false).with_optional(),
-                ),
-            );
+        if let Some(glass) = hydrolysis_glass_dependency_value(ctx)? {
+            dependencies.insert("hydrolysis-glass".to_string(), glass);
         }
         Ok(dependencies)
+    }
+
+    fn hydrolysis_glass_dependency_value(
+        ctx: &TemplateContext,
+    ) -> io::Result<Option<GeneratedDependencyValue>> {
+        optional_hydrolysis_glass_dependency(ctx).map(|glass| {
+            glass.map(|glass| {
+                GeneratedDependencyValue::detailed(if ctx.hydrolysis_theme_is_glass() {
+                    glass.with_default_features(false)
+                } else {
+                    glass.with_default_features(false).with_optional()
+                })
+            })
+        })
     }
 
     fn has_hydrolysis_glass_support(ctx: &TemplateContext) -> io::Result<bool> {
@@ -7143,7 +7251,7 @@ pub mod hydrolysis {
     fn wasm_target_dependencies(
         ctx: &TemplateContext,
     ) -> io::Result<BTreeMap<String, GeneratedDependencyValue>> {
-        Ok(BTreeMap::from([
+        let mut dependencies = BTreeMap::from([
             (
                 "hydrolysis".to_string(),
                 GeneratedDependencyValue::detailed(
@@ -7176,7 +7284,11 @@ pub mod hydrolysis {
                     .with_default_features(false),
                 ),
             ),
-        ]))
+        ]);
+        if let Some(glass) = hydrolysis_glass_dependency_value(ctx)? {
+            dependencies.insert("hydrolysis-glass".to_string(), glass);
+        }
+        Ok(dependencies)
     }
 }
 

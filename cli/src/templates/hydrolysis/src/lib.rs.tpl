@@ -12,11 +12,12 @@ use waterui::env::Environment;
 #[wasm_bindgen(start)]
 pub fn start() {
     let env = waterui::configure_environment!(Environment::new());
-    hydrolysis::run(
-        {{ ctx.crate_name_ident() }}::app,
-        env,
-        hydrolysis_m3::Material3::defaults(),
-    );
+    {% if ctx.hydrolysis_theme_is_glass() %}
+    let style = hydrolysis_glass::Glass::from_environment(&env);
+    {% else %}
+    let style = hydrolysis_m3::Material3::defaults();
+    {% endif %}
+    hydrolysis::run({{ ctx.crate_name_ident() }}::app, env, style);
 }
 
 #[cfg(all(target_os = "android", feature = "waterui-preview-mode"))]
@@ -46,10 +47,12 @@ pub extern "system" fn JNI_OnLoad(
 
         hydrolysis::android::register_app(|| {
             let env = waterui::configure_environment!(waterui::env::Environment::new());
-            (
-                {{ ctx.crate_name_ident() }}::app(env),
-                Rc::new(hydrolysis_m3::Material3::defaults()) as Rc<dyn hydrolysis::Style>,
-            )
+            {% if ctx.hydrolysis_theme_is_glass() %}
+            let style = Rc::new(hydrolysis_glass::Glass::from_environment(&env)) as Rc<dyn hydrolysis::Style>;
+            {% else %}
+            let style = Rc::new(hydrolysis_m3::Material3::defaults()) as Rc<dyn hydrolysis::Style>;
+            {% endif %}
+            ({{ ctx.crate_name_ident() }}::app(env), style)
         });
     }
     jni::sys::JNI_VERSION_1_6
