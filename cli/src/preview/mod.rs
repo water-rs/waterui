@@ -263,4 +263,19 @@ mod tests {
         assert!(rendered.contains("start_hdr_frame_recording"));
         assert!(rendered.contains("write_hdr_frame_f32"));
     }
+
+    #[test]
+    fn hydrolysis_preview_target_template_extracts_env_via_into_parts() {
+        let rendered = PreviewTargetTemplate::hydrolysis(
+            PreviewSource::Symbol("waterui_preview_demo"),
+            "demo_app",
+            "hydrolysis_m3::Material3::defaults()",
+            None,
+            false,
+        )
+        .render()
+        .expect("render hydrolysis preview target template");
+        assert!(rendered.contains("demo_app::app(env).into_parts().env"));
+        assert!(!rendered.contains("demo_app::app(env).env"));
+    }
 }

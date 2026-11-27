@@ -8907,6 +8907,32 @@ pub mod apple_preview {
         write_file_if_changed(&base_dir.join("Cargo.toml"), toml_string.as_bytes()).await?;
         Ok(())
     }
+
+    #[cfg(test)]
+    mod tests {
+        use askama::Template as _;
+
+        use super::ApplePreviewMainTemplate;
+
+        #[test]
+        fn apple_preview_main_template_extracts_env_via_into_parts() {
+            let rendered = ApplePreviewMainTemplate {
+                crate_name_ident: "demo_app",
+            }
+            .render()
+            .expect("render Apple preview main template");
+            assert!(
+                rendered.contains(
+                    "demo_app::app(waterui::configure_environment!(env)).into_parts().env"
+                ),
+                "{rendered}"
+            );
+            assert!(
+                !rendered.contains("demo_app::app(waterui::configure_environment!(env)).env"),
+                "{rendered}"
+            );
+        }
+    }
 }
 
 /// Root-level templates (Cargo.toml, lib.rs, .gitignore).
