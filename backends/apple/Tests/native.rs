@@ -19162,7 +19162,7 @@ mod icon_a11y {
         }
     }
 
-    fn glyph_icon() -> Icon {
+    const fn glyph_icon() -> Icon {
         Icon::from_glyph(IconGlyph::new(PUA_CODEPOINT, "Helvetica"))
     }
 
