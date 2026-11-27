@@ -255,6 +255,11 @@ search_panel()
   (`Modifiers::SHIFT`, `CONTROL`, `ALT`, `META`), `press.repeat()` marks
   auto-repeat. `Key`, `KeyHandling`, `KeyPress`, `Modifiers`, and `NamedKey`
   are in the prelude (`waterui::key` also exports them alongside `Code`).
+- Match portable command shortcuts with `Shortcut::new('k').command().matches(&press)`
+  (`Shortcut` maps `.command()` to `META` on Apple and `CONTROL` elsewhere, and ignores
+  lock modifiers) rather than branching on `cfg!(target_vendor = "apple")`. For button
+  actions, prefer `button(..).keyboard_shortcut(Shortcut::new(..).command())` so the
+  backend arms the shortcut natively without needing focus.
 - `field("Search", &query).on_submit(handler)` fires on Return in a line-limited
   field; with no line limit Return inserts a newline and never submits.
 

@@ -420,6 +420,7 @@ pub fn components_block_14() {
             .action(handler) // -> Button<impl FnMut(&Environment)>
             .action_async(|| async {}) // [ellipsis filled] single-flight: disables interaction & reports busy until completion or drop
             .pending(&saving) // mirrors in-flight state into &Binding<bool>; composes before or after .action_async
+            .keyboard_shortcut(Shortcut::new('s').command()) // fires while mounted & enabled; preserved in From<Button> for Command
             .style(ButtonStyle::Plain) // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
             // | Glass | GlassProminent (Liquid Glass capsules on Apple;
             //   bordered / bordered-prominent elsewhere)

@@ -61,6 +61,7 @@ fn settings_form() -> impl View {
         slider("Volume", &volume).range(0.0..=1.0),
         button("Save")
             .bordered_prominent()
+            .keyboard_shortcut(Shortcut::new('s').command())
             .action(|State(saved): State<Binding<bool>>| saved.set(true))
             .state(&saved),
     ))

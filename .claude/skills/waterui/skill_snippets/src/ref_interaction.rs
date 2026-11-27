@@ -349,6 +349,10 @@ pub fn interaction_key_accessors_prose() {
         false,
     );
     let _ = (press.key(), press.code(), press.modifiers(), press.repeat());
+    let _ = Shortcut::new('k').command().matches(&press);
+    let _ = button("Search")
+        .keyboard_shortcut(Shortcut::new('k').command())
+        .action(|| {});
 }
 
 // ---------------------------------------------------------------------------

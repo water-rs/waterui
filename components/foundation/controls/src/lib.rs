@@ -47,6 +47,10 @@ pub mod secure;
 #[cfg(feature = "list")]
 mod selection_support;
 pub mod sheet;
+pub mod shortcut;
+pub use shortcut::{
+    InvalidShortcutKey, Shortcut, ShortcutKey, ShortcutModifiers, ShortcutNamedKey,
+};
 pub mod slot;
 pub use slot::{IconSlot, NoopSlot, SlotBuilder};
 #[cfg(feature = "menu")]
@@ -54,10 +58,7 @@ pub mod menu;
 #[cfg(feature = "snackbar")]
 pub mod snackbar;
 #[cfg(feature = "menu")]
-pub use menu::{
-    Command, CommandExt, Menu, MenuBarView, MenuItem, MenuView, NamedKey, Shortcut, ShortcutKey,
-    ShortcutModifiers, ShortcutNamedKey,
-};
+pub use menu::{Command, CommandExt, Menu, MenuBarView, MenuItem, MenuView, NamedKey};
 pub mod size;
 pub use size::ControlSize;
 #[cfg(feature = "slider")]

@@ -11,7 +11,6 @@ mod edge_stretch;
 mod hit_test;
 mod interaction;
 mod keyboard;
-#[cfg(feature = "menu")]
 mod menu_shortcuts;
 mod multi_click;
 mod popup_menu;
@@ -30,7 +29,6 @@ pub use dialog::*;
 pub use hit_test::*;
 pub use interaction::*;
 pub use keyboard::*;
-#[cfg(feature = "menu")]
 pub use menu_shortcuts::*;
 pub use multi_click::*;
 pub use popup_menu::*;
