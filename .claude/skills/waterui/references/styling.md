@@ -253,8 +253,7 @@ A shape is an outline, not a view: `.fill(color)` turns it into one (a `FilledSh
 which fills the space it is given), and `.clip(shape)` uses it as a mask. Two uses:
 
 ```rust
-use waterui::shape::{Capsule, Circle, CornerRadii, CornerRadius, Ellipse, Path,
-                     Rectangle, RoundedRectangle, ShapeExt};
+use waterui::shape::{CornerRadii, CornerRadius, Ellipse, Path};
 
 Circle.fill(Color::srgb_hex("#3B82F6")).size(80.0, 80.0)   // draw the shape
 photo.clip(Circle)                                          // clip a view to the shape
@@ -312,7 +311,6 @@ shape.morph_to(target, fill).progress(t.clone())   // or drive it from a 0..=1 s
 
 ```rust
 use waterui::border::Border;
-use waterui::shape::{Circle, RoundedRectangle};
 use waterui::theme::color::Accent;
 
 card.border(Color::srgb_hex("#E5E7EB"), 1.0)                       // all edges, square corners

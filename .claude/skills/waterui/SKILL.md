@@ -138,8 +138,6 @@ The list's mutators take `&mut self`; a clone shares the same list, so a handler
 its own clone (`mut state: Editor`).
 
 ```rust
-use waterui::Identifiable;                             // the trait the derive implements is NOT in the prelude
-
 #[derive(Clone, Identifiable)]
 struct Row { #[id] id: u64, title: Str }
 
@@ -197,15 +195,16 @@ pub fn app(env: Environment) -> App<impl Windows> {
 }
 ```
 
-`use waterui::prelude::*;` brings in views, layout, colors, text, controls, navigation,
-menus, `Binding`, `Computed`, `binding` (the general constructor), `StateList`,
-`SignalCollection`, `State`, `Str`, `AnyView`, `SignalExt`, `AnimationExt`, and, with
-their features, `Dialog` and `Snackbar`. Several everyday names live outside it:
+`use waterui::prelude::*;` brings in views, layout, colors, text (`IntoText`), controls,
+navigation, menus, `Binding`, `Computed`, `binding` (the general constructor), `StateList`,
+`SignalCollection`, `State`, `Str`, `AnyView`, `Identifiable` (derive and trait),
+`IntoComputed`, `IntoSignal`, `IntoSignalF32`, `SignalExt`, `Animation`, `AnimationExt`,
+built-in shapes (`Circle`, `Capsule`, `Rectangle`, `RoundedRectangle`, `ShapeExt`), keyboard
+types (`Key`, `KeyHandling`, `KeyPress`, `Modifiers`, `NamedKey`), and, with their features,
+`Dialog` and `Snackbar`. Several everyday names live outside it:
 
 ```rust
-use waterui::Identifiable;                             // the trait the derive implements
 use waterui::widget::condition::when;                  // conditionals
-use waterui::animation::Animation;                     // animation curves
 use waterui::views::ForEach;                           // the collection itself
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 use waterui::cursor::CursorStyle;
@@ -669,7 +668,7 @@ let view = tsx!(
 |---|---|---|
 | UI never updates | `.snapshot()` in a view body | pass the binding |
 | State resets on every keystroke | `watch` rebuilding the subtree | `text!` / signal-taking API / `VStack::for_each` |
-| `cannot find function 'when'` / `cannot find trait 'Identifiable'` on the derive | not in the prelude (the derive is; the trait it implements is not) | `use waterui::widget::condition::when;` / `use waterui::Identifiable;` |
+| `cannot find function 'when'` | not in the prelude | `use waterui::widget::condition::when;` |
 | Rounded corners look wrong on non-square sizes | `CornerRadius::fraction(r)` scales with the shorter side | `RoundedRectangle::new(points)` for points, or `Capsule` |
 | A background task dies instantly | the `spawn_local` handle cancels on drop | `.detach()` it |
 | `LongPressGesture` constructor mismatch | `new()` takes no args; timeout via `.minimum_duration(Duration)` | `LongPressGesture::new().minimum_duration(Duration::from_millis(500))` |

@@ -320,8 +320,6 @@ impl Transferable for GlueTransferable {}
 // interaction.md § "## Key handling" — rust block 9/12
 // ---------------------------------------------------------------------------
 pub fn interaction_block_09() -> impl View {
-    use waterui::key::{Key, KeyHandling, KeyPress, NamedKey};
-
     let open = Binding::new(false);
     let search_panel = || text("Search panel");
 
@@ -342,7 +340,7 @@ pub fn interaction_block_09() -> impl View {
 // `waterui::key` re-exports. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn interaction_key_accessors_prose() {
-    use waterui::key::{Code, Key, KeyPress, Modifiers, NamedKey};
+    use waterui::key::Code;
 
     let press = KeyPress::new(
         Key::Named(NamedKey::Escape),
@@ -361,8 +359,6 @@ pub fn interaction_key_accessors_prose() {
 #[allow(unknown_lints, opacity_as_visibility)]
 pub fn interaction_block_10() -> impl View {
     let is_hovered = Binding::new(false);
-
-    use waterui::animation::Animation;
 
     let scale = is_hovered
         .select(1.05, 1.0)

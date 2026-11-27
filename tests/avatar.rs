@@ -160,7 +160,7 @@ fn the_monogram_follows_the_name_without_a_second_node(ui: UiBuilder) {
 
 #[waterui::test]
 fn custom_fallback_with_shape_side_and_ring_remains_a_single_image_node(ui: UiBuilder) {
-    use waterui::shape::{CornerRadius, RoundedRectangle};
+    use waterui::shape::CornerRadius;
     use waterui::widget::Avatar;
 
     let mut app = ui.viewport(120, 120).mount(|| {

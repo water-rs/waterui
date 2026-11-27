@@ -16,7 +16,7 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Signal;
 use waterui::reactive::binding;
-use waterui::shape::{CornerRadius, RoundedRectangle, ShapeExt as _};
+use waterui::shape::CornerRadius;
 use waterui::theme::color::Surface;
 use waterui_icons_lucide as lucide;
 use waterui_map::{Coordinate, Map, MapStyle, Region};

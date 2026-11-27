@@ -108,7 +108,13 @@ pub mod prelude {
 
     pub use super::theme::{self, ColorScheme, ColorSettings, FontSettings, Theme, Tint};
 
-    pub use super::text::{TextConfig, font, highlight, styled};
+    pub use super::animation::Animation;
+    pub use super::key::{Key, KeyHandling, KeyPress, Modifiers, NamedKey};
+    pub use super::reactive::signal::{IntoComputed, IntoSignal};
+    pub use super::shape::{Capsule, Circle, Rectangle, RoundedRectangle, ShapeExt};
+    pub use waterui_core::IntoSignalF32;
+
+    pub use super::text::{IntoText, TextConfig, font, highlight, styled};
 
     #[cfg(feature = "link")]
     pub use super::component::link::{Link, link};
@@ -118,7 +124,7 @@ pub mod prelude {
     };
     #[cfg(feature = "menu")]
     pub use super::component::menu::{
-        Command, CommandExt, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey, ShortcutModifiers,
+        Command, CommandExt, Menu, MenuItem, Shortcut, ShortcutKey, ShortcutModifiers,
         ShortcutNamedKey,
     };
     #[cfg(feature = "table")]
@@ -480,5 +486,63 @@ mod ts_tests {
             SidebarProps::CONTRACT_HASH,
             contract_hash(SidebarProps::ENCODED)
         );
+    }
+}
+
+#[cfg(test)]
+mod prelude_tests {
+    use crate::prelude::*;
+
+    #[derive(Clone, Identifiable)]
+    struct Item {
+        #[id]
+        id: u64,
+    }
+
+    struct ManualItem(u64);
+
+    impl Identifiable for ManualItem {
+        type Id = u64;
+
+        fn id(&self) -> Self::Id {
+            self.0
+        }
+    }
+
+    fn takes_identifiable<T: Identifiable>(_value: &T) {}
+    fn takes_into_text(_value: impl IntoText) {}
+    fn takes_into_computed(_value: impl IntoComputed<bool>) {}
+    fn takes_into_signal(_value: impl IntoSignal<bool>) {}
+    fn takes_into_signal_f32(_value: impl IntoSignalF32) {}
+
+    #[test]
+    fn prelude_exports_everyday_items_without_collisions() {
+        let item = Item { id: 1 };
+        let manual = ManualItem(2);
+        takes_identifiable(&item);
+        takes_identifiable(&manual);
+        assert_eq!(item.id(), 1);
+        assert_eq!(manual.id(), 2);
+        takes_into_text("hello");
+        takes_into_computed(true);
+        takes_into_signal(false);
+        takes_into_signal_f32(1.0);
+
+        let anim = Animation::default();
+        assert!(anim.is_default());
+        let _ = (
+            Circle.fill(Color::red()),
+            Capsule.fill(Color::blue()),
+            Rectangle.fill(Color::green()),
+            RoundedRectangle::new(8.0).fill(Color::yellow()),
+        );
+        let press = KeyPress::new(
+            Key::Named(NamedKey::Escape),
+            crate::key::Code::Escape,
+            Modifiers::empty(),
+            false,
+        );
+        assert_eq!(*press.key(), Key::Named(NamedKey::Escape));
+        assert_eq!(KeyHandling::Handled, KeyHandling::Handled);
     }
 }

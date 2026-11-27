@@ -3,7 +3,6 @@
 
 extern crate alloc;
 
-use waterui::Identifiable;
 use waterui::app::{App, AppMenuBar, Windows};
 use waterui::prelude::*;
 
@@ -327,7 +326,6 @@ pub fn components_block_11() {
 // ---------------------------------------------------------------------------
 pub fn components_block_12() {
     use core::time::Duration;
-    use waterui::animation::Animation;
     use waterui::layout::scroll::ScrollController;
 
     fn row_view(r: Record) -> impl View {
@@ -552,7 +550,6 @@ pub fn components_custom_control_styles() {
     let enabled = Binding::new(true);
 
     use waterui::gesture::TapGesture;
-    use waterui::shape::Capsule;
     use waterui::theme::color::{Accent, Error, SurfaceVariant};
 
     struct PillButtonStyle;
@@ -917,7 +914,6 @@ pub fn components_block_25() {
 // ---------------------------------------------------------------------------
 pub fn components_block_26() -> impl View {
     use core::time::Duration;
-    use waterui::animation::Animation;
 
     let markdown = Binding::new(Str::from("# Streaming"));
 
@@ -938,7 +934,6 @@ pub fn components_block_26() -> impl View {
 // ---------------------------------------------------------------------------
 pub fn components_flow_overrides_prose() {
     use core::time::Duration;
-    use waterui::animation::Animation;
     use waterui::prelude::flow_markdown::FlowMarkdownConfig;
 
     let _ = FlowMarkdownConfig::default().override_animation(
@@ -983,7 +978,6 @@ pub mod components_block_27 {
         pub rows: StateList<Record>,
     }
 
-    use waterui::Identifiable; // the trait the derive expands to is NOT in the prelude
     use waterui::component::list::{ListDelete, ListMove}; // NOT in the prelude
     use waterui::layout::scroll::scroll_horizontal;
     use waterui::views::ForEach;
@@ -1039,7 +1033,6 @@ pub mod components_block_27 {
 // ---------------------------------------------------------------------------
 pub fn components_block_28() {
     use core::time::Duration;
-    use waterui::animation::Animation;
 
     let rows = StateList::<Record>::new();
 
@@ -1468,8 +1461,6 @@ pub fn components_secure_and_error_prose() -> impl View {
 // Listing: three independent widgets. `photo_url` and `Field` are glue.
 // ---------------------------------------------------------------------------
 pub fn components_block_37(photo_url: waterui::Url) {
-    use waterui::shape::RoundedRectangle;
-
     #[derive(Clone, PartialEq, Eq)]
     enum Field {
         Email,

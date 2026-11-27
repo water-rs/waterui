@@ -4,11 +4,9 @@
 //! index: rows carry one to three text lines plus a colored chip, exercising
 //! lazy realization, measurement, and recycling of non-uniform cells.
 
-use waterui::Identifiable;
 use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::shape::{Circle, ShapeExt};
 
 const ROW_COUNT: u64 = 200_000;
 

@@ -4,12 +4,11 @@
 //! constraint edges (zero, min, max) — the cases that stress measurement
 //! recursion and constraint resolution.
 
-use waterui::Identifiable;
 use waterui::app::{App, Windows};
 use waterui::layout::stack::{HStack, VStack};
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::shape::{CornerRadius, RoundedRectangle, ShapeExt};
+use waterui::shape::CornerRadius;
 use waterui::widget::condition::when;
 
 /// 8 levels of alternating hstack/vstack nesting. Recursion through `AnyView`

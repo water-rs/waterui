@@ -9,6 +9,7 @@
 
 use core::num::NonZeroUsize;
 
+use waterui::Url;
 use waterui::app::{App, Windows};
 use waterui::component::list::List;
 use waterui::layout::ContentMode;
@@ -19,7 +20,6 @@ use waterui::navigation::{
 use waterui::prelude::*;
 use waterui::widget::avatar;
 use waterui::widget::card;
-use waterui::{Identifiable, Url};
 use waterui_icons_material_icon as mdi;
 
 use mdi::dots_vertical;

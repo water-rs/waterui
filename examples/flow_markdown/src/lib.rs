@@ -1,7 +1,6 @@
 //! Flow Markdown example.
 use std::time::Duration;
 
-use waterui::animation::Animation;
 use waterui::app::{App, Windows};
 use waterui::prelude::flow_markdown::FlowMarkdownConfig;
 use waterui::prelude::*;
