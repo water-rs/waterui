@@ -15,13 +15,13 @@ use alloc::rc::Rc;
 use core::cell::RefCell;
 
 use cocoa_ui::{Point, Rect, view};
-use waterui::reactive::Signal;
-use waterui::style::Rotation;
+use nami::Signal;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
 use waterui_core::{Angle, Metadata};
+use waterui_shape::style::Rotation;
 
 #[cfg(target_os = "macos")]
 use crate::components::layer_transform;

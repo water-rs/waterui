@@ -19,12 +19,12 @@ use crate::theme::DialogLook;
 use crate::theme::{SheetLook, WidgetTheme};
 use executor_core::{AnyLocalExecutorTask, spawn_local};
 use nami::Signal as _;
-use waterui::gesture::TapGesture;
-use waterui::sheet::Sheet;
 use waterui_backend_core::Child;
+use waterui_controls::sheet::Sheet;
 use waterui_core::Angle;
 use waterui_core::animation::FrameRateVote;
 use waterui_interaction::event::TaskHook;
+use waterui_interaction::gesture::TapGesture;
 use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_structural_transition::{ReduceMotion, TransitionSpec};
 use waterui_text::styled::TapSpan;
@@ -1228,12 +1228,12 @@ pub struct AnchoredOverlayEffect<E: crate::text::TextEngine> {
     /// anchor leaving the tree.
     pub(crate) is_presented: nami::Binding<bool>,
     /// The placement contract.
-    pub(crate) placement: waterui::metadata::anchored_overlay::AnchorPlacement,
+    pub(crate) placement: waterui_controls::anchored_overlay::AnchorPlacement,
     /// What besides the binding closes the overlay.
-    pub(crate) dismissal: waterui::metadata::anchored_overlay::Dismissal,
+    pub(crate) dismissal: waterui_controls::anchored_overlay::Dismissal,
     /// Written with the logical `AnchorEdge` the overlay was placed against
     /// after any flip, on every placement.
-    pub(crate) placed_edge: nami::Binding<waterui::metadata::anchored_overlay::AnchorEdge>,
+    pub(crate) placed_edge: nami::Binding<waterui_controls::anchored_overlay::AnchorEdge>,
     /// Identity shared with the registration, so the render pass can match an
     /// open overlay to the anchor that emitted it — and tell that an anchor
     /// that stopped registering left the tree.
@@ -1271,7 +1271,7 @@ pub struct DialogEffect<E: crate::text::TextEngine> {
     /// presentation binding is read every flush (subscribing the frame to
     /// it) and written `false` by the dialog's own dismiss paths and by the
     /// node leaving the tree.
-    pub(crate) dialog: waterui::dialog::Dialog,
+    pub(crate) dialog: waterui_controls::dialog::Dialog,
     /// The node's identity in the window's dialog stack — a node that stops
     /// reporting left the tree.
     pub(crate) marker: Rc<()>,
@@ -1480,7 +1480,7 @@ pub struct OpacityNode<E: crate::text::TextEngine> {
 /// clock, a track per axis (water-rs/waterui#2203).
 pub struct ScaleNode<E: crate::text::TextEngine> {
     pub(crate) core: NodeCore<E>,
-    pub(crate) anchor: waterui::style::Anchor,
+    pub(crate) anchor: waterui_shape::style::Anchor,
     pub(crate) motion: Rc<LayerMotion>,
     pub(crate) child: RenderNode<E>,
 }
@@ -1489,7 +1489,7 @@ pub struct ScaleNode<E: crate::text::TextEngine> {
 /// clock (water-rs/waterui#2203).
 pub struct RotationNode<E: crate::text::TextEngine> {
     pub(crate) core: NodeCore<E>,
-    pub(crate) anchor: waterui::style::Anchor,
+    pub(crate) anchor: waterui_shape::style::Anchor,
     pub(crate) motion: Rc<LayerMotion>,
     pub(crate) child: RenderNode<E>,
 }

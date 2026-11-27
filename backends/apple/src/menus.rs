@@ -15,8 +15,8 @@
 use alloc::string::String;
 
 use cocoa_ui::Retained;
-use waterui::component::IconSlot;
 use waterui_backend_core::Environment;
+use waterui_controls::IconSlot;
 use waterui_core::layout::ProposalSize;
 
 use crate::contract::{Held, RenderContext};
@@ -78,12 +78,12 @@ mod imp {
 
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::appkit::{Application, KeyModifiers, Menu, MenuAction, MenuItem};
-    use waterui::component::menu::{
+    use nami::{Computed, Signal};
+    use waterui_backend_core::Environment;
+    use waterui_controls::menu::{
         CloseWindowChord, CloseWindowPlacement, Menu as DeclaredMenu, ResolvedMenuItem, Shortcut,
         resolve_menu_bar_items,
     };
-    use waterui::reactive::{Computed, Signal};
-    use waterui_backend_core::Environment;
 
     use crate::contract::Held;
 
@@ -277,7 +277,7 @@ mod imp {
     pub fn install_declared(
         mtm: MainThreadMarker,
         application: &Application,
-        menu_bar: &Computed<Vec<DeclaredMenu<waterui::component::label::SemanticLabel>>>,
+        menu_bar: &Computed<Vec<DeclaredMenu<waterui_controls::label::SemanticLabel>>>,
         env: &Environment,
     ) -> Box<dyn Any> {
         let resolved = resolve_menu_bar_items(menu_bar, env);
@@ -308,10 +308,10 @@ mod tests {
     use alloc::vec::Vec;
     use cocoa_ui::appkit::KeyModifiers;
     use cocoa_ui::menu::MenuTreeNode;
-    use waterui::component::label::label;
-    use waterui::component::menu::{CloseWindowChord, Command, ResolvedMenuItem};
-    use waterui::reactive::Computed;
+    use nami::Computed;
     use waterui_backend_core::Environment;
+    use waterui_controls::label::label;
+    use waterui_controls::menu::{CloseWindowChord, Command, ResolvedMenuItem};
 
     use crate::SfSymbol;
     use crate::contract::Held;

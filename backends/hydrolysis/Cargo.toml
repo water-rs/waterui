@@ -23,6 +23,7 @@ nami.workspace = true
 waterui-shape.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
+waterui-capture = { workspace = true, optional = true }
 waterui-form = { workspace = true, optional = true }
 waterkit-clipboard = { workspace = true, optional = true }
 waterkit-deeplink = { workspace = true, optional = true }
@@ -149,12 +150,12 @@ accesskit_ios = { version = "0.2.2", default-features = false, optional = true }
 tracing-panic = { workspace = true, optional = true }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-# Non-Android builds link `waterui-backend-core` and `waterui` only when a
-# runtime painter (`gpu` or `cpu`) or component feature is enabled; Android
-# links them unconditionally so plugin crates using `AndroidContent` /
-# `AndroidView` can depend on `hydrolysis` with `default-features = false`.
-waterui = { workspace = true, optional = true }
+# Non-Android builds link `waterui-backend-core` only when a runtime painter
+# (`gpu` or `cpu`) or component feature is enabled; Android links it
+# unconditionally so plugin crates using `AndroidContent` / `AndroidView` can
+# depend on `hydrolysis` with `default-features = false`.
 waterui-backend-core = { workspace = true, default-features = false, optional = true }
+waterui-accessibility = { workspace = true, optional = true }
 
 # The GPU video player realizing `Video` off the web (the `video-gpu`
 # feature); the web realizes it with the page's `<video>` element.
@@ -349,8 +350,8 @@ windows = { workspace = true, features = [
 # carries the eventfd the main-Looper executor wakes on, and `android_logger`
 # + `tracing-log` route `tracing` into logcat.
 [target.'cfg(target_os = "android")'.dependencies]
-waterui = { workspace = true }
-waterui-backend-core = { workspace = true, default-features = false }
+waterui-backend-core = { workspace = true, default-features = false, features = ["runtime"] }
+waterui-accessibility.workspace = true
 jni.workspace = true
 ndk = { version = "0.9.0", features = ["nativewindow", "api-level-33"] }
 # The application `Context` for service crates that resolve it through
@@ -447,7 +448,7 @@ getrandom.workspace = true
 toml.workspace = true
 jiff.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
-waterui = { workspace = true, features = ["canvas", "capture", "dialog", "effects", "flow-markdown", "gpu", "map", "snackbar", "video-gpu", "webview"] }
+waterui = { workspace = true, default-features = true, features = ["canvas", "capture", "dialog", "effects", "flow-markdown", "gpu", "map", "snackbar", "video-gpu", "webview"] }
 base64 = "0.23"
 # The font-collection tests stage a resource root of their own — a real
 # directory, since the loader reads one from the filesystem.
@@ -506,23 +507,23 @@ harness = false
 required-features = ["webview-system", "winit"]
 
 [features]
-menu = ["hydrolysis-style/menu", "waterui/menu", "dep:waterui-apple-menu"]
-calendar = ["hydrolysis-style/calendar", "waterui/calendar"]
-color-picker = ["hydrolysis-style/color-picker", "waterui/color-picker", "dep:waterui-form"]
-date-picker = ["calendar", "stepper", "menu", "hydrolysis-style/date-picker", "waterui/date-picker", "dep:waterui-form"]
-file-picker = ["hydrolysis-style/file-picker", "waterui/file-picker"]
-multi-date-picker = ["calendar", "hydrolysis-style/multi-date-picker", "waterui/multi-date-picker"]
-picker = ["menu", "hydrolysis-style/picker", "waterui/picker", "dep:waterui-form"]
-secure-field = ["menu", "hydrolysis-style/secure-field", "waterui/secure-field", "dep:waterui-form", "dep:unicode-segmentation"]
-slider = ["hydrolysis-style/slider", "waterui/slider"]
-stepper = ["hydrolysis-style/stepper", "waterui/stepper"]
-text-field = ["menu", "hydrolysis-style/text-field", "waterui/text-field", "dep:unicode-segmentation"]
-toggle = ["hydrolysis-style/toggle", "waterui/toggle"]
-validation = ["text-field", "hydrolysis-style/validation", "waterui/validation"]
-list = ["hydrolysis-style/list", "waterui/list"]
-link = ["waterui/link", "dep:waterkit-deeplink"]
-table = ["list", "hydrolysis-style/table", "waterui/table"]
-navigation = ["text-field", "hydrolysis-style/navigation", "waterui/navigation"]
+menu = ["hydrolysis-style/menu", "waterui-backend-core/menu", "dep:waterui-apple-menu"]
+calendar = ["hydrolysis-style/calendar", "waterui-backend-core/calendar"]
+color-picker = ["hydrolysis-style/color-picker", "waterui-backend-core/color-picker", "dep:waterui-form"]
+date-picker = ["calendar", "stepper", "menu", "hydrolysis-style/date-picker", "waterui-backend-core/date-picker", "dep:waterui-form"]
+file-picker = ["hydrolysis-style/file-picker", "waterui-backend-core/file-picker"]
+multi-date-picker = ["calendar", "hydrolysis-style/multi-date-picker", "waterui-backend-core/multi-date-picker"]
+picker = ["menu", "hydrolysis-style/picker", "waterui-backend-core/picker", "dep:waterui-form"]
+secure-field = ["menu", "hydrolysis-style/secure-field", "waterui-backend-core/secure-field", "dep:waterui-form", "dep:unicode-segmentation"]
+slider = ["hydrolysis-style/slider", "waterui-backend-core/slider"]
+stepper = ["hydrolysis-style/stepper", "waterui-backend-core/stepper"]
+text-field = ["menu", "hydrolysis-style/text-field", "waterui-backend-core/text-field", "dep:unicode-segmentation"]
+toggle = ["hydrolysis-style/toggle", "waterui-backend-core/toggle"]
+validation = ["text-field", "hydrolysis-style/validation", "waterui-backend-core/validation"]
+list = ["hydrolysis-style/list", "waterui-backend-core/list"]
+link = ["waterui-backend-core/link", "dep:waterkit-deeplink"]
+table = ["list", "hydrolysis-style/table", "waterui-backend-core/table"]
+navigation = ["text-field", "hydrolysis-style/navigation", "waterui-backend-core/navigation"]
 all-controls = ["menu", "calendar", "color-picker", "date-picker", "file-picker", "multi-date-picker", "picker", "secure-field", "slider", "stepper", "text-field", "toggle", "validation", "list", "link", "table", "navigation"]
 default = ["gpu", "all-controls"]
 accessibility = ["dep:accesskit", "dep:accesskit_ios", "dep:serde_json"]
@@ -555,14 +556,17 @@ gpu = [
     "dep:waterkit-clipboard",
     "dep:waterui-assets-core",
     "dep:native-executor",
+    "dep:waterui-accessibility",
+    "dep:waterui-capture",
     "dep:waterui-structural-transition",
     "waterui-backend-core/gestures",
     "waterui-backend-core/overlay",
     "waterui-backend-core/log",
+    "waterui-backend-core/runtime",
     "dep:waterui-watcher-set",
     "dep:cocoa-ui",
     "dep:tracing-panic",
-    "waterui/gpu",
+    "waterui-backend-core/gpu",
     "waterui-graphics/gpu",
     "dep:parley",
     "dep:skrifa",
@@ -592,11 +596,14 @@ cpu = [
     "dep:waterkit-clipboard",
     "dep:waterui-assets-core",
     "dep:native-executor",
+    "dep:waterui-accessibility",
+    "dep:waterui-capture",
     "dep:waterui-structural-transition",
     "waterui-backend-core/gestures",
     "waterui-backend-core/overlay",
     "waterui-backend-core/log",
-    "waterui/cpu",
+    "waterui-backend-core/runtime",
+    "waterui-backend-core/cpu",
     "waterui-graphics/cpu",
     "dep:parley",
     "dep:raw-window-handle",
@@ -608,8 +615,8 @@ cpu = [
 ]
 # Development inspector endpoint and frame/tree recorders, enabled by the CLI
 # for development sessions (`water run` / `water preview`).
-inspector = ["waterui/inspector", "dep:waterui-inspector-protocol", "dep:tracing-subscriber"]
-inspector-signals = ["inspector", "waterui/inspector-signals"]
+inspector = ["waterui-backend-core/inspector", "dep:waterui-inspector-protocol", "dep:tracing-subscriber"]
+inspector-signals = ["inspector", "waterui-backend-core/inspector-signals"]
 # The HWUI render target (Android only): the retained layer tree recorded
 # into `RenderNode` display lists through one command buffer per frame, and
 # text laid out and drawn by the platform's `StaticLayout`
@@ -628,26 +635,29 @@ hwui = [
     "dep:tracing-subscriber",
     "dep:waterkit-clipboard",
     "dep:native-executor",
+    "dep:waterui-accessibility",
+    "dep:waterui-capture",
     "dep:waterui-structural-transition",
     "waterui-backend-core/gestures",
     "waterui-backend-core/overlay",
     "waterui-backend-core/log",
+    "waterui-backend-core/runtime",
 ]
 # The GPU video player as the realization of `Video` and `VideoPlayer` off the
 # web, with its Android decoder plane
 # (`AndroidVideoSurfaceHost`). The CLI enables it for an application that
 # selects `waterui/video-gpu`.
-video-gpu = ["gpu", "dep:waterui-video-gpu", "waterui/video"]
+video-gpu = ["gpu", "dep:waterui-video-gpu", "waterui-backend-core/video"]
 # The GPU vector map as the realization of `Map`: this backend bridges no
 # platform map. The CLI enables it for an application that links
 # `waterui-map-gpu`.
-map-gpu = ["gpu", "dep:waterui-map-gpu", "waterui/map"]
+map-gpu = ["gpu", "dep:waterui-map-gpu", "waterui-backend-core/map"]
 # The platform's own web engine: `WKWebView` on macOS, an `<iframe>` on the web,
 # each hosted on a compositor plane, and `android.webkit.WebView` on Android,
 # mounted as a platform-view instance. Mutually exclusive with `webview-cef` and
 # `webview-wpe`.
 webview-system = [
-    "waterui/webview",
+    "waterui-backend-core/webview",
     "dep:block2",
     "dep:cookie",
     "dep:futures",
@@ -664,7 +674,7 @@ webview-system = [
 # Windows. Mutually exclusive with `webview-system` and `webview-wpe`.
 webview-cef = [
     "gpu",
-    "waterui/webview",
+    "waterui-backend-core/webview",
     "dep:waterui-browser-cef",
     "waterui-browser-cef?/webview",
 ]
@@ -672,7 +682,7 @@ webview-cef = [
 # Mutually exclusive with `webview-system` and `webview-cef`.
 webview-wpe = [
     "gpu",
-    "waterui/webview",
+    "waterui-backend-core/webview",
     "dep:waterui-browser-wpe",
     "waterui-browser-wpe?/webview",
 ]
@@ -708,7 +718,7 @@ winit = [
 # selects nothing. The CLI enables it for an application that uses video.
 video = [
     "dep:waterui-video",
-    "waterui/video",
+    "waterui-backend-core/video",
     "web-sys?/HtmlMediaElement",
     "web-sys?/HtmlTrackElement",
     "web-sys?/HtmlVideoElement",

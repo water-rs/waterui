@@ -2,17 +2,18 @@
 //!
 //! Draws only the label and value arranged according to [`RowLayout`] with
 //! theme-supplied internal spacing and zero extra outer padding, because the
-//! enclosing [`List`](waterui::component::list::List) owns the row insets.
+//! enclosing [`List`](waterui_controls::list::List) owns the row insets.
 
 use core::cell::RefCell;
 use std::rc::Rc;
 
 use kurbo::Rect;
 use nami::Signal as _;
-use waterui::ViewExt as _;
-use waterui::component::list::{ListRowConfig, RowLayout};
+use waterui_controls::list::{ListRowConfig, RowLayout};
+use waterui_controls::theme::ForegroundOverride;
 use waterui_core::Environment;
 use waterui_core::contract_violation;
+use waterui_core::env::Installed;
 use waterui_core::layout::{LayoutDirection, ProposalSize, Size, ViewDimensions, layout_direction};
 
 use crate::num_cast::f64_as_f32;
@@ -32,7 +33,9 @@ impl<E: TextEngine> ListRowRenderState<E> {
     pub(crate) fn from_config(config: ListRowConfig<HeldChild<E>>) -> Self {
         let (label, value, layout, value_color) = config.into_parts();
         let value = match value_color {
-            Some(color) => RetainedSubview::new(value.foreground(color)),
+            Some(color) => {
+                RetainedSubview::new(Installed::new(value, ForegroundOverride::new(color)))
+            }
             None => RetainedSubview::new(value),
         };
         Self {

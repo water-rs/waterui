@@ -27,14 +27,14 @@
 //! content. As a view background, rather than a window background, a
 //! behind-window level is rejected by [`WithinWindowLevel::of`].
 
-use waterui::background::Material;
-use waterui::theme::ColorScheme;
+use waterui_controls::theme::ColorScheme;
 use waterui_core::Environment;
 use waterui_core::contract_violation;
 use waterui_graphics::backend::filtrate::Chain;
 use waterui_graphics::backend::filtrate::filters::{GaussianBlur, LumaCurve};
 #[cfg(hydrolysis_cherenkov)]
 use waterui_graphics::backend::filtrate::{FilterExt as _, OperatingSpace};
+use waterui_shape::background::Material;
 
 /// The fraction of device resolution a material's backdrop is captured at.
 ///
@@ -393,7 +393,7 @@ impl<E: crate::text::TextEngine> crate::renderer::HydrolysisRenderer<E> {
     pub(crate) fn present_window_backdrop(&mut self, bounds: kurbo::Rect, env: &Environment) {
         self.core.window_material = if let Some(backdrop) = &self.window_backdrop {
             let level = backdrop.level;
-            let scheme = self.read_signal(&waterui::theme::current_color_scheme(env));
+            let scheme = self.read_signal(&waterui_controls::theme::current_color_scheme(env));
             Some(crate::renderer::mount::MaterialRequest {
                 scope: None,
                 level,

@@ -11,10 +11,10 @@
 //! and applies once. No signal type crosses into `cocoa-ui`.
 
 use cocoa_ui::Retained;
-use waterui::graphics::color::{Color, WorkingColor};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_graphics::color::{Color, WorkingColor};
 
 use crate::contract::NativeLeaf;
 

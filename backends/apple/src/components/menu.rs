@@ -23,11 +23,11 @@ use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 
 use cocoa_ui::{PlatformView, Rect, view};
-use waterui::component::button::ButtonStyle;
-use waterui::component::menu::{ResolvedMenu, ResolvedMenuItem};
-use waterui::reactive::Signal;
-use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
+use nami::Signal;
+use nami::watcher::{BoxWatcherGuard, Metadata};
 use waterui_backend_core::Environment;
+use waterui_controls::button::ButtonStyle;
+use waterui_controls::menu::{ResolvedMenu, ResolvedMenuItem};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
@@ -473,7 +473,7 @@ pub fn realize_resolved_menu(config: &ResolvedMenu<Held>, ctx: &RenderContext<'_
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui::text::StyledStr;
+    use waterui_text::StyledStr;
 
     const PADDING: LabelPadding = LabelPadding {
         leading: 12.0,

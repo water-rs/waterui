@@ -18,14 +18,14 @@ use core::cell::RefCell;
 use cocoa_ui::Point;
 use cocoa_ui::Rect;
 use cocoa_ui::view;
-#[cfg(target_os = "macos")]
-use waterui::drag_drop::DragPayload;
-use waterui::drag_drop::{Draggable, PlatformRepresentation};
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+#[cfg(target_os = "macos")]
+use waterui_interaction::drag_drop::DragPayload;
+use waterui_interaction::drag_drop::{Draggable, PlatformRepresentation};
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;

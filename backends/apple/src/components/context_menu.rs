@@ -17,20 +17,20 @@ use core::cell::RefCell;
 
 use cocoa_ui::Rect;
 use cocoa_ui::view;
-use waterui::component::menu::ResolvedMenuItem;
-use waterui::metadata::context_menu::ResolvedContextMenu;
-use waterui::reactive::Computed;
-use waterui::reactive::Signal;
+use nami::Computed;
+use nami::Signal;
 #[cfg(target_os = "ios")]
-use waterui::reactive::SignalExt;
-#[cfg(target_os = "ios")]
-use waterui::resolve::Resolvable;
+use nami::SignalExt;
 use waterui_backend_core::Environment;
+use waterui_controls::context_menu::ResolvedContextMenu;
+use waterui_controls::menu::ResolvedMenuItem;
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+#[cfg(target_os = "ios")]
+use waterui_core::resolve::Resolvable;
 
 use crate::components::menu_items;
 #[cfg(target_os = "ios")]
@@ -191,7 +191,7 @@ fn dismiss_presented(state: &Rc<RefCell<ContextMenuState>>) {
 /// slots; `bind_panel_palette` pushes a new one whenever a token changes.
 #[cfg(target_os = "ios")]
 fn menu_panel_palette(env: &Environment) -> uikit::PanelPalette {
-    use waterui::theme::color::{
+    use waterui_controls::theme::color::{
         Border, Error, Foreground, MutedForeground, SelectionContainer, Surface,
     };
     uikit::PanelPalette {
@@ -208,7 +208,7 @@ fn menu_panel_palette(env: &Environment) -> uikit::PanelPalette {
 /// object.
 #[cfg(target_os = "ios")]
 fn platform_color(
-    color: &waterui::graphics::color::WorkingColor,
+    color: &waterui_graphics::color::WorkingColor,
 ) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIColor> {
     let [red, green, blue, alpha] = color.components;
     cocoa_ui::uikit::colors::extended_linear_display_p3(
@@ -227,7 +227,7 @@ fn bind_panel_palette(
     env: &Environment,
     state: &Rc<RefCell<ContextMenuState>>,
 ) {
-    use waterui::theme::color::{
+    use waterui_controls::theme::color::{
         Border, Error, Foreground, MutedForeground, SelectionContainer, Surface,
     };
     for token in [

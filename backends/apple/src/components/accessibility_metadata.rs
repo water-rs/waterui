@@ -29,13 +29,13 @@
 use cocoa_ui::accessibility::{self as a11y, Role};
 use cocoa_ui::response;
 use cocoa_ui::{PlatformView, view};
+use nami::Computed;
 use objc2_foundation::NSString;
-use waterui::accessibility::{
+use waterui_accessibility::{
     AccessibilityChecked, AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden,
     AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
     AccessibilityValue,
 };
-use waterui::reactive::Computed;
 use waterui_core::Metadata;
 use waterui_core::SignalExt;
 use waterui_interaction::interaction::Selected;

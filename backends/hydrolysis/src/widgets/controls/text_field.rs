@@ -23,7 +23,6 @@ use nami::Computed;
 use nami::{Signal as _, SignalExt as _};
 use std::cell::RefCell;
 use std::rc::Rc;
-use waterui::cursor::CursorStyle;
 #[cfg(feature = "text-field")]
 use waterui_controls::NoopSlot;
 #[cfg(feature = "text-field")]
@@ -38,6 +37,7 @@ use waterui_core::layout::{
 };
 #[cfg(feature = "secure-field")]
 use waterui_form::secure::SecureFieldConfig;
+use waterui_interaction::cursor::CursorStyle;
 #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
 use waterui_interaction::interaction::InteractionState;
 #[cfg(feature = "text-field")]

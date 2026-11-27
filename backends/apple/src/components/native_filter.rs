@@ -1610,7 +1610,7 @@ impl CapturableSurface for NativeFilterCapturable {
         };
         let count = owner.capture_suppression.get();
         if count == 0 {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "native filter capture suppression scopes are unbalanced; the end is ignored"
             );
             return;
@@ -1650,7 +1650,7 @@ impl CapturableSurface for NativeFilterCapturable {
         };
         let count = owner.external_count.get();
         if count == 0 {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "native filter external rendering scopes are unbalanced; the end is ignored"
             );
             return;

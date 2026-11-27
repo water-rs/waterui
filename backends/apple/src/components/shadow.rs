@@ -15,15 +15,15 @@ use core::cell::Cell;
 use cocoa_ui::layer;
 use cocoa_ui::path::ShapeKind as CocoaShapeKind;
 use cocoa_ui::{PlatformView, Rect, Retained, Size, view};
-use waterui::graphics::color::WorkingColor;
-use waterui::reactive::{Computed, Signal};
-use waterui::shape::{PathCommand, ShapeKind};
-use waterui::style::Shadow;
+use nami::{Computed, Signal};
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_graphics::color::WorkingColor;
+use waterui_shape::style::Shadow;
+use waterui_shape::{PathCommand, ShapeKind};
 
 use crate::animation::with_platform_animation;
 use crate::contract::{Held, Mounted, NativeLeaf};
@@ -76,7 +76,7 @@ fn platform_color(color: &WorkingColor) -> Retained<platform::PlatformColor> {
     }
 }
 
-fn corner_radius(radius: waterui::shape::CornerRadius) -> cocoa_ui::path::CornerRadius {
+fn corner_radius(radius: waterui_shape::CornerRadius) -> cocoa_ui::path::CornerRadius {
     match (radius.as_points(), radius.as_fraction()) {
         (Some(points), None) => cocoa_ui::path::CornerRadius::Points(f64::from(points)),
         (None, Some(fraction)) => cocoa_ui::path::CornerRadius::Fraction(f64::from(fraction)),
@@ -375,12 +375,12 @@ pub fn realize_shadow_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui::shape::ShapeKind as WaterShapeKind;
     use waterui_core::Angle;
+    use waterui_shape::ShapeKind as WaterShapeKind;
 
     #[test]
     fn kind_conversion_preserves_per_corner_radii() {
-        use waterui::shape::{CornerRadii, CornerRadius};
+        use waterui_shape::{CornerRadii, CornerRadius};
 
         assert_eq!(
             shape_kind(WaterShapeKind::RoundedRect {

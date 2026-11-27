@@ -7,15 +7,15 @@
 //! watcher; no signal type crosses into `cocoa-ui`.
 
 use cocoa_ui::Retained;
-use waterui::graphics::color::WorkingColor;
-use waterui::icon::IconSize;
-use waterui::reactive::{Signal, SignalExt as _};
-use waterui::resolve::Resolvable;
-use waterui::text::font::{Body, ResolvedFont};
-use waterui::theme::color::Foreground;
+use nami::{Signal, SignalExt as _};
+use waterui_controls::theme::color::Foreground;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_core::resolve::Resolvable;
+use waterui_graphics::color::WorkingColor;
+use waterui_icon::IconSize;
+use waterui_text::font::{Body, ResolvedFont};
 
 use super::font::resolved_weight;
 use crate::SfSymbol;
@@ -146,7 +146,9 @@ pub fn realize_sf_symbol(symbol: SfSymbol, env: &Environment, mtm: MainThreadMar
 
     let name = symbol.as_str();
     if !view.set_system_symbol(name) {
-        waterui::contract_violation!("Unknown SF Symbol name: {name}; the view draws no symbol");
+        waterui_core::contract_violation!(
+            "Unknown SF Symbol name: {name}; the view draws no symbol"
+        );
     }
 
     // The image view draws the symbol in the leaf's response rectangle

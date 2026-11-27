@@ -17,14 +17,14 @@ use alloc::rc::Rc;
 use cocoa_ui::glass::{GlassStyle, GlassView};
 use cocoa_ui::view;
 use cocoa_ui::{PlatformView, Rect, Retained};
-use waterui::background::{Glass, GlassBackground};
-use waterui::graphics::color::WorkingColor;
-use waterui::shape::ShapeKind;
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_graphics::color::WorkingColor;
+use waterui_shape::ShapeKind;
+use waterui_shape::background::{Glass, GlassBackground};
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
@@ -38,8 +38,8 @@ use cocoa_ui::uikit::HostView;
 /// The `Glass` style as the kit's neutral style.
 const fn style(glass: &Glass) -> GlassStyle {
     match glass.style() {
-        waterui::background::GlassStyle::Regular => GlassStyle::Regular,
-        waterui::background::GlassStyle::Clear => GlassStyle::Clear,
+        waterui_shape::background::GlassStyle::Regular => GlassStyle::Regular,
+        waterui_shape::background::GlassStyle::Clear => GlassStyle::Clear,
     }
 }
 
@@ -97,7 +97,7 @@ fn apply_outline(glass: &GlassView, shape: ShapeKind, bounds: Rect) {
             }
         }
         ShapeKind::Ellipse | ShapeKind::CustomPath => {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "WaterUI glass takes its outline from a corner configuration; {shape:?} (ellipse or custom path) cannot be a glass outline; \
                  the glass keeps its current outline"
             );
@@ -116,7 +116,7 @@ fn apply_outline(glass: &GlassView, shape: ShapeKind, bounds: Rect) {
         ShapeKind::Circle | ShapeKind::Capsule => glass.set_corner_radius(limit),
         ShapeKind::RoundedRect { radii } => {
             let Some(uniform) = radii.as_uniform() else {
-                waterui::contract_violation!(
+                waterui_core::contract_violation!(
                     "WaterUI glass on macOS takes one corner radius; {shape:?} (per-corner radii) cannot be a glass outline; \
                      the glass keeps its current outline"
                 );
@@ -125,7 +125,7 @@ fn apply_outline(glass: &GlassView, shape: ShapeKind, bounds: Rect) {
             glass.set_corner_radius(resolve_corner(uniform, shorter));
         }
         ShapeKind::Ellipse | ShapeKind::CustomPath => {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "WaterUI glass on macOS takes one corner radius; {shape:?} (ellipse or custom path) cannot be a glass outline; \
                  the glass keeps its current outline"
             );

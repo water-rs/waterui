@@ -521,8 +521,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         // capture. `read_signal` subscribes the flush, so an
                         // appearance flip requests a refresh and re-keys the
                         // member.
-                        let scheme =
-                            renderer.read_signal(&waterui::theme::current_color_scheme(child_env));
+                        let scheme = renderer
+                            .read_signal(&waterui_controls::theme::current_color_scheme(child_env));
                         let visible = renderer.record_alpha() != 0.0;
                         let scope = renderer
                             .material_group_scopes
@@ -1382,7 +1382,7 @@ fn flush_transform_wrapper<E: crate::text::TextEngine, const SLOTS: usize>(
     env: &Environment,
     core: &NodeCore<E>,
     motion: &Rc<mount::motion::LayerMotion>,
-    anchor: Option<waterui::style::Anchor>,
+    anchor: Option<waterui_shape::style::Anchor>,
     child: &RenderNode<E>,
     slots: [usize; SLOTS],
 ) {

@@ -22,11 +22,11 @@ use accesskit::{
 use kurbo::{Point, Rect, Vec2};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Signal, SignalExt as _};
-use waterui::component::badge::BadgeValue;
-use waterui::navigation::tab::{TabItem, TabStyle, TabsLayout};
-use waterui::theme::color::Foreground;
-use waterui::theme::{ForegroundOverride, install_font_signal};
+use waterui_backend_core::navigation::tab::{TabItem, TabStyle, TabsLayout};
+use waterui_controls::badge::BadgeValue;
 use waterui_controls::label::LabelDisplayMode;
+use waterui_controls::theme::color::Foreground;
+use waterui_controls::theme::{ForegroundOverride, install_font_signal};
 use waterui_core::Environment;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;

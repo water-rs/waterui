@@ -20,21 +20,21 @@ use std::ptr;
 #[cfg(target_os = "ios")]
 use cocoa_ui::accessibility::{Role, apply_state, set_role};
 use cocoa_ui::{Retained, view};
+#[cfg(target_os = "ios")]
+use nami::SignalExt as _;
+use nami::watcher::{BoxWatcherGuard, Metadata};
+use nami::{Binding, Computed, Signal};
 #[cfg(target_os = "macos")]
 use objc2_foundation::NSString;
-use waterui::component::table::{
+use waterui_controls::table::{
     SortDirection, TableColumnDescriptor, TableConfig, TableRow, TableSelection, TableSort,
 };
-use waterui::id::Id as RawId;
-#[cfg(target_os = "ios")]
-use waterui::reactive::SignalExt as _;
-use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
-use waterui::reactive::{Binding, Computed, Signal};
-use waterui::text::StyledStr;
-use waterui::views::AnyViewsSnapshot;
+use waterui_core::id::Id as RawId;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_core::views::AnyViewsSnapshot;
+use waterui_text::StyledStr;
 
 use crate::contract::{Held, NativeLeaf, RenderContext, Renderer};
 
@@ -48,11 +48,11 @@ use cocoa_ui::uikit::{HostView, gesture::GestureAttachment, gesture::tap};
 #[cfg(target_os = "macos")]
 use cocoa_ui::objc2_app_kit::{NSTableColumn, NSTableHeaderView};
 #[cfg(target_os = "ios")]
-use waterui::color::WorkingColor;
-#[cfg(target_os = "ios")]
-use waterui::theme::color::SelectionContainer;
+use waterui_controls::theme::color::SelectionContainer;
 #[cfg(target_os = "ios")]
 use waterui_core::resolve::Resolvable as _;
+#[cfg(target_os = "ios")]
+use waterui_graphics::color::WorkingColor;
 
 /// A row's identity: the collection id `SharedAnyViews` answers for an index.
 type ItemId = RawId;

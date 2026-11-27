@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use nami::Signal as _;
 use rustc_hash::FxHasher;
-use waterui::theme;
+use waterui_controls::theme;
 use waterui_core::Environment;
 use waterui_core::layout::{HorizontalAlignment, layout_direction};
 use waterui_graphics::color::Color;

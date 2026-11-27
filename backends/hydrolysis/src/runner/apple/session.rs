@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use cocoa_ui::main_queue::MainQueueWake;
 use nami::Signal as _;
-use waterui::window::WindowState;
+use waterui_backend_core::window::WindowState;
 use waterui_core::{Environment, contract_violation};
 
 #[cfg(feature = "accessibility")]

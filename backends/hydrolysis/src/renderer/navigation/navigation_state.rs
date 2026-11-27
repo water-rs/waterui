@@ -5,7 +5,7 @@ use crate::renderer::tree::transition::TransitionRun;
 use crate::text::TextEngine;
 use crate::theme::{ModalInteraction, NavigationMotion};
 use std::collections::BTreeSet;
-use waterui::navigation::{
+use waterui_backend_core::navigation::{
     AnyNavigationTransition, NavigationDestinationState, NavigationTransactionId,
     NavigationTransitionDirection, NavigationTransitionPair, ResolvedNavigationView,
 };

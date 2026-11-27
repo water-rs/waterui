@@ -3,10 +3,10 @@
 //! affordance, and URL activation through `cocoa_ui::open_url`.
 
 use cocoa_ui::accessibility::Role;
-use waterui::Signal as _;
-use waterui::component::ControlSize;
-use waterui::component::button::ButtonStyle;
-use waterui::component::link::LinkConfig;
+use nami::Signal as _;
+use waterui_controls::ControlSize;
+use waterui_controls::button::ButtonStyle;
+use waterui_controls::link::LinkConfig;
 
 use crate::components::button::realize_control_button;
 use crate::contract::{Held, NativeLeaf, RenderContext};

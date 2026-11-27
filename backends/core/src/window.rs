@@ -180,7 +180,7 @@ pub struct WindowParts<C, T = ()> {
     /// `app_id`.
     ///
     /// When `None` (the default), the window carries the application's own
-    /// identifier, [`application_identifier`](crate::app::application_identifier);
+    /// identifier, [`application_identifier`];
     /// when that is empty too, the platform's default applies (the executable
     /// name under X11 and Wayland).
     ///

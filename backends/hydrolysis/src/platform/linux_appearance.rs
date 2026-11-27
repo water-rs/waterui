@@ -24,7 +24,7 @@
 //! every host; the zbus client lives in `portal`, Linux only.
 
 use nami::{Binding, Signal as _};
-use waterui::theme::ColorScheme;
+use waterui_controls::theme::ColorScheme;
 use waterui_core::contract_violation;
 
 /// A portal `color-scheme` value mapped onto the scheme per the spec: `1`
@@ -101,7 +101,7 @@ mod portal {
     use executor_core::{LocalExecutor, async_task::AsyncTask};
     use futures_core::Stream as _;
     use nami::{Binding, Computed, Signal as _, SignalExt as _};
-    use waterui::theme::ColorScheme;
+    use waterui_controls::theme::ColorScheme;
     use waterui_core::contract_violation;
     use zbus::zvariant::OwnedValue;
 
@@ -441,7 +441,7 @@ mod tests {
     use std::rc::Rc;
 
     use nami::Signal as _;
-    use waterui::theme::ColorScheme;
+    use waterui_controls::theme::ColorScheme;
     use waterui_core::binding;
 
     use super::{

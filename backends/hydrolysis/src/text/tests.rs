@@ -163,7 +163,7 @@ fn a_truncated_leaf_reports_the_drawn_line() {
 #[test]
 fn a_resized_run_spaces_on_its_own_face_metrics() {
     let mut env = test_environment();
-    waterui::theme::install_font_signal::<Body>(
+    waterui_controls::theme::install_font_signal::<Body>(
         &mut env,
         nami::Computed::constant(
             ResolvedFont::new(16.0, FontWeight::Normal).with_typography_metrics(24.0, 0.0),

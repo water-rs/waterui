@@ -18,27 +18,31 @@ use cocoa_ui::geometry::Rect as KitRect;
 use cocoa_ui::uikit::{HitTest, HostView};
 use cocoa_ui::{PlatformView, Retained, view};
 use executor_core::spawn_local;
+use nami::watcher::BoxWatcherGuard;
+use nami::{Computed, Signal as _};
 use native_executor::sleep;
-use waterui::animation::Animation;
-use waterui::border::Border as BorderStyle;
-use waterui::component::{Button, ButtonStyle, Label, button, label};
-use waterui::graphics::color::Color;
-use waterui::layout::padding::EdgeInsets;
-use waterui::layout::stack::hstack;
-use waterui::reactive::watcher::BoxWatcherGuard;
-use waterui::reactive::{Computed, Signal as _};
-use waterui::shape::{RoundedRectangle, ShapeExt as _};
-use waterui::snackbar::{SnackbarHostConfig, SnackbarPosition, SnackbarPresentation};
-use waterui::style::Shadow;
-use waterui::theme::color::{Accent, Border, Foreground, Surface};
-use waterui::widget::disclosure::SlotBuilder;
-use waterui::{OneOf2, View, ViewExt as _};
 use waterui_backend_core::{Environment, SlotView};
-use waterui_core::Metadata;
+use waterui_controls::button::{Button, ButtonStyle, button};
+use waterui_controls::label::{Label, label};
+use waterui_controls::slot::SlotBuilder;
+use waterui_controls::snackbar::{SnackbarHostConfig, SnackbarPosition, SnackbarPresentation};
+use waterui_controls::theme::ForegroundOverride;
+use waterui_controls::theme::color::{Accent, Border, Foreground, Surface};
+use waterui_core::animation::Animation;
+use waterui_core::env::Installed;
 use waterui_core::layout::{
     LayoutDirection, LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions, layout_direction,
 };
+use waterui_core::{Metadata, OneOf2, View};
+use waterui_graphics::color::Color;
+use waterui_layout::background::BackgroundView;
+use waterui_layout::frame::Frame;
+use waterui_layout::padding::{EdgeInsets, Padding};
+use waterui_layout::stack::hstack;
+use waterui_shape::border::Border as BorderStyle;
+use waterui_shape::style::Shadow;
+use waterui_shape::{RoundedRectangle, ShapeExt as _};
 
 use crate::SfSymbol;
 use crate::animation::timing;
@@ -98,10 +102,15 @@ struct AppleCloseIcon;
 
 impl View for AppleCloseIcon {
     fn body(self, _env: &Environment) -> impl View {
-        SfSymbol::XMARK
-            .foreground(Foreground)
-            .size(CLOSE_ICON_SIZE, CLOSE_ICON_SIZE)
-            .size(CLOSE_BOX_SIZE, CLOSE_BOX_SIZE)
+        let icon = Frame::new(Installed::new(
+            SfSymbol::XMARK,
+            ForegroundOverride::new(Foreground),
+        ))
+        .width(CLOSE_ICON_SIZE)
+        .height(CLOSE_ICON_SIZE);
+        Frame::new(icon)
+            .width(CLOSE_BOX_SIZE)
+            .height(CLOSE_BOX_SIZE)
     }
 }
 
@@ -117,22 +126,22 @@ fn build_apple_banner(presentation: &SnackbarPresentation<Held>) -> impl View + 
         EdgeInsets::symmetric(CONTENT_VERTICAL_PADDING, CONTENT_HORIZONTAL_PADDING)
     };
 
-    let label_view = presentation
-        .icon()
-        .map_or_else(
+    let label_view = Installed::new(
+        presentation.icon().map_or_else(
             || OneOf2::B(label(presentation.message().clone())),
             |icon| {
                 OneOf2::A(label(presentation.message().clone()).icon(BuiltIconSlot(icon.clone())))
             },
-        )
-        .foreground(Foreground);
+        ),
+        ForegroundOverride::new(Foreground),
+    );
 
     let action_button = presentation.action().map(|action| {
         let presentation_for_action = presentation.clone();
         let action_label = action.label().clone();
         let semantic_text = action_label.semantic_text().clone();
         button(Label::new(semantic_text, move || {
-            action_label.clone().foreground(Accent)
+            Installed::new(action_label.clone(), ForegroundOverride::new(Accent))
         }))
         .style(ButtonStyle::Borderless)
         .action(move |env: Environment| {
@@ -159,14 +168,16 @@ fn build_apple_banner(presentation: &SnackbarPresentation<Held>) -> impl View + 
         .offset(0.0, 1.0)
         .silhouette(shape);
 
-    hstack((label_view, action_button, close_button))
-        .spacing(CONTENT_SPACING)
-        .padding_with(content_padding)
-        .min_height(MIN_BANNER_HEIGHT)
-        .background(shape.fill(Surface))
-        .border_with(BorderStyle::new(Border, BORDER_WIDTH).corner_radius(CORNER_RADIUS))
-        .shadow(ambient_shadow)
-        .shadow(key_shadow)
+    let content = Frame::new(Padding::new(
+        content_padding,
+        hstack((label_view, action_button, close_button)).spacing(CONTENT_SPACING),
+    ))
+    .min_height(MIN_BANNER_HEIGHT);
+    let bordered = Metadata::new(
+        BackgroundView::new(content, shape.fill(Surface)),
+        BorderStyle::new(Border, BORDER_WIDTH).corner_radius(CORNER_RADIUS),
+    );
+    Metadata::new(Metadata::new(bordered, ambient_shadow), key_shadow)
 }
 
 struct AppleSnackbarRow {

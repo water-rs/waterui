@@ -14,12 +14,12 @@ use core::cell::RefCell;
 use cocoa_ui::shape::{self, PathBuilder};
 use cocoa_ui::view;
 use cocoa_ui::{PlatformView, Point, Rect, Retained};
-use waterui::shape::{ClipShape, PathCommand, ShapeKind};
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_shape::{ClipShape, PathCommand, ShapeKind};
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;

@@ -1,27 +1,27 @@
-//! Native Apple realization of [`Avatar`](waterui::widget::avatar::Avatar).
+//! Native Apple realization of [`Avatar`](waterui_controls::avatar::Avatar).
 
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 
 use cocoa_ui::accessibility::{self as a11y, Role};
 use cocoa_ui::{PlatformView, Rect, Retained, layer, shape, view};
+use nami::Signal as _;
 use objc2_foundation::NSString;
 use objc2_quartz_core::CAShapeLayer;
 #[cfg(waterui_feature = "image")]
-use waterui::layout::ContentMode;
-#[cfg(waterui_feature = "image")]
-use waterui::media::Photo;
-use waterui::reactive::Signal as _;
-use waterui::shape::{Circle, ClipShape, PathCommand, ShapeKind};
-use waterui::text::Text;
-use waterui::theme::color::{MutedForeground, SurfaceVariant};
-use waterui::widget::avatar::{AvatarConfig, AvatarRing};
+use waterui_backend_core::media::Photo;
+use waterui_controls::avatar::{AvatarConfig, AvatarRing};
+use waterui_controls::theme::color::{MutedForeground, SurfaceVariant};
 use waterui_core::Environment;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
 use waterui_graphics::color::Color;
+#[cfg(waterui_feature = "image")]
+use waterui_layout::ContentMode;
+use waterui_shape::{Circle, ClipShape, PathCommand, ShapeKind};
+use waterui_text::Text;
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
@@ -313,7 +313,7 @@ fn attach_color_watchers(
     }
 }
 
-/// Realizes an [`AvatarConfig`](waterui::widget::avatar::AvatarConfig) as a native
+/// Realizes an [`AvatarConfig`](waterui_controls::avatar::AvatarConfig) as a native
 /// AppKit/UIKit `HostView` leaf.
 pub fn realize_avatar_config(
     mut config: AvatarConfig<Held>,

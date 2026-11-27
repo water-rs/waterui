@@ -43,42 +43,42 @@ default = [
     "toggle",
     "view_effect",
 ]
-applied_filter = ["gpu_surface", "dep:objc2-core-image", "waterui/effects"]
-avatar = ["waterui/avatar"]
-calendar = ["waterui/calendar"]
+applied_filter = ["gpu_surface", "dep:objc2-core-image", "waterui-backend-core/effects"]
+avatar = ["waterui-backend-core/avatar"]
+calendar = ["waterui-backend-core/calendar"]
 # The Core Animation realization of `Canvas`.
-canvas = ["dep:block2", "dep:skrifa", "waterui-graphics/text", "waterui/canvas"]
-gpu_surface = ["dep:block2", "dep:futures", "dep:half", "objc2-metal/block2", "dep:wgpu-hal", "waterui/gpu", "waterui-graphics/gpu"]
-color_picker = ["waterui/color-picker"]
-context_menu = ["waterui/menu"]
-date_picker = ["waterui/date-picker"]
-dialog = ["waterui/dialog", "cocoa-ui/dialog"]
-highlight = ["waterui/highlight"]
-link = ["waterui/link"]
-list = ["waterui/list"]
+canvas = ["dep:block2", "dep:skrifa", "waterui-graphics/text", "waterui-backend-core/canvas"]
+gpu_surface = ["dep:block2", "dep:futures", "dep:half", "objc2-metal/block2", "dep:wgpu-hal", "waterui-backend-core/gpu", "waterui-graphics/gpu"]
+color_picker = ["waterui-backend-core/color-picker"]
+context_menu = ["waterui-backend-core/menu"]
+date_picker = ["waterui-backend-core/date-picker"]
+dialog = ["waterui-backend-core/dialog", "cocoa-ui/dialog"]
+highlight = ["waterui-backend-core/highlight"]
+link = ["waterui-backend-core/link"]
+list = ["waterui-backend-core/list"]
 # `cocoa-ui/map` brings `MKMapView`, the `MapKit` framework link and the
 # `CoreLocation` types; an app that never uses the leaf gets none of it.
-map = ["dep:waterui-map", "cocoa-ui/map", "waterui/map"]
-menu = ["waterui/menu"]
-multi_date_picker = ["waterui/multi-date-picker"]
-navigation = ["menu", "waterui/navigation"]
-picker = ["waterui/picker"]
+map = ["dep:waterui-map", "cocoa-ui/map", "waterui-backend-core/map"]
+menu = ["waterui-backend-core/menu"]
+multi_date_picker = ["waterui-backend-core/multi-date-picker"]
+navigation = ["menu", "waterui-backend-core/navigation"]
+picker = ["waterui-backend-core/picker"]
 plain = []
 picture = ["waterui-graphics/cpu"]
-secure_field = ["waterui/secure-field"]
-slider = ["waterui/slider"]
-stepper = ["waterui/stepper"]
-table = ["list", "waterui/table"]
-text_field = ["waterui/text-field"]
-toggle = ["waterui/toggle"]
-view_effect = ["gpu_surface", "waterui/effects"]
-webview = ["dep:waterui-webview", "dep:cookie", "cocoa-ui/webview", "waterui/webview"]
+secure_field = ["waterui-backend-core/secure-field"]
+slider = ["waterui-backend-core/slider"]
+stepper = ["waterui-backend-core/stepper"]
+table = ["list", "waterui-backend-core/table"]
+text_field = ["waterui-backend-core/text-field"]
+toggle = ["waterui-backend-core/toggle"]
+view_effect = ["gpu_surface", "waterui-backend-core/effects"]
+webview = ["dep:waterui-webview", "dep:cookie", "cocoa-ui/webview", "waterui-backend-core/webview"]
 webview-cef = [
     "gpu_surface",
     "picture",
     "dep:waterui-webview",
     "dep:waterui-browser-cef",
-    "waterui/webview",
+    "waterui-backend-core/webview",
     "waterui-browser-cef?/webview",
 ]
 # `video` is the name the `water` CLI's capability mechanism (`waterui-video`
@@ -86,8 +86,8 @@ webview-cef = [
 # leaves the video semantic needs (`video` and `video_player`).
 # `cocoa-ui/avkit` brings the `AVFoundation`/`AVKit` framework links; an app
 # without video compiles and links none of it.
-video = ["video_player", "dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit", "waterui/video"]
-video_player = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit", "waterui/video"]
+video = ["video_player", "dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit", "waterui-backend-core/video"]
+video_player = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit", "waterui-backend-core/video"]
 
 # The `preview::run` entry `water preview` links — the generated preview
 # package enables it; `water run` never does, so every other Apple app
@@ -110,7 +110,7 @@ swiftui = ["dep:waterkit-build", "dep:waterui-meta"]
 
 # Development inspector endpoint and tracing subscriber, enabled by the CLI for
 # development sessions (`water run` / `water preview`).
-inspector = ["waterui/inspector", "dep:tracing-subscriber"]
+inspector = ["waterui-backend-core/inspector", "dep:tracing-subscriber"]
 
 # Harness-only reach for `Tests/native.rs`: compiles the doc(hidden)
 # `native_test_support` module (private windows + embedding internals),
@@ -130,14 +130,20 @@ native-test = [
 
 
 [dependencies]
-waterui = { workspace = true }
+nami = { workspace = true }
 waterui-accessibility = { workspace = true }
+waterui-controls = { workspace = true, default-features = false }
 waterui-interaction = { workspace = true }
 waterui-core = { workspace = true }
 waterui-frame-rate = { workspace = true }
 waterui-capture = { workspace = true }
+waterui-icon = { workspace = true }
+waterui-layout = { workspace = true }
 waterui-resources = { workspace = true }
+waterui-shape = { workspace = true, default-features = false }
 waterui-structural-transition.workspace = true
+waterui-text = { workspace = true }
+waterui-url = { workspace = true }
 thiserror.workspace = true
 waterui-backend-core = { workspace = true, default-features = true, features = [
     "overlay",
@@ -263,8 +269,8 @@ libtest-mimic = "0.8"
 serde_json = { workspace = true }
 # The preview suite renders an `ImageAsset`, which sits behind `assets` + `image`
 # on the facade, and the native suite tests `NativeBackend::offscreen` behind
-# `capture` — the crate's own `waterui` edge enables none of them.
-waterui = { workspace = true, features = ["assets", "capture", "flow-markdown", "image"] }
+# `capture` and markdown accessibility behind `flow-markdown`.
+waterui = { workspace = true, default-features = true, features = ["assets", "capture", "flow-markdown", "image"] }
 waterui-icons-lucide = { workspace = true }
 # The termination tests park the hook futures on an `async-task` executor.
 executor-core = { workspace = true, features = ["async-task"] }

@@ -24,9 +24,9 @@ use cocoa_ui::objc2_ui_kit::UIWindow as PlatformWindow;
 #[cfg(target_os = "ios")]
 use cocoa_ui::uikit::{HostView, SheetController, SheetDetentSpec};
 use cocoa_ui::{MainThreadMarker, PlatformView, Retained, view};
-use waterui::reactive::{Binding, Signal};
-use waterui::sheet::{Sheet, SheetDetent};
+use nami::{Binding, Signal};
 use waterui_backend_core::{Environment, SlotView};
+use waterui_controls::sheet::{Sheet, SheetDetent};
 use waterui_core::Metadata;
 use waterui_core::extract::State as EnvState;
 use waterui_core::layout::{

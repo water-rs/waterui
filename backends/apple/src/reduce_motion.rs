@@ -2,7 +2,7 @@
 
 use cocoa_ui::MainThreadMarker;
 use cocoa_ui::reduce_motion::{observe_changes, system_reduce_motion};
-use waterui::reactive::{Binding, Signal as _};
+use nami::{Binding, Signal as _};
 use waterui_backend_core::Environment;
 use waterui_structural_transition::ReduceMotion;
 
@@ -27,7 +27,7 @@ mod tests {
     use core::cell::Cell;
 
     use alloc::rc::Rc;
-    use waterui::reactive::{Binding, Signal as _};
+    use nami::{Binding, Signal as _};
     use waterui_backend_core::Environment;
     use waterui_structural_transition::ReduceMotion;
 

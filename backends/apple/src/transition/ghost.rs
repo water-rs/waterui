@@ -47,7 +47,7 @@ pub struct GhostRealization {
 struct RemovalBlur {
     /// The binding `FrozenEffect`'s blur radius samples — written on
     /// every tick.
-    radius: waterui::reactive::Binding<f32>,
+    radius: nami::Binding<f32>,
     /// The site's environment — `FrozenEffect::blur` reads its GPU
     /// services when the capture lands.
     env: Environment,
@@ -238,7 +238,7 @@ impl Ghost {
         if frame.size.width.to_bits() != expected.width.to_bits()
             || frame.size.height.to_bits() != expected.height.to_bits()
         {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "container placed a ghost at {frame:?}, not its frozen slot size {expected:?}; \
                  the ghost is placed at the given frame"
             );
@@ -256,7 +256,7 @@ impl GhostRun {
     /// radius returning to 0 keeps the effect — one per instance.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     fn update_blur(self: &Rc<Self>, radius: f32) {
-        use waterui::reactive::Signal as _;
+        use nami::Signal as _;
         let blur = {
             let mut realization = self.realization.borrow_mut();
             let Some(realization) = realization.as_mut() else {
@@ -268,7 +268,7 @@ impl GhostRun {
                     tracing::error!("GPU runtime unavailable; the removal blur is not drawn");
                 }
                 realization.blur = Some(Rc::new(RemovalBlur {
-                    radius: waterui::reactive::Binding::new(radius),
+                    radius: nami::Binding::new(radius),
                     env: self.env.clone(),
                     runtime,
                     pending: Cell::new(false),
@@ -370,7 +370,7 @@ impl GhostRun {
     #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
     fn update_blur(&self, radius: f32) {
         if radius > 0.0 && !self.blur_warned.replace(true) {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "waterui-apple: a blur transition needs the filtered pipeline \
                  (the view_effect or applied_filter feature)"
             );

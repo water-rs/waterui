@@ -17,12 +17,12 @@ use cocoa_ui::glass::{GlassStyle, GlassView};
 use cocoa_ui::layer;
 use cocoa_ui::path::{CornerRadius as CocoaCornerRadius, ShapeKind as CocoaShapeKind, shape_path};
 use cocoa_ui::{PlatformView, Rect, Size, view};
-use waterui::floating::Floating;
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_shape::floating::Floating;
 
 use crate::contract::{Held, Mounted, NativeLeaf, RenderContext};
 use crate::primary_content;

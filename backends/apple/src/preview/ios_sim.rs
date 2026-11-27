@@ -20,20 +20,20 @@ use cocoa_ui::view::{display_immediately, layout_immediately};
 use cocoa_ui::{ColorScheme, MainThreadMarker};
 use executor_core::spawn_local;
 use half::f16;
-use waterui::AnyView;
-#[cfg(feature = "inspector")]
-use waterui::inspector::{InspectorRuntime, install as install_inspector};
-use waterui::task::{sleep, yield_now};
-use waterui::text::install_system_font_collection;
 use waterui_backend_core::Environment;
+#[cfg(feature = "inspector")]
+use waterui_backend_core::inspector::{InspectorRuntime, install as install_inspector};
+use waterui_backend_core::task::{sleep, yield_now};
 use waterui_capture::ContentLedger;
 use waterui_capture::view_renderer::RenderResult;
+use waterui_core::AnyView;
 use waterui_preview_protocol::run::{
     Alpha, PreviewColorScheme, PreviewRunConfig, PreviewRunMode, RawFrameStreamWriter,
     ScenarioEvent, ScenarioEventKind, VideoCaptureConfig, plan_scenario_timeline, write_hdr_png,
     write_png,
 };
 use waterui_resources::ResourceContext;
+use waterui_text::install_system_font_collection;
 
 use crate::content::await_content;
 use crate::contract::KeepAlive;

@@ -14,15 +14,15 @@ use alloc::string::String;
 use core::cell::{Cell, RefCell};
 
 use cocoa_ui::{PlatformView, Rect, Retained, view};
-use waterui::component::form::picker::color::ColorPickerConfig;
-use waterui::graphics::color::{Color, Working, WorkingColor, srgb_to_linear, working};
-use waterui::reactive::{Computed, Signal};
-use waterui::text::StyledStr;
+use nami::{Computed, Signal};
+use waterui_backend_core::form::picker::color::ColorPickerConfig;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_graphics::color::{Color, Working, WorkingColor, srgb_to_linear, working};
 use waterui_interaction::interaction::Disabled;
+use waterui_text::StyledStr;
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
@@ -306,7 +306,7 @@ impl SubView for ColorPickerSubView {
 /// on every `Color` the binding emits, as `WuiColorPicker` does.
 fn bind_value_well(
     leaf: &mut NativeLeaf,
-    value: &waterui::reactive::Binding<Color>,
+    value: &nami::Binding<Color>,
     state: &Rc<RefCell<ColorPickerState>>,
     env: &waterui_backend_core::Environment,
     support_hdr: bool,

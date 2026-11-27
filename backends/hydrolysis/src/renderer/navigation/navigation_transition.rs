@@ -1,6 +1,6 @@
 use crate::num_cast::f64_as_f32;
 use crate::theme::NavigationMotion;
-use waterui::navigation::{
+use waterui_backend_core::navigation::{
     AnyNavigationTransition, NavigationTransitionDirection, RetainedNavigationTransition,
 };
 use waterui_core::contract_violation;
@@ -174,7 +174,7 @@ pub fn matched_element_transform(bounds: kurbo::Rect, target: kurbo::Rect) -> ku
 #[cfg(test)]
 mod tests {
     use super::material_shared_axis_x_properties;
-    use waterui::navigation::NavigationTransitionDirection;
+    use waterui_backend_core::navigation::NavigationTransitionDirection;
 
     fn assert_near(actual: f32, expected: f32) {
         assert!(

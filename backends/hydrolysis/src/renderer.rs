@@ -168,69 +168,52 @@ use cherenkov_record::Paint;
 use executor_core::spawn_local;
 use nami::{Binding, Signal};
 use waterkit_clipboard::Clipboard;
-#[cfg(any(
-    any(feature = "menu", feature = "color-picker"),
-    feature = "navigation",
-    feature = "picker",
-    feature = "text-field",
-    feature = "secure-field"
-))]
-use waterui::ViewExt;
-use waterui::accessibility::{
+use waterui_accessibility::{
     AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden, AccessibilityIdentifier,
     AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
     AccessibilityValue,
 };
-use waterui::animation::Animation;
-use waterui::background::{GlassBackground, MaterialBackground};
-use waterui::border::Border;
-use waterui::component::badge::BadgeConfig;
-use waterui::component::focus::Focused;
-#[cfg(feature = "list")]
-use waterui::component::list::ListConfig;
-use waterui::component::progress::ProgressConfig;
-#[cfg(feature = "table")]
-use waterui::component::table::TableConfig;
-use waterui::cursor::{Cursor, CursorStyle};
-use waterui::drag_drop::{Draggable, DropDestination};
-use waterui::filter::Opacity;
-use waterui::gesture::Gesture;
-use waterui::interaction::Hittable;
-use waterui::metadata::anchored_overlay::AnchoredOverlay;
-#[cfg(feature = "menu")]
-use waterui::metadata::context_menu::ResolvedContextMenu;
 #[cfg(feature = "navigation")]
-use waterui::navigation::tab::{TabStyle, TabsLayout};
+use waterui_backend_core::navigation::tab::{TabStyle, TabsLayout};
 #[cfg(feature = "navigation")]
-use waterui::navigation::{
+use waterui_backend_core::navigation::{
     CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStackLayout,
     NavigationTransaction,
 };
-use waterui::style::{Offset, Rotation, Scale, Shadow};
-use waterui::widget::Divider;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
-use waterui::window::{Window, WindowState, WindowStyle};
+use waterui_backend_core::window::{Window, WindowState, WindowStyle};
+use waterui_controls::Divider;
+use waterui_controls::anchored_overlay::AnchoredOverlay;
+use waterui_controls::badge::BadgeConfig;
 #[cfg(feature = "menu")]
 use waterui_controls::button::Button;
 use waterui_controls::button::ButtonConfig;
 #[cfg(feature = "menu")]
 use waterui_controls::button::ButtonRole;
+#[cfg(feature = "menu")]
+use waterui_controls::context_menu::ResolvedContextMenu;
 #[cfg(feature = "accessibility")]
 use waterui_controls::input::ContentType;
 #[cfg(feature = "menu")]
 use waterui_controls::label::Label as SemanticLabel;
+#[cfg(feature = "list")]
+use waterui_controls::list::ListConfig;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::{ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
+use waterui_controls::progress::ProgressConfig;
 #[cfg(feature = "slider")]
 use waterui_controls::slider::SliderConfig;
 #[cfg(feature = "stepper")]
 use waterui_controls::stepper::StepperConfig;
+#[cfg(feature = "table")]
+use waterui_controls::table::TableConfig;
 #[cfg(feature = "text-field")]
 use waterui_controls::text_field::TextFieldConfig;
 #[cfg(feature = "toggle")]
 use waterui_controls::toggle::ToggleConfig;
 #[cfg(any(feature = "menu", hydrolysis_video_plane, test))]
 use waterui_core::AnyView;
+use waterui_core::animation::Animation;
 use waterui_core::dynamic::DynamicInitialContent;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::extract::State;
@@ -265,8 +248,17 @@ use waterui_graphics::backend::GpuContentLeaf;
 use waterui_graphics::color::Color;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::RedrawHandle;
+use waterui_interaction::cursor::{Cursor, CursorStyle};
+use waterui_interaction::drag_drop::{Draggable, DropDestination};
 use waterui_interaction::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
+use waterui_interaction::focus::Focused;
+use waterui_interaction::gesture::Gesture;
+use waterui_interaction::interaction::Hittable;
 use waterui_interaction::key::{KeyHandling, KeyPress, OnKeyPress};
+use waterui_shape::background::{GlassBackground, MaterialBackground};
+use waterui_shape::border::Border;
+use waterui_shape::filter::Opacity;
+use waterui_shape::style::{Offset, Rotation, Scale, Shadow};
 
 #[cfg(feature = "accessibility")]
 use waterui_layout::scroll::Axis as ScrollAxis;

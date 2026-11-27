@@ -26,17 +26,17 @@ use cocoa_ui::objc2_app_kit::NSWindow as PlatformWindow;
 use cocoa_ui::objc2_ui_kit::UIWindow as PlatformWindow;
 use cocoa_ui::view;
 use cocoa_ui::{PlatformView, Retained};
-use waterui::component::button::ButtonRole;
-use waterui::dialog::Dialog;
-#[cfg(target_os = "macos")]
-use waterui::dialog::DialogAction;
-use waterui::reactive::{Binding, Computed, Signal};
-use waterui::text::StyledStr;
+use nami::{Binding, Computed, Signal};
 use waterui_backend_core::Environment;
+use waterui_controls::button::ButtonRole;
+use waterui_controls::dialog::Dialog;
+#[cfg(target_os = "macos")]
+use waterui_controls::dialog::DialogAction;
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_text::StyledStr;
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;

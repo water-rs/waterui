@@ -14,12 +14,12 @@ use alloc::{
 
 use crate::contract::{Held, NativeLeaf};
 use cocoa_ui::badge::BadgeDisplay;
-use waterui::component::badge::BadgeValue;
-use waterui::navigation::{
+use nami::Signal as _;
+use waterui_backend_core::navigation::{
     TabsLayout,
     tab::{TabItem, TabRole},
 };
-use waterui::reactive::Signal as _;
+use waterui_controls::badge::BadgeValue;
 use waterui_core::Environment;
 use waterui_core::id::Id;
 
@@ -52,9 +52,9 @@ struct Mounted {
     #[allow(dead_code)]
     icon_leaf: Option<NativeLeaf>,
     /// Badge signal.
-    badge: Option<waterui::reactive::Computed<BadgeValue>>,
+    badge: Option<nami::Computed<BadgeValue>>,
     /// Enabled signal.
-    enabled: waterui::reactive::Computed<bool>,
+    enabled: nami::Computed<bool>,
     /// Search-role tab.
     #[allow(dead_code)]
     is_search: bool,
@@ -124,9 +124,9 @@ fn reconcile_tabs(
     mounted: &mut Vec<Mounted>,
     snapshot: &waterui_core::views::AnyViewsSnapshot<TabItem<Held>>,
     renderer: &crate::contract::Renderer,
-    selection: &waterui::reactive::Binding<Id>,
+    selection: &nami::Binding<Id>,
 ) -> Option<Id> {
-    use waterui::reactive::Signal as _;
+    use nami::Signal as _;
     let selected = selection.snapshot();
     let old_index = mounted.iter().position(|tab| tab.id == selected);
     let mut old: alloc::collections::BTreeMap<Id, Mounted> =
@@ -167,11 +167,11 @@ mod platform {
     use cocoa_ui::objc2_ui_kit::{UITabAccessory, UITabBarItem, UITabBarMinimizeBehavior};
     use cocoa_ui::uikit::{HostView, TabContentController, TabSpec, TabsController};
     use cocoa_ui::{Retained, view};
-    use waterui::Environment;
-    use waterui::component::badge::BadgeValue;
-    use waterui::navigation::{TabsLayout, tab::TabBarMinimizeBehavior};
-    use waterui::reactive::Signal;
-    use waterui::reactive::watcher::BoxWatcherGuard;
+    use nami::Signal;
+    use nami::watcher::BoxWatcherGuard;
+    use waterui_backend_core::navigation::{TabsLayout, tab::TabBarMinimizeBehavior};
+    use waterui_controls::badge::BadgeValue;
+    use waterui_core::Environment;
     use waterui_core::id::Id;
     use waterui_core::layout::ProposalSize;
 
@@ -573,8 +573,8 @@ mod platform {
     use cocoa_ui::appkit::{HostView, Segment, SegmentedControl, SourceList, WindowToolbar};
     use cocoa_ui::objc2_app_kit::NSWindowStyleMask;
     use cocoa_ui::{Rect, view};
-    use waterui::navigation::{TabsLayout, tab::TabStyle};
-    use waterui::reactive::Signal;
+    use nami::Signal;
+    use waterui_backend_core::navigation::{TabsLayout, tab::TabStyle};
     use waterui_core::id::Id;
 
     use crate::contract::KeepAlive;

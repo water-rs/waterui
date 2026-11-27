@@ -27,11 +27,11 @@ pub use cocoa_ui::objc2_ui_kit;
 #[cfg(target_os = "ios")]
 use cocoa_ui::uikit::HostView;
 pub use cocoa_ui::{MainThreadMarker, PlatformView, Retained, objc2};
-use waterui::Str;
-use waterui::accessibility::AccessibilityRole;
-use waterui::reactive::watcher::Context;
-use waterui::reactive::{Computed, Signal};
+use nami::watcher::Context;
+use nami::{Computed, Signal};
+use waterui_accessibility::AccessibilityRole;
 use waterui_backend_core::ProvidedSemantics;
+use waterui_core::Str;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
@@ -373,11 +373,11 @@ pub(crate) fn realize_apple_view<T: AppleContent>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui::metadata::anchored_overlay::AnchoredOverlay;
-    use waterui::sheet::Sheet;
     use waterui_backend_core::{
         ChildView, NativeBackend, NativeBackendFamily, Realize, report_unprovided,
     };
+    use waterui_controls::anchored_overlay::AnchoredOverlay;
+    use waterui_controls::sheet::Sheet;
     use waterui_core::backend::{ErasedPayload, peel_native};
     use waterui_core::metadata::MetadataKey;
     use waterui_core::{AnyView, Metadata};
@@ -551,7 +551,7 @@ mod tests {
         type Ctx = ();
         type Family = Self;
         #[cfg(waterui_feature = "webview")]
-        type WebViewController = waterui::webview::UnavailableWebViewController;
+        type WebViewController = waterui_backend_core::webview::UnavailableWebViewController;
         #[cfg(waterui_feature = "capture")]
         type Offscreen = OtherOffscreen;
 
@@ -561,7 +561,7 @@ mod tests {
 
         #[cfg(waterui_feature = "webview")]
         fn web_view_controller(&self) -> Self::WebViewController {
-            waterui::webview::UnavailableWebViewController
+            waterui_backend_core::webview::UnavailableWebViewController
         }
 
         #[cfg(waterui_feature = "capture")]
@@ -571,97 +571,97 @@ mod tests {
 
         stub_natives! {
             empty: (),
-            text: waterui::text::TextConfig,
+            text: waterui_text::TextConfig,
             #[cfg(waterui_feature = "highlight")]
-            code: waterui::text::code::CodeConfig,
+            code: waterui_text::code::CodeConfig,
             label: waterui_core::Str,
-            color: waterui::Color,
-            spacer: waterui::layout::Spacer,
-            divider: waterui::layout::Divider,
-            shape: waterui::shape::ResolvedShape,
-            gradient: waterui::graphics::Gradient,
+            color: waterui_graphics::Color,
+            spacer: waterui_layout::Spacer,
+            divider: waterui_controls::Divider,
+            shape: waterui_shape::ResolvedShape,
+            gradient: waterui_graphics::Gradient,
             #[cfg(any(waterui_feature = "gpu", waterui_feature = "cpu"))]
-            shader_paint: waterui::graphics::ShaderPaintView,
+            shader_paint: waterui_graphics::ShaderPaintView,
             #[cfg(waterui_feature = "canvas")]
-            canvas: waterui::graphics::canvas::CanvasView,
+            canvas: waterui_graphics::canvas::CanvasView,
             #[cfg(waterui_feature = "gpu")]
-            gpu: waterui::graphics::backend::GpuContentLeaf,
+            gpu: waterui_graphics::backend::GpuContentLeaf,
             #[cfg(waterui_feature = "gpu")]
-            external_frame: waterui::graphics::gpu::external::ExternalFrameView,
+            external_frame: waterui_graphics::gpu::external::ExternalFrameView,
             #[cfg(any(
                 waterui_feature = "gpu",
                 waterui_feature = "cpu",
                 waterui_feature = "canvas"
             ))]
-            scene: waterui::graphics::backend::SceneView,
+            scene: waterui_graphics::backend::SceneView,
             #[cfg(any(
                 waterui_feature = "gpu",
                 waterui_feature = "cpu",
                 waterui_feature = "canvas"
             ))]
-            picture: waterui::graphics::backend::Picture,
+            picture: waterui_graphics::backend::Picture,
             #[cfg(waterui_feature = "video")]
-            video: waterui::video::video::NativeVideoConfig,
+            video: waterui_backend_core::video::video::NativeVideoConfig,
             #[cfg(waterui_feature = "video")]
-            video_player: waterui::video::video::NativeVideoPlayerConfig,
+            video_player: waterui_backend_core::video::video::NativeVideoPlayerConfig,
             #[cfg(waterui_feature = "webview")]
-            web_view: waterui::webview::WebViewOpen,
+            web_view: waterui_backend_core::webview::WebViewOpen,
             #[cfg(waterui_feature = "map")]
-            map: waterui::map::MapConfig,
+            map: waterui_backend_core::map::MapConfig,
         }
 
         stub_parents! {
             #[cfg(waterui_feature = "avatar")]
-            avatar<C>: waterui::widget::avatar::AvatarConfig<C>,
-            button<C>: waterui::component::button::ButtonConfig<C>,
+            avatar<C>: waterui_controls::avatar::AvatarConfig<C>,
+            button<C>: waterui_controls::button::ButtonConfig<C>,
             #[cfg(waterui_feature = "link")]
-            link<C>: waterui::component::link::LinkConfig<C>,
-            badge<C>: waterui::component::badge::BadgeConfig<C>,
-            card<C>: waterui::widget::card::CardConfig<C>,
-            disclosure<C>: waterui::widget::disclosure::DisclosureConfig<C>,
-            progress<C>: waterui::component::progress::ProgressConfig<C>,
+            link<C>: waterui_controls::link::LinkConfig<C>,
+            badge<C>: waterui_controls::badge::BadgeConfig<C>,
+            card<C>: waterui_controls::card::CardConfig<C>,
+            disclosure<C>: waterui_controls::disclosure::DisclosureConfig<C>,
+            progress<C>: waterui_controls::progress::ProgressConfig<C>,
             #[cfg(waterui_feature = "toggle")]
-            toggle<C>: waterui::component::toggle::ToggleConfig<C>,
+            toggle<C>: waterui_controls::toggle::ToggleConfig<C>,
             #[cfg(waterui_feature = "slider")]
-            slider<C>: waterui::component::slider::SliderConfig<C>,
+            slider<C>: waterui_controls::slider::SliderConfig<C>,
             #[cfg(waterui_feature = "stepper")]
-            stepper<C>: waterui::component::stepper::StepperConfig<C>,
+            stepper<C>: waterui_controls::stepper::StepperConfig<C>,
             #[cfg(waterui_feature = "text-field")]
-            text_field<C>: waterui::component::text_field::TextFieldConfig<C>,
+            text_field<C>: waterui_controls::text_field::TextFieldConfig<C>,
             #[cfg(waterui_feature = "secure-field")]
-            secure_field<C>: waterui::form::secure::SecureFieldConfig<C>,
+            secure_field<C>: waterui_backend_core::form::secure::SecureFieldConfig<C>,
             #[cfg(waterui_feature = "picker")]
-            picker<C>: waterui::form::picker::PickerConfig<C>,
+            picker<C>: waterui_backend_core::form::picker::PickerConfig<C>,
             #[cfg(waterui_feature = "color-picker")]
-            color_picker<C>: waterui::form::picker::color::ColorPickerConfig<C>,
+            color_picker<C>: waterui_backend_core::form::picker::color::ColorPickerConfig<C>,
             #[cfg(waterui_feature = "date-picker")]
-            date_picker<C>: waterui::form::picker::date::DatePickerConfig<C>,
+            date_picker<C>: waterui_backend_core::form::picker::date::DatePickerConfig<C>,
             #[cfg(waterui_feature = "multi-date-picker")]
-            multi_date_picker<C>: waterui::form::picker::multi_date::MultiDatePickerConfig<C>,
+            multi_date_picker<C>: waterui_backend_core::form::picker::multi_date::MultiDatePickerConfig<C>,
             #[cfg(waterui_feature = "calendar")]
-            calendar<C>: waterui::form::calendar::CalendarConfig<C>,
+            calendar<C>: waterui_backend_core::form::calendar::CalendarConfig<C>,
             #[cfg(waterui_feature = "menu")]
-            menu<C>: waterui::component::menu::ResolvedMenu<C>,
-            scroll<C>: waterui::layout::scroll::ScrollView<C>,
-            fixed_container<C>: waterui::layout::container::FixedContainer<alloc::vec::Vec<C>>,
+            menu<C>: waterui_controls::menu::ResolvedMenu<C>,
+            scroll<C>: waterui_layout::scroll::ScrollView<C>,
+            fixed_container<C>: waterui_layout::container::FixedContainer<alloc::vec::Vec<C>>,
             dynamic<C>: waterui_core::Dynamic<C>,
-            lazy_container<C>: waterui::layout::container::LazyContainer<C>,
+            lazy_container<C>: waterui_layout::container::LazyContainer<C>,
             #[cfg(waterui_feature = "effects")]
-            filtered<C>: waterui::graphics::backend::FilteredView<C>,
+            filtered<C>: waterui_graphics::backend::FilteredView<C>,
             #[cfg(waterui_feature = "list")]
-            list<C>: waterui::component::list::ListConfig<C>,
+            list<C>: waterui_controls::list::ListConfig<C>,
             #[cfg(waterui_feature = "list")]
-            list_row<C>: waterui::component::list::ListRowConfig<C>,
+            list_row<C>: waterui_controls::list::ListRowConfig<C>,
             #[cfg(waterui_feature = "table")]
-            table<C>: waterui::component::table::TableConfig<C>,
+            table<C>: waterui_controls::table::TableConfig<C>,
             #[cfg(waterui_feature = "navigation")]
-            navigation_view<C>: waterui::navigation::ResolvedNavigationView<C>,
+            navigation_view<C>: waterui_backend_core::navigation::ResolvedNavigationView<C>,
             #[cfg(waterui_feature = "navigation")]
-            navigation_split<C>: waterui::navigation::split::NavigationSplitLayout<C>,
+            navigation_split<C>: waterui_backend_core::navigation::split::NavigationSplitLayout<C>,
             #[cfg(waterui_feature = "navigation")]
-            navigation_stack<C>: waterui::navigation::NavigationStackLayout<C>,
+            navigation_stack<C>: waterui_backend_core::navigation::NavigationStackLayout<C>,
             #[cfg(waterui_feature = "navigation")]
-            tabs<C>: waterui::navigation::tab::TabsLayout<C>,
+            tabs<C>: waterui_backend_core::navigation::tab::TabsLayout<C>,
         }
 
         stub_metadata! {
@@ -684,34 +684,34 @@ mod tests {
             accessibility_state_signal: waterui_accessibility::AccessibilityStateSignal,
             accessibility_value: waterui_accessibility::AccessibilityValue,
             transition: waterui_structural_transition::TransitionSpec,
-            opacity: waterui::filter::Opacity,
-            scale: waterui::style::Scale,
-            rotation: waterui::style::Rotation,
-            offset: waterui::style::Offset,
-            shadow: waterui::style::Shadow,
-            border: waterui::border::Border,
-            clip_shape: waterui::shape::ClipShape,
-            material_background: waterui::background::MaterialBackground,
-            glass_background: waterui::background::GlassBackground,
-            material_group: waterui::background::MaterialGroup,
-            floating: waterui::floating::Floating,
-            ignore_safe_area: waterui::layout::safe_area::IgnoreSafeArea,
-            cursor: waterui::cursor::Cursor,
-            draggable: waterui::drag_drop::Draggable,
-            drop_destination: waterui::drag_drop::DropDestination,
-            hittable: waterui::interaction::Hittable,
-            focused: waterui::component::focus::Focused,
-            secure: waterui::metadata::secure::Secure,
-            dynamic_range: waterui::metadata::secure::DynamicRangeMetadata,
-            frame_rate: waterui::animation::FrameRateVote,
+            opacity: waterui_shape::filter::Opacity,
+            scale: waterui_shape::style::Scale,
+            rotation: waterui_shape::style::Rotation,
+            offset: waterui_shape::style::Offset,
+            shadow: waterui_shape::style::Shadow,
+            border: waterui_shape::border::Border,
+            clip_shape: waterui_shape::ClipShape,
+            material_background: waterui_shape::background::MaterialBackground,
+            glass_background: waterui_shape::background::GlassBackground,
+            material_group: waterui_shape::background::MaterialGroup,
+            floating: waterui_shape::floating::Floating,
+            ignore_safe_area: waterui_layout::safe_area::IgnoreSafeArea,
+            cursor: waterui_interaction::cursor::Cursor,
+            draggable: waterui_interaction::drag_drop::Draggable,
+            drop_destination: waterui_interaction::drag_drop::DropDestination,
+            hittable: waterui_interaction::interaction::Hittable,
+            focused: waterui_interaction::focus::Focused,
+            secure: waterui_controls::secure::Secure,
+            dynamic_range: waterui_controls::secure::DynamicRangeMetadata,
+            frame_rate: waterui_core::animation::FrameRateVote,
             #[cfg(waterui_feature = "dialog")]
-            dialog: waterui::dialog::Dialog,
+            dialog: waterui_controls::dialog::Dialog,
             #[cfg(waterui_feature = "navigation")]
-            navigation_link_hint: waterui::navigation::NavigationLinkHint,
+            navigation_link_hint: waterui_backend_core::navigation::NavigationLinkHint,
             #[cfg(waterui_feature = "navigation")]
-            navigation_transition_source: waterui::navigation::NavigationTransitionSource,
+            navigation_transition_source: waterui_backend_core::navigation::NavigationTransitionSource,
             #[cfg(waterui_feature = "navigation")]
-            navigation_transition_destination: waterui::navigation::NavigationTransitionDestination,
+            navigation_transition_destination: waterui_backend_core::navigation::NavigationTransitionDestination,
         }
 
         fn anchored_overlay<S: ChildView<Self>, C: ChildView<Self>>(
@@ -733,7 +733,7 @@ mod tests {
         #[cfg(waterui_feature = "menu")]
         fn resolved_context_menu<S: ChildView<Self>, C: ChildView<Self>>(
             &mut self,
-            _: Metadata<waterui::metadata::context_menu::ResolvedContextMenu<S>, C>,
+            _: Metadata<waterui_controls::context_menu::ResolvedContextMenu<S>, C>,
             _: &Environment,
             (): (),
         ) {
@@ -742,7 +742,7 @@ mod tests {
         #[cfg(waterui_feature = "snackbar")]
         fn snackbar_host<S: ChildView<Self>, C: ChildView<Self>>(
             &mut self,
-            _: Metadata<waterui::snackbar::SnackbarHostConfig<S>, C>,
+            _: Metadata<waterui_controls::snackbar::SnackbarHostConfig<S>, C>,
             _: &Environment,
             (): (),
         ) {
@@ -803,8 +803,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn declared_semantics_are_reachable_through_waterui_testing() {
+        use nami::{binding, signal::IntoComputed as _};
         use waterui::ViewExt as _;
-        use waterui::reactive::{binding, signal::IntoComputed as _};
         use waterui_testing::{Role, ui};
 
         let label = binding(Str::from_static("Buy with Apple Pay"));

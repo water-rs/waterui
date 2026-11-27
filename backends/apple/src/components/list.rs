@@ -25,30 +25,30 @@ use std::collections::{HashMap, HashSet};
 
 use cocoa_ui::geometry::EdgeInsets as KitInsets;
 use cocoa_ui::{Retained, view};
-use waterui::animation::ChangeAnimation;
-use waterui::component::list::{
+use nami::Signal;
+use nami::binding::Binding;
+use nami::collection::{CollectionChange, diff, has_duplicate_ids};
+use nami::watcher::{BoxWatcherGuard, Metadata};
+use waterui_backend_core::Environment;
+use waterui_backend_core::scroll::animated_row_scroll_approach;
+use waterui_controls::list::{
     ListConfig, ListEdits, ListRowDeletable, ListRowInsets, ListRowTags, ListScrollController,
     ListSection, ListSections, ListSelection, ListTagId,
 };
-use waterui::id::Id as RawId;
-use waterui::layout::padding::EdgeInsets;
-use waterui::layout::scroll::{Axis, ScrollPosition, ScrollRequest};
-use waterui::reactive::Signal;
-use waterui::reactive::binding::Binding;
-use waterui::reactive::collection::{CollectionChange, diff, has_duplicate_ids};
-use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
-#[cfg(target_os = "macos")]
-use waterui::resolve::Resolvable;
-use waterui::text::{StyledStr, Text};
-use waterui::views::{AnyViewsSnapshot, SharedAnyViews};
-use waterui_backend_core::Environment;
-use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_core::Computed;
+use waterui_core::animation::ChangeAnimation;
+use waterui_core::id::Id as RawId;
 use waterui_core::layout::{
     LayoutDirection, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis,
     SubView, UnitPoint, ViewDimensions, layout_direction,
 };
+#[cfg(target_os = "macos")]
+use waterui_core::resolve::Resolvable;
+use waterui_core::views::{AnyViewsSnapshot, SharedAnyViews};
 use waterui_interaction::interaction::Disabled;
+use waterui_layout::padding::EdgeInsets;
+use waterui_layout::scroll::{Axis, ScrollPosition, ScrollRequest};
+use waterui_text::{StyledStr, Text};
 
 use crate::backend::AppleBackend;
 use crate::contract::{Held, NativeLeaf, RenderContext, Renderer};
@@ -2099,7 +2099,7 @@ fn resolve_macos_drop(
 #[allow(clippy::wildcard_imports)]
 mod platform_impl {
     use super::*;
-    use waterui::theme::color::MutedForeground;
+    use waterui_controls::theme::color::MutedForeground;
 
     /// The `AppKit` data source + delegate + drag source: flat entries
     /// answer from `Shared.flat_layout`.
@@ -2119,7 +2119,7 @@ mod platform_impl {
 
         /// The muted-foreground `WorkingColor` as an `AppKit` color.
         fn platform_color(
-            color: &waterui::graphics::color::WorkingColor,
+            color: &waterui_graphics::color::WorkingColor,
         ) -> Retained<cocoa_ui::objc2_app_kit::NSColor> {
             {
                 let [red, green, blue, alpha] = color.components;
@@ -2135,7 +2135,7 @@ mod platform_impl {
         /// A `ResolvedFont` as an `AppKit` font.
         fn platform_font(
             &self,
-            resolved: &waterui::text::font::ResolvedFont,
+            resolved: &waterui_text::font::ResolvedFont,
         ) -> Retained<cocoa_ui::Font> {
             crate::components::font::platform_font(self.mtm, resolved, false)
         }
@@ -2284,10 +2284,10 @@ mod platform_impl {
             // footers take the caption/footnote tokens.
             if !group_row {
                 let font = match kind {
-                    SectionKind::Header => waterui::text::font::Caption
+                    SectionKind::Header => waterui_text::font::Caption
                         .resolve(&self.state.borrow().env)
                         .snapshot(),
-                    SectionKind::Footer => waterui::text::font::Footnote
+                    SectionKind::Footer => waterui_text::font::Footnote
                         .resolve(&self.state.borrow().env)
                         .snapshot(),
                 };
@@ -2730,7 +2730,7 @@ fn render(config: &ListConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     #[cfg(target_os = "macos")]
     if ctx
         .env()
-        .get::<waterui::component::list::SidebarContent>()
+        .get::<waterui_controls::list::SidebarContent>()
         .is_some()
     {
         table.set_sidebar(true);
@@ -3137,11 +3137,11 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn drop_resolution_stays_within_owning_part_and_uses_post_removal_index() {
-        use waterui::component::list::{ForEachExt as _, List, ListMove, Section, row};
-        use waterui::component::text;
-        use waterui::id::Identifiable;
-        use waterui::reactive::collection::StateList;
-        use waterui::views::ForEach;
+        use nami::collection::StateList;
+        use waterui_controls::list::{ForEachExt as _, List, ListMove, Section, row};
+        use waterui_core::id::Identifiable;
+        use waterui_core::views::ForEach;
+        use waterui_text::text;
 
         #[derive(Clone)]
         struct Entry(u64);

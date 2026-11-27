@@ -28,8 +28,8 @@ use kurbo::Rect;
 #[cfg(feature = "menu")]
 use kurbo::{Affine, Vec2};
 use nami::Binding;
-use waterui::metadata::anchored_overlay::{AnchorEdge, AnchorPlacement, Clamp, Dismissal};
 use waterui_backend_core::overlay::{logical_edge, place_anchored_overlay};
+use waterui_controls::anchored_overlay::{AnchorEdge, AnchorPlacement, Clamp, Dismissal};
 use waterui_core::Environment;
 use waterui_core::layout::{Size as LayoutSize, layout_direction};
 #[cfg(feature = "menu")]

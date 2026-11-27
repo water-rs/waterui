@@ -11,7 +11,7 @@ use alloc::rc::Rc;
 
 use cocoa_ui::view;
 use cocoa_ui::{PlatformView, Rect};
-use waterui::metadata::secure::Secure;
+use waterui_controls::secure::Secure;
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,

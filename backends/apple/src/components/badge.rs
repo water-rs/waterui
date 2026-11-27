@@ -16,17 +16,17 @@ use core::cell::RefCell;
 
 use cocoa_ui::badge::{BadgeDisplay, BadgeMetrics};
 use cocoa_ui::{PlatformView, Rect, Retained};
-use waterui::component::badge::{BadgeConfig, BadgeValue};
-use waterui::graphics::color::WorkingColor;
-use waterui::reactive::watcher::BoxWatcherGuard;
-use waterui::reactive::{Computed, Signal, SignalExt};
-use waterui::resolve::Resolvable;
-use waterui::theme::color::AccentForeground;
+use nami::watcher::BoxWatcherGuard;
+use nami::{Computed, Signal, SignalExt};
+use waterui_controls::badge::{BadgeConfig, BadgeValue};
+use waterui_controls::theme::color::AccentForeground;
 use waterui_core::Environment;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_core::resolve::Resolvable;
+use waterui_graphics::color::WorkingColor;
 
 use crate::contract::{Held, Mounted, NativeLeaf, RenderContext};
 

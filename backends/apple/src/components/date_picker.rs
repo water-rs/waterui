@@ -15,15 +15,15 @@ use core::cell::{Cell, RefCell};
 
 use cocoa_ui::date::{DateParts, DateTimeParts, TimeParts};
 use cocoa_ui::{PlatformView, Rect, Retained, view};
-use waterui::component::form::picker::date::{
+use nami::{Binding, Signal};
+use waterui_backend_core::form::picker::date::{
     DatePickerConfig, DatePickerType, DateTime, clamp_value_to_range,
 };
-use waterui::reactive::{Binding, Signal};
-use waterui::resolve::Resolvable;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_core::resolve::Resolvable;
 use waterui_interaction::interaction::Disabled;
 
 use crate::contract::{Held, Mounted, NativeLeaf, RenderContext};
@@ -110,7 +110,7 @@ fn parts_of(value: DateTime) -> DateTimeParts {
 /// When the parts fall outside `jiff`'s range — impossible for control
 /// output: the control only reports components of a real Gregorian date.
 fn to_jiff(parts: DateTimeParts) -> DateTime {
-    let date = waterui::component::form::picker::date::Date::new(
+    let date = waterui_backend_core::form::picker::date::Date::new(
         i16::try_from(parts.date.year).expect("the control reports a year that fits i16"),
         i8::try_from(parts.date.month).expect("the control reports a month that fits i8"),
         i8::try_from(parts.date.day).expect("the control reports a day that fits i8"),
@@ -620,10 +620,10 @@ fn wire(
 
     // The body font themes the control's text on `AppKit`, and the
     // seconds readout's monospaced-digit face on `UIKit`.
-    let body = waterui::text::font::Body.resolve(ctx.env());
+    let body = waterui_text::font::Body.resolve(ctx.env());
     leaf.bind(&body, {
         let state = Rc::clone(state);
-        move |font: waterui::text::font::ResolvedFont| {
+        move |font: waterui_text::font::ResolvedFont| {
             #[cfg(target_os = "macos")]
             state
                 .borrow()
@@ -646,10 +646,10 @@ fn wire(
     // `Foreground` themes the seconds readout on `UIKit`.
     #[cfg(target_os = "ios")]
     {
-        let foreground = waterui::theme::color::Foreground.resolve(ctx.env());
+        let foreground = waterui_controls::theme::color::Foreground.resolve(ctx.env());
         leaf.bind(&foreground, {
             let state = Rc::clone(state);
-            move |color: waterui::graphics::color::WorkingColor| {
+            move |color: waterui_graphics::color::WorkingColor| {
                 let borrowed = state.borrow();
                 if let Some(seconds) = &borrowed.seconds {
                     *seconds.foreground.borrow_mut() = platform_color(&color);
@@ -694,7 +694,7 @@ fn wire(
 /// A `WorkingColor` as the platform's extended linear Display-P3 color object — the
 /// `toUIColor`/`toNSColor` semantics sibling ports use.
 #[cfg(target_os = "ios")]
-fn platform_color(color: &waterui::graphics::color::WorkingColor) -> Retained<platform::UIColor> {
+fn platform_color(color: &waterui_graphics::color::WorkingColor) -> Retained<platform::UIColor> {
     {
         let [red, green, blue, alpha] = color.components;
         cocoa_ui::uikit::colors::extended_linear_display_p3(
@@ -709,7 +709,7 @@ fn platform_color(color: &waterui::graphics::color::WorkingColor) -> Retained<pl
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui::component::form::picker::date::Date;
+    use waterui_backend_core::form::picker::date::Date;
 
     fn dt(year: i32, month: i32, day: i32, hour: i32, minute: i32, second: i32) -> DateTimeParts {
         DateTimeParts {

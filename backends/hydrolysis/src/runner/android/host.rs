@@ -29,17 +29,17 @@ use jni::vm::JavaVM;
 use jni::{jni_sig, jni_str};
 use nami::{Binding, Signal};
 use ndk::looper::{FdEvent, ForeignLooper, ThreadLooper};
-use waterui::Environment;
 #[cfg(feature = "menu")]
-use waterui::app::AppMenuBar;
-use waterui::cursor::CursorStyle;
-use waterui::theme::ColorScheme;
-use waterui::window::{WindowParts, WindowState};
+use waterui_backend_core::app::AppMenuBar;
 use waterui_backend_core::gesture::DEFAULT_LONG_PRESS_DURATION;
+use waterui_backend_core::window::{WindowParts, WindowState};
+use waterui_controls::theme::ColorScheme;
+use waterui_core::Environment;
 use waterui_core::layout::LayoutDirection;
 use waterui_core::{Retain, contract_violation};
 #[cfg(hydrolysis_gpu_painter)]
 use waterui_frame_rate::{FrameRate, combine};
+use waterui_interaction::cursor::CursorStyle;
 use waterui_structural_transition::ReduceMotion;
 
 #[cfg(hydrolysis_gpu_painter)]
@@ -1463,11 +1463,11 @@ impl UiThreadServices {
         #[cfg(hydrolysis_inspector)]
         let inspector = init_main_thread_executors();
         #[cfg(hydrolysis_inspector)]
-        let inspector_probe = inspector
-            .as_ref()
-            .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
+        let inspector_probe = inspector.as_ref().map(|inspector| {
+            inspector.task_probe() as Arc<dyn waterui_backend_core::task::RuntimeProbe>
+        });
         #[cfg(not(hydrolysis_inspector))]
-        let inspector_probe: Option<Arc<dyn waterui::task::RuntimeProbe>> = {
+        let inspector_probe: Option<Arc<dyn waterui_backend_core::task::RuntimeProbe>> = {
             crate::runner::init_global_executor();
             None
         };
@@ -1484,9 +1484,9 @@ impl UiThreadServices {
         let executor = AndroidExecutor::new(EventFdWake::new(unsafe { OwnedFd::from_raw_fd(fd) }));
         let wake = ExecutorWake::register(&executor, vm)?;
         executor_core::try_init_local_executor(
-            waterui::task::monitored_local_executor_with_probes(
+            waterui_backend_core::task::monitored_local_executor_with_probes(
                 executor.clone(),
-                waterui::task::RefreshRate::HEADLESS,
+                waterui_backend_core::task::RefreshRate::HEADLESS,
                 inspector_probe,
             ),
         )
@@ -1498,7 +1498,7 @@ impl UiThreadServices {
         #[cfg(not(hydrolysis_inspector))]
         let env = Environment::new();
         #[cfg(hydrolysis_inspector)]
-        waterui::inspector::install(&mut env, inspector);
+        waterui_backend_core::inspector::install(&mut env, inspector);
         Ok(Self {
             executor,
             wake,
@@ -1594,7 +1594,7 @@ fn session_mounts(
     let Some((parts, style)) = super::instantiate_app() else {
         return Ok(None);
     };
-    let waterui::app::AppParts {
+    let waterui_backend_core::app::AppParts {
         windows,
         #[cfg(feature = "menu")]
         menu_bar,

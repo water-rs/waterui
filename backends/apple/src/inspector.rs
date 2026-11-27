@@ -4,13 +4,11 @@ use std::rc::Rc;
 
 use cocoa_ui::PlatformView;
 use objc2::rc::Weak;
-use waterui::{
-    Environment,
-    inspector::{
-        InspectorRuntime, TreeRecorder,
-        protocol::{Bounds, NodeId, NodeState, TreeNode},
-    },
+use waterui_backend_core::inspector::{
+    InspectorRuntime, TreeRecorder,
+    protocol::{Bounds, NodeId, NodeState, TreeNode},
 };
+use waterui_core::Environment;
 
 use crate::contract::KeepAlive;
 
@@ -35,7 +33,7 @@ impl Inspection {
         let recorder = self
             .env
             .get::<TreeRecorder>()
-            .expect("`waterui::inspector::install` inserts the tree recorder with the runtime `install` checks for");
+            .expect("`waterui_backend_core::inspector::install` inserts the tree recorder with the runtime `install` checks for");
         if !recorder.is_active() {
             return;
         }

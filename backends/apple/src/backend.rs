@@ -1,24 +1,24 @@
 //! The Apple backend's [`NativeBackend`]: each component's realization,
 //! reached through static dispatch.
 
-#[cfg(waterui_feature = "gpu")]
-use waterui::graphics::backend::GpuContentLeaf;
 #[cfg(waterui_feature = "navigation")]
-use waterui::navigation::ResolvedNavigationView;
+use waterui_backend_core::navigation::ResolvedNavigationView;
 use waterui_backend_core::{
     ChildView, Environment, NativeBackend, NativeBackendFamily, mark_reached, report_unprovided,
 };
 use waterui_core::backend::{ErasedPayload, MapSlots};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Metadata, NativeView};
+#[cfg(waterui_feature = "gpu")]
+use waterui_graphics::backend::GpuContentLeaf;
 
 use crate::components::anchored_overlay::realize_anchored_overlay_metadata;
 use crate::components::frame_rate::realize_frame_rate_metadata;
 use crate::components::sheet::realize_sheet_metadata;
 use crate::contract::{NativeLeaf, RenderContext};
-use waterui::animation::FrameRateVote;
-use waterui::metadata::anchored_overlay::AnchoredOverlay;
-use waterui::sheet::Sheet;
+use waterui_controls::anchored_overlay::AnchoredOverlay;
+use waterui_controls::sheet::Sheet;
+use waterui_core::animation::FrameRateVote;
 
 /// Realizes views into `AppKit`/`UIKit` leaves.
 #[derive(Debug, Clone)]
@@ -106,7 +106,7 @@ impl NativeBackend for AppleBackend {
         crate::components::empty::realize_empty(native, &self.entry(env))
     }
 
-    fn text(&mut self, native: waterui::text::TextConfig, env: &Environment, (): ()) -> NativeLeaf {
+    fn text(&mut self, native: waterui_text::TextConfig, env: &Environment, (): ()) -> NativeLeaf {
         mark_reached!("text");
         crate::components::text::realize_text_config(native, &self.entry(env))
     }
@@ -114,7 +114,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "highlight")]
     fn code(
         &mut self,
-        native: waterui::text::code::CodeConfig,
+        native: waterui_text::code::CodeConfig,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -131,19 +131,19 @@ impl NativeBackend for AppleBackend {
         realize(native, &self.entry(env))
     }
 
-    fn color(&mut self, native: waterui::Color, env: &Environment, (): ()) -> NativeLeaf {
+    fn color(&mut self, native: waterui_graphics::Color, env: &Environment, (): ()) -> NativeLeaf {
         mark_reached!("color");
         crate::components::resolved_color::realize_color(native, &self.entry(env))
     }
 
-    fn spacer(&mut self, native: waterui::layout::Spacer, env: &Environment, (): ()) -> NativeLeaf {
+    fn spacer(&mut self, native: waterui_layout::Spacer, env: &Environment, (): ()) -> NativeLeaf {
         mark_reached!("spacer");
         crate::components::spacer::realize_spacer(native, &self.entry(env))
     }
 
     fn divider(
         &mut self,
-        native: waterui::layout::Divider,
+        native: waterui_controls::Divider,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -153,7 +153,7 @@ impl NativeBackend for AppleBackend {
 
     fn fixed_container<C: ChildView<Self>>(
         &mut self,
-        native: waterui::layout::container::FixedContainer<Vec<C>>,
+        native: waterui_layout::container::FixedContainer<Vec<C>>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -168,7 +168,7 @@ impl NativeBackend for AppleBackend {
 
     fn lazy_container<C: ChildView<Self>>(
         &mut self,
-        native: waterui::layout::container::LazyContainer<C>,
+        native: waterui_layout::container::LazyContainer<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -178,7 +178,7 @@ impl NativeBackend for AppleBackend {
 
     fn scroll<C: ChildView<Self>>(
         &mut self,
-        native: waterui::layout::scroll::ScrollView<C>,
+        native: waterui_layout::scroll::ScrollView<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -203,7 +203,7 @@ impl NativeBackend for AppleBackend {
 
     fn shape(
         &mut self,
-        native: waterui::shape::ResolvedShape,
+        native: waterui_shape::ResolvedShape,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -213,7 +213,7 @@ impl NativeBackend for AppleBackend {
 
     fn gradient(
         &mut self,
-        native: waterui::graphics::Gradient,
+        native: waterui_graphics::Gradient,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -224,7 +224,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(any(waterui_feature = "gpu", waterui_feature = "cpu"))]
     fn shader_paint(
         &mut self,
-        native: waterui::graphics::ShaderPaintView,
+        native: waterui_graphics::ShaderPaintView,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -247,7 +247,7 @@ impl NativeBackend for AppleBackend {
 
     fn button<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::button::ButtonConfig<C>,
+        native: waterui_controls::button::ButtonConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -261,7 +261,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "avatar")]
     fn avatar<C: ChildView<Self>>(
         &mut self,
-        native: waterui::widget::avatar::AvatarConfig<C>,
+        native: waterui_controls::avatar::AvatarConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -275,7 +275,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "link")]
     fn link<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::link::LinkConfig<C>,
+        native: waterui_controls::link::LinkConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -288,7 +288,7 @@ impl NativeBackend for AppleBackend {
 
     fn badge<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::badge::BadgeConfig<C>,
+        native: waterui_controls::badge::BadgeConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -301,7 +301,7 @@ impl NativeBackend for AppleBackend {
 
     fn card<C: ChildView<Self>>(
         &mut self,
-        native: waterui::widget::card::CardConfig<C>,
+        native: waterui_controls::card::CardConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -314,7 +314,7 @@ impl NativeBackend for AppleBackend {
 
     fn disclosure<C: ChildView<Self>>(
         &mut self,
-        native: waterui::widget::disclosure::DisclosureConfig<C>,
+        native: waterui_controls::disclosure::DisclosureConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -327,7 +327,7 @@ impl NativeBackend for AppleBackend {
 
     fn progress<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::progress::ProgressConfig<C>,
+        native: waterui_controls::progress::ProgressConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -341,7 +341,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "toggle")]
     fn toggle<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::toggle::ToggleConfig<C>,
+        native: waterui_controls::toggle::ToggleConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -355,7 +355,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "slider")]
     fn slider<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::slider::SliderConfig<C>,
+        native: waterui_controls::slider::SliderConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -369,7 +369,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "stepper")]
     fn stepper<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::stepper::StepperConfig<C>,
+        native: waterui_controls::stepper::StepperConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -383,7 +383,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "text-field")]
     fn text_field<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::text_field::TextFieldConfig<C>,
+        native: waterui_controls::text_field::TextFieldConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -397,7 +397,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "secure-field")]
     fn secure_field<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::secure::SecureFieldConfig<C>,
+        native: waterui_backend_core::form::secure::SecureFieldConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -411,7 +411,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "picker")]
     fn picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::PickerConfig<C>,
+        native: waterui_backend_core::form::picker::PickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -425,7 +425,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "color-picker")]
     fn color_picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::color::ColorPickerConfig<C>,
+        native: waterui_backend_core::form::picker::color::ColorPickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -439,7 +439,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "date-picker")]
     fn date_picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::date::DatePickerConfig<C>,
+        native: waterui_backend_core::form::picker::date::DatePickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -453,7 +453,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "multi-date-picker")]
     fn multi_date_picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::multi_date::MultiDatePickerConfig<C>,
+        native: waterui_backend_core::form::picker::multi_date::MultiDatePickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -467,7 +467,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "calendar")]
     fn calendar<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::calendar::CalendarConfig<C>,
+        native: waterui_backend_core::form::calendar::CalendarConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -481,7 +481,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "menu")]
     fn menu<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::menu::ResolvedMenu<C>,
+        native: waterui_controls::menu::ResolvedMenu<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -495,7 +495,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "list")]
     fn list<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::list::ListConfig<C>,
+        native: waterui_controls::list::ListConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -506,7 +506,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "list")]
     fn list_row<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::list::ListRowConfig<C>,
+        native: waterui_controls::list::ListRowConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -521,7 +521,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "table")]
     fn table<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::table::TableConfig<C>,
+        native: waterui_controls::table::TableConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -549,7 +549,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "navigation")]
     fn navigation_stack<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::NavigationStackLayout<C>,
+        native: waterui_backend_core::navigation::NavigationStackLayout<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -563,7 +563,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "navigation")]
     fn navigation_split<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::split::NavigationSplitLayout<C>,
+        native: waterui_backend_core::navigation::split::NavigationSplitLayout<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -577,7 +577,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "navigation")]
     fn tabs<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::tab::TabsLayout<C>,
+        native: waterui_backend_core::navigation::tab::TabsLayout<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -591,7 +591,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "canvas")]
     fn canvas(
         &mut self,
-        native: waterui::graphics::canvas::CanvasView,
+        native: waterui_graphics::canvas::CanvasView,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -602,7 +602,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "effects")]
     fn filtered<C: ChildView<Self>>(
         &mut self,
-        native: waterui::graphics::backend::FilteredView<C>,
+        native: waterui_graphics::backend::FilteredView<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -629,7 +629,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "gpu")]
     fn external_frame(
         &mut self,
-        native: waterui::graphics::gpu::external::ExternalFrameView,
+        native: waterui_graphics::gpu::external::ExternalFrameView,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -644,7 +644,7 @@ impl NativeBackend for AppleBackend {
     ))]
     fn scene(
         &mut self,
-        native: waterui::graphics::backend::SceneView,
+        native: waterui_graphics::backend::SceneView,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -669,7 +669,7 @@ impl NativeBackend for AppleBackend {
     ))]
     fn picture(
         &mut self,
-        native: waterui::graphics::backend::Picture,
+        native: waterui_graphics::backend::Picture,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -690,7 +690,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "video")]
     fn video(
         &mut self,
-        native: waterui::video::video::NativeVideoConfig,
+        native: waterui_backend_core::video::video::NativeVideoConfig,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -701,7 +701,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "video")]
     fn video_player(
         &mut self,
-        native: waterui::video::video::NativeVideoPlayerConfig,
+        native: waterui_backend_core::video::video::NativeVideoPlayerConfig,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -712,7 +712,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "webview")]
     fn web_view(
         &mut self,
-        native: waterui::webview::WebViewOpen,
+        native: waterui_backend_core::webview::WebViewOpen,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -721,7 +721,12 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "map")]
-    fn map(&mut self, native: waterui::map::MapConfig, env: &Environment, (): ()) -> NativeLeaf {
+    fn map(
+        &mut self,
+        native: waterui_backend_core::map::MapConfig,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
         mark_reached!("map");
         crate::components::map::realize_map_config(native, &self.entry(env))
     }
@@ -973,7 +978,7 @@ impl NativeBackend for AppleBackend {
 
     fn opacity<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::filter::Opacity, C>,
+        metadata: Metadata<waterui_shape::filter::Opacity, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -984,7 +989,7 @@ impl NativeBackend for AppleBackend {
 
     fn scale<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::style::Scale, C>,
+        metadata: Metadata<waterui_shape::style::Scale, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -995,7 +1000,7 @@ impl NativeBackend for AppleBackend {
 
     fn rotation<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::style::Rotation, C>,
+        metadata: Metadata<waterui_shape::style::Rotation, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1006,7 +1011,7 @@ impl NativeBackend for AppleBackend {
 
     fn offset<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::style::Offset, C>,
+        metadata: Metadata<waterui_shape::style::Offset, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1017,7 +1022,7 @@ impl NativeBackend for AppleBackend {
 
     fn shadow<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::style::Shadow, C>,
+        metadata: Metadata<waterui_shape::style::Shadow, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1028,7 +1033,7 @@ impl NativeBackend for AppleBackend {
 
     fn border<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::border::Border, C>,
+        metadata: Metadata<waterui_shape::border::Border, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1039,7 +1044,7 @@ impl NativeBackend for AppleBackend {
 
     fn clip_shape<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::shape::ClipShape, C>,
+        metadata: Metadata<waterui_shape::ClipShape, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1050,7 +1055,7 @@ impl NativeBackend for AppleBackend {
 
     fn material_background<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::background::MaterialBackground, C>,
+        metadata: Metadata<waterui_shape::background::MaterialBackground, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1064,7 +1069,7 @@ impl NativeBackend for AppleBackend {
 
     fn glass_background<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::background::GlassBackground, C>,
+        metadata: Metadata<waterui_shape::background::GlassBackground, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1078,7 +1083,7 @@ impl NativeBackend for AppleBackend {
 
     fn material_group<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::background::MaterialGroup, C>,
+        metadata: Metadata<waterui_shape::background::MaterialGroup, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1092,7 +1097,7 @@ impl NativeBackend for AppleBackend {
 
     fn floating<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::floating::Floating, C>,
+        metadata: Metadata<waterui_shape::floating::Floating, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1103,7 +1108,7 @@ impl NativeBackend for AppleBackend {
 
     fn ignore_safe_area<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::layout::safe_area::IgnoreSafeArea, C>,
+        metadata: Metadata<waterui_layout::safe_area::IgnoreSafeArea, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1117,7 +1122,7 @@ impl NativeBackend for AppleBackend {
 
     fn cursor<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::cursor::Cursor, C>,
+        metadata: Metadata<waterui_interaction::cursor::Cursor, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1128,7 +1133,7 @@ impl NativeBackend for AppleBackend {
 
     fn draggable<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::drag_drop::Draggable, C>,
+        metadata: Metadata<waterui_interaction::drag_drop::Draggable, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1139,7 +1144,7 @@ impl NativeBackend for AppleBackend {
 
     fn drop_destination<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::drag_drop::DropDestination, C>,
+        metadata: Metadata<waterui_interaction::drag_drop::DropDestination, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1153,7 +1158,7 @@ impl NativeBackend for AppleBackend {
 
     fn hittable<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::interaction::Hittable, C>,
+        metadata: Metadata<waterui_interaction::interaction::Hittable, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1164,7 +1169,7 @@ impl NativeBackend for AppleBackend {
 
     fn focused<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::component::focus::Focused, C>,
+        metadata: Metadata<waterui_interaction::focus::Focused, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1175,7 +1180,7 @@ impl NativeBackend for AppleBackend {
 
     fn secure<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::secure::Secure, C>,
+        metadata: Metadata<waterui_controls::secure::Secure, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1186,7 +1191,7 @@ impl NativeBackend for AppleBackend {
 
     fn dynamic_range<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::secure::DynamicRangeMetadata, C>,
+        metadata: Metadata<waterui_controls::secure::DynamicRangeMetadata, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1221,7 +1226,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "menu")]
     fn resolved_context_menu<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::context_menu::ResolvedContextMenu<S>, C>,
+        metadata: Metadata<waterui_controls::context_menu::ResolvedContextMenu<S>, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1249,7 +1254,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "dialog")]
     fn dialog<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::dialog::Dialog, C>,
+        metadata: Metadata<waterui_controls::dialog::Dialog, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1261,7 +1266,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "snackbar")]
     fn snackbar_host<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::snackbar::SnackbarHostConfig<S>, C>,
+        metadata: Metadata<waterui_controls::snackbar::SnackbarHostConfig<S>, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1274,7 +1279,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "navigation")]
     fn navigation_link_hint<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::navigation::NavigationLinkHint, C>,
+        metadata: Metadata<waterui_backend_core::navigation::NavigationLinkHint, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1289,7 +1294,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "navigation")]
     fn navigation_transition_source<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::navigation::NavigationTransitionSource, C>,
+        metadata: Metadata<waterui_backend_core::navigation::NavigationTransitionSource, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
@@ -1304,7 +1309,7 @@ impl NativeBackend for AppleBackend {
     #[cfg(waterui_feature = "navigation")]
     fn navigation_transition_destination<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::navigation::NavigationTransitionDestination, C>,
+        metadata: Metadata<waterui_backend_core::navigation::NavigationTransitionDestination, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {

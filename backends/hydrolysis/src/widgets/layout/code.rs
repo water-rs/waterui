@@ -1,4 +1,4 @@
-//! Hydrolysis realization of [`Code`](waterui::widget::Code): a theme-driven
+//! Hydrolysis realization of `Code` ([`CodeConfig`]): a theme-driven
 //! container [`Surface`] framing a language caption header, an accessible copy
 //! button, and syntax-highlighted monospaced source text that tracks the
 //! installed `Body` font slot.
@@ -9,20 +9,20 @@ use std::rc::Rc;
 
 use kurbo::Rect;
 use nami::{Binding, Signal as _};
-use waterui::animation::Animation;
-use waterui::component::button::{ButtonStyle, button};
-use waterui::graphics::color::Color;
-use waterui::text::code::CodeConfig;
-use waterui::text::font::Body;
-use waterui::text::text;
-use waterui::theme::{ForegroundOverride, install_font_signal};
+use waterui_controls::button::{ButtonStyle, button};
+use waterui_controls::theme::{ForegroundOverride, install_font_signal};
 use waterui_core::Environment;
+use waterui_core::animation::Animation;
 use waterui_core::layout::{
     LayoutDirection, ProposalSize, Size as LayoutSize, StretchAxis, ViewDimensions,
     layout_direction,
 };
 use waterui_core::plugin::Plugin;
+use waterui_graphics::color::Color;
 use waterui_interaction::interaction::InteractionState;
+use waterui_text::code::CodeConfig;
+use waterui_text::font::Body;
+use waterui_text::text;
 
 use crate::num_cast::f64_as_f32;
 use crate::renderer::chrome::LiveChromeParts;
@@ -39,7 +39,7 @@ use crate::theme::{
 /// Minimum horizontal gap between the language label and the copy button in logical points.
 const HEADER_ITEM_GAP: f32 = 8.0;
 
-/// Retained render state for a [`Code`](waterui::widget::Code) block.
+/// Retained render state for a `Code` block.
 pub struct CodeRenderState<E: TextEngine> {
     config: CodeConfig,
     header_label: String,
@@ -577,7 +577,7 @@ pub fn render_code_node<E: TextEngine>(
     });
 }
 
-/// Emits accessibility nodes for a [`Code`](waterui::widget::Code) block
+/// Emits accessibility nodes for a `Code` block
 /// during semantic-only tree walks.
 #[cfg(feature = "accessibility")]
 #[cfg(hydrolysis_cherenkov)]

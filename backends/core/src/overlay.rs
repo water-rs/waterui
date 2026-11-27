@@ -1,4 +1,4 @@
-//! Window-space placement for [`AnchoredOverlay`], shared by every backend.
+//! Window-space placement for [`waterui_controls::anchored_overlay::AnchoredOverlay`], shared by every backend.
 //!
 //! An overlay floats above all other content, so only the backend — which
 //! sees the anchor's resolved frame and the window's bounds — can place it.
@@ -147,7 +147,7 @@ const fn physical_edge(edge: AnchorEdge, direction: LayoutDirection) -> Physical
     }
 }
 
-/// The inverse of [`physical_edge`]: the logical `AnchorEdge` for a resolved
+/// The inverse of `physical_edge`: the logical `AnchorEdge` for a resolved
 /// `PhysicalEdge`.
 ///
 /// What a backend writes to `AnchoredOverlay::placed_edge` after `placed.edge`

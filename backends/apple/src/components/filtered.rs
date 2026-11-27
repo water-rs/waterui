@@ -19,10 +19,10 @@ use cocoa_ui::capture::{CapturableSurface, CaptureError, CapturePass, SurfaceCap
 use cocoa_ui::metal_presenter::{DrawableFrame, MetalPresenter};
 use executor_core::spawn_local;
 use futures::FutureExt;
+use nami::Computed;
 use objc2::MainThreadMarker;
 use objc2_metal::{MTLDevice as _, MTLTexture as _};
 use objc2_quartz_core::CAMetalLayer;
-use waterui::reactive::Computed;
 use waterui_backend_core::{ChildView, Environment};
 use waterui_core::backend::ErasedPayload;
 use waterui_core::layout::{
@@ -394,7 +394,7 @@ fn can_attach_now(view: &PlatformView) -> bool {
 /// sublayer walk.
 fn configure_dynamic_range(state: &FilteredState, mode: cocoa_ui::dynamic_range::DynamicRange) {
     if state.attached.get() {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "FilteredView dynamic range cannot change while attached; the change is ignored"
         );
         return;
@@ -557,7 +557,7 @@ fn attach_if_needed(
         return;
     }
     if width == 0 || height == 0 {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "FilteredView attach: dimensions must be non-zero, got {width}x{height}; \
              the view is not attached"
         );
@@ -1988,7 +1988,7 @@ impl CapturableSurface for FilteredCapturable {
         };
         let count = state.capture_suppression.get();
         if count == 0 {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "FilteredView capture suppression scopes are unbalanced; the end is ignored"
             );
             return;
@@ -2020,7 +2020,7 @@ impl CapturableSurface for FilteredCapturable {
         };
         let count = state.external_count.get();
         if count == 0 {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "FilteredView external rendering scopes are unbalanced; the end is ignored"
             );
             return;
@@ -2053,7 +2053,7 @@ impl CapturableSurface for FilteredCapturable {
             unsafe { Retained::<MetalTexture>::retain(std::ptr::from_ref(texture).cast_mut()) }
                 .expect("`retain` of a pointer made from a reference is non-null");
         if retained.pixelFormat() != output_pixel_format() {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "FilteredView external target must be in the presentation format \
                  ({:?}), got {:?}; the frame is deferred",
                 output_pixel_format(),
@@ -2562,7 +2562,7 @@ pub fn effects_from_transition(
     if state.visit_empty_body(frame, &mut probe, env)? {
         return Some(probe.effects);
     }
-    waterui::contract_violation!(
+    waterui_core::contract_violation!(
         "waterui-apple: a `captures_content` transition's body must expand to a \
          `FilteredView` chain over the empty content"
     );

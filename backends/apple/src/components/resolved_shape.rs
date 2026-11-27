@@ -8,12 +8,12 @@
 
 use cocoa_ui::path::PathBuilder;
 use cocoa_ui::shape::ShapeLayer;
-use waterui::graphics::color::WorkingColor;
-use waterui::reactive::Signal;
-use waterui::shape::{PathCommand, ResolvedShape, ShapeKind};
+use nami::Signal;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_graphics::color::WorkingColor;
+use waterui_shape::{PathCommand, ResolvedShape, ShapeKind};
 
 use crate::contract::NativeLeaf;
 
@@ -45,7 +45,7 @@ fn cg_color(
 }
 
 /// Resolves a `CornerRadius` into logical points capped at half the shorter side.
-pub fn resolve_corner(radius: waterui::shape::CornerRadius, shorter: f64) -> f64 {
+pub fn resolve_corner(radius: waterui_shape::CornerRadius, shorter: f64) -> f64 {
     let limit = shorter / 2.0;
     match (radius.as_points(), radius.as_fraction()) {
         (Some(points), None) => f64::from(points).min(limit),
@@ -230,7 +230,7 @@ pub fn realize_resolved_shape(shape: ResolvedShape, ctx: &RenderContext<'_>) -> 
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::resolve_corner;
-    use waterui::shape::CornerRadius;
+    use waterui_shape::CornerRadius;
 
     #[test]
     fn fraction_radius_scales_by_shorter_side_and_clamps() {

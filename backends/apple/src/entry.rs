@@ -1,8 +1,8 @@
 //! Native application startup. GPU setup completes on the main executor
 //! before services, application declarations, and windows are realized.
 
-use waterui::app::{App, AppMenuBar, Windows};
 use waterui_backend_core::Environment;
+use waterui_backend_core::app::{App, AppMenuBar, Windows};
 
 /// Runs `app` on `env`, which the caller's `configure_environment!` already
 /// built — the tail of `waterui_apple_main`. `accessory` selects the macOS
@@ -24,11 +24,11 @@ pub unsafe fn run<W: Windows, M: AppMenuBar>(
     #[cfg(feature = "inspector")]
     {
         let inspector = crate::startup::initialize();
-        waterui::inspector::install(env, inspector);
+        waterui_backend_core::inspector::install(env, inspector);
     }
     #[cfg(not(feature = "inspector"))]
     crate::startup::initialize();
-    waterui::text::install_system_font_collection(env);
+    waterui_text::install_system_font_collection(env);
     let mut fonts = crate::fonts::FontRegistrations::default();
     crate::resources::install_application(env, &mut fonts);
     crate::dispatch::install(env);
@@ -50,8 +50,8 @@ mod imp {
     use cocoa_ui::appkit::{
         ActivationPolicy, Application, ApplicationHandlers, ColorSchemeObservation, TerminateReply,
     };
-    use waterui::app::{App, AppMenuBar, Windows};
     use waterui_backend_core::Environment;
+    use waterui_backend_core::app::{App, AppMenuBar, Windows};
 
     use crate::termination::Session;
     use crate::theme::ThemeSignals;
@@ -233,12 +233,12 @@ mod imp {
 
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::uikit::{self, ApplicationHandlers};
-    use waterui::app::{App, AppMenuBar, Windows};
-    use waterui::graphics::Color;
-    use waterui::reactive::Signal as _;
-    use waterui::theme::color::Background;
-    use waterui::window::WindowState;
+    use nami::Signal as _;
     use waterui_backend_core::Environment;
+    use waterui_backend_core::app::{App, AppMenuBar, Windows};
+    use waterui_backend_core::window::WindowState;
+    use waterui_controls::theme::color::Background;
+    use waterui_graphics::Color;
 
     use crate::theme::ThemeSignals;
 
@@ -288,7 +288,7 @@ mod imp {
             .iter()
             .all(|window| window.state.snapshot() == WindowState::Closed)
         {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "an iOS application must declare at least one window; the app shows no window"
             );
         }

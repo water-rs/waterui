@@ -15,12 +15,12 @@ use alloc::rc::Rc;
 
 use cocoa_ui::view;
 use cocoa_ui::{PlatformView, Rect};
-use waterui::layout::IgnoreSafeArea;
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_layout::IgnoreSafeArea;
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;

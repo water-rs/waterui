@@ -4,7 +4,7 @@ use super::*;
 use crate::renderer::mount::RetainedScopes;
 use crate::renderer::transformed_rect;
 use std::borrow::Cow;
-use waterui::sheet::SheetContentScope;
+use waterui_controls::sheet::SheetContentScope;
 use waterui_core::contract_violation;
 
 #[cfg(feature = "accessibility")]
@@ -777,9 +777,9 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         }
         if let Some(checked) = state.checked_state() {
             node.set_toggled(match checked {
-                waterui::accessibility::AccessibilityChecked::False => AccessibilityToggled::False,
-                waterui::accessibility::AccessibilityChecked::True => AccessibilityToggled::True,
-                waterui::accessibility::AccessibilityChecked::Mixed => AccessibilityToggled::Mixed,
+                waterui_accessibility::AccessibilityChecked::False => AccessibilityToggled::False,
+                waterui_accessibility::AccessibilityChecked::True => AccessibilityToggled::True,
+                waterui_accessibility::AccessibilityChecked::Mixed => AccessibilityToggled::Mixed,
             });
         }
         if let Some(expanded) = state.expanded_state() {

@@ -16,17 +16,17 @@ use core::cell::RefCell;
 use cocoa_ui::accessibility::Role;
 use cocoa_ui::action::ActionTarget;
 use cocoa_ui::{PlatformView, Rect as KitRect, Retained, view};
-use waterui::component::ControlSize;
-use waterui::component::button::{ButtonConfig, ButtonRole, ButtonStyle};
-use waterui::component::label::ControlLabel;
-use waterui::reactive::Computed;
-use waterui::text::StyledStr;
+use nami::Computed;
 use waterui_backend_core::Environment;
+use waterui_controls::ControlSize;
+use waterui_controls::button::{ButtonConfig, ButtonRole, ButtonStyle};
+use waterui_controls::label::ControlLabel;
 use waterui_core::handler::ReportExtraction;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
 use waterui_interaction::interaction::Disabled;
+use waterui_text::StyledStr;
 
 use crate::components::button_chrome;
 use crate::contract::{Held, NativeLeaf};

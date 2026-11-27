@@ -8,7 +8,7 @@
 //! window is titled.
 
 use crate::contract::{Held, NativeLeaf, RenderContext};
-use waterui::navigation::ResolvedNavigationView;
+use waterui_backend_core::navigation::ResolvedNavigationView;
 
 /// The `NavigationView` realization, its fields resolved against the
 /// environment it is realized in.
@@ -28,14 +28,14 @@ mod platform {
     use cocoa_ui::objc2_ui_kit::UIView;
     use cocoa_ui::uikit::{HostView, LargeTitle, NavBar, NavPage, SearchBar};
     use cocoa_ui::{MainThreadMarker, Rect, Retained, view};
-    use waterui::Str;
-    use waterui::navigation::{
+    use waterui_backend_core::navigation::{
         NavigationController, NavigationSearch, NavigationTitleDisplayMode, ResolvedNavigationView,
         SlotBuilder,
     };
-    use waterui::resolve::Resolvable;
-    use waterui::theme::color::Foreground;
+    use waterui_controls::theme::color::Foreground;
+    use waterui_core::Str;
     use waterui_core::reactive::Signal;
+    use waterui_core::resolve::Resolvable;
 
     use crate::components::navigation::bar::{
         BarItem, BarState, bar_color, bar_item_frame, ios_suggestions_controller, search_prompt,
@@ -207,7 +207,7 @@ mod platform {
         search: Option<&NavigationSearch>,
         suggestions: Option<&SlotBuilder<Held>>,
         renderer: &Renderer,
-        env: &waterui::Environment,
+        env: &waterui_core::Environment,
         keep: &mut KeepAlive,
     ) -> Option<Retained<SearchBar>> {
         let search = search?;
@@ -279,7 +279,7 @@ mod platform {
 
     /// The standalone page chrome — no back affordance: there is nothing to
     /// pop without a controller in the environment.
-    fn page(bar: &BarState, keep: &mut KeepAlive, env: &waterui::Environment) -> NavPage {
+    fn page(bar: &BarState, keep: &mut KeepAlive, env: &waterui_core::Environment) -> NavPage {
         let title_view = bar.principal().map_or_else(
             || {
                 if bar.title.text.is_some() {
@@ -327,7 +327,7 @@ mod platform {
     fn button(
         item: &BarItem,
         keep: &mut KeepAlive,
-        env: &waterui::Environment,
+        env: &waterui_core::Environment,
     ) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem> {
         let mtm = cocoa_ui::MainThreadMarker::new().expect("views render on the main thread");
         crate::components::navigation::button_bar_item(item, keep, mtm, |icon, action, keep| {
@@ -344,7 +344,7 @@ mod platform {
         item: &BarItem,
         icon: &NativeLeaf,
         action: Option<Rc<dyn Fn()>>,
-        env: &waterui::Environment,
+        env: &waterui_core::Environment,
         keep: &mut KeepAlive,
         mtm: cocoa_ui::MainThreadMarker,
     ) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem> {
@@ -372,7 +372,7 @@ mod platform {
         item: &BarItem,
         icon: &NativeLeaf,
         action: Option<Rc<dyn Fn()>>,
-        _env: &waterui::Environment,
+        _env: &waterui_core::Environment,
         _keep: &mut KeepAlive,
         mtm: cocoa_ui::MainThreadMarker,
     ) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem> {
@@ -395,8 +395,8 @@ mod platform {
     use cocoa_ui::objc2_app_kit::NSWindowStyleMask;
     use cocoa_ui::text::WrapWidth;
     use cocoa_ui::{Rect, Retained, view};
-    use waterui::Signal;
-    use waterui::navigation::{
+    use nami::Signal;
+    use waterui_backend_core::navigation::{
         NavigationController, NavigationToolbarPlacement, ResolvedNavigationView,
     };
     use waterui_core::layout::ProposalSize;

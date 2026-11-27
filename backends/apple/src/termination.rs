@@ -20,7 +20,7 @@
 //! [`Required`](TerminationKind::Required): a termination signal, the last
 //! window closing under [`LastWindowPolicy::Quit`], and a launch that
 //! declares no window under it. Once the machine finishes one of those, or a
-//! [`Quit`](waterui::app::Quit) request from the application, no question is
+//! [`Quit`](waterui_backend_core::app::Quit) request from the application, no question is
 //! open, so the host sends `terminate:` itself — and the delegate answers
 //! that one `NSTerminateNow` without filing it with the machine again.
 
@@ -30,10 +30,10 @@ use core::cell::Cell;
 use cocoa_ui::MainThreadMarker;
 use cocoa_ui::appkit::{Application, TerminateReply};
 use cocoa_ui::signal::TerminationSignals;
-use waterui::app::{
+use waterui_backend_core::Environment;
+use waterui_backend_core::app::{
     LastWindowPolicy, Termination, TerminationHandle, TerminationHost, TerminationKind,
 };
-use waterui_backend_core::Environment;
 
 /// The `AppKit` calls the gate answers through.
 trait QuitTarget: 'static {
@@ -103,7 +103,7 @@ impl<T: QuitTarget> QuitGate<T> {
             // The quit hook the question runs reached `AppKit`'s terminate
             // again before answering: the question in flight decides.
             phase @ (Phase::Deciding | Phase::Decided(_)) => {
-                waterui::contract_violation!(
+                waterui_core::contract_violation!(
                     "applicationShouldTerminate: re-entered while {phase:?}; \
                      the re-entrant request is cancelled and the question in flight decides"
                 );
@@ -143,7 +143,7 @@ impl<T: QuitTarget> QuitGate<T> {
         }
     }
 
-    /// The machine's `refuse`. A refused [`Quit`](waterui::app::Quit)
+    /// The machine's `refuse`. A refused [`Quit`](waterui_backend_core::app::Quit)
     /// request opened no question, so nothing answers it.
     fn refuse(&self) {
         match self.phase.get() {
@@ -182,7 +182,7 @@ pub struct Session {
 
 impl Session {
     /// Starts the machine on `env` — the environment windows and menus are
-    /// realized under, which receives the [`Quit`](waterui::app::Quit)
+    /// realized under, which receives the [`Quit`](waterui_backend_core::app::Quit)
     /// service — and turns the termination signals into required requests.
     pub fn start(
         termination: Termination,
@@ -233,8 +233,8 @@ mod tests {
     use cocoa_ui::appkit::TerminateReply;
     use executor_core::LocalExecutor;
     use executor_core::async_task::{self, AsyncTask, Runnable};
-    use waterui::app::{App, QuitReply, TerminationKind};
     use waterui_backend_core::Environment;
+    use waterui_backend_core::app::{App, QuitReply, TerminationKind};
 
     use super::{AppKitTerminationHost, QuitGate, QuitTarget};
 

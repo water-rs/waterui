@@ -16,14 +16,14 @@ use core::cell::RefCell;
 use core::ops::RangeInclusive;
 
 use cocoa_ui::{PlatformView, Rect, Retained, view};
-use waterui::component::stepper::{StepperConfig, clamp_value_to_range};
-use waterui::reactive::{Binding, Computed, Signal};
-use waterui::text::{StyledStr, TextConfig};
+use nami::{Binding, Computed, Signal};
+use waterui_controls::stepper::{StepperConfig, clamp_value_to_range};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
 use waterui_interaction::interaction::Disabled;
+use waterui_text::{StyledStr, TextConfig};
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;

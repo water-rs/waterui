@@ -34,7 +34,7 @@ use std::task::{Context, Poll, Wake, Waker};
 
 use ndk::native_window::NativeWindow;
 use rustc_hash::FxHashMap;
-use waterui::Environment;
+use waterui_core::Environment;
 use waterui_graphics::OffscreenSize;
 use waterui_graphics::backend::GpuContentLeaf;
 use waterui_graphics::gpu::interop::GpuContentBox;

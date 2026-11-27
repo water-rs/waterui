@@ -18,10 +18,10 @@ use core::ops::RangeInclusive;
 
 use cocoa_ui::slider::ValueAnimation;
 use cocoa_ui::{PlatformView, Rect, Retained, view};
-use waterui::animation::ChangeAnimation;
-use waterui::component::slider::{SliderConfig, clamp_value_to_range, snap};
-use waterui::reactive::watcher::Metadata;
-use waterui::reactive::{Binding, Computed, Signal};
+use nami::watcher::Metadata;
+use nami::{Binding, Computed, Signal};
+use waterui_controls::slider::{SliderConfig, clamp_value_to_range, snap};
+use waterui_core::animation::ChangeAnimation;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
@@ -303,7 +303,7 @@ fn value_animation(metadata: &Metadata) -> Option<ValueAnimation> {
 /// A styled string as spoken text: plain text with the bidi control
 /// characters interpolation inserts for layout stripped, as
 /// `WuiControlAccessibility.apply` does for labels and tooltips.
-fn accessibility_text(styled: &waterui::text::StyledStr) -> String {
+fn accessibility_text(styled: &waterui_text::StyledStr) -> String {
     styled
         .to_plain()
         .chars()
@@ -386,7 +386,7 @@ pub fn realize_slider_config(config: SliderConfig<Held>, ctx: &RenderContext<'_>
     // track like a bare `NSSlider`/`UISlider` does.
     slider.set_control_size(platform_control_size(
         config.size(),
-        waterui::component::ControlSize::ExtraSmall,
+        waterui_controls::ControlSize::ExtraSmall,
     ));
     let initial_range = config.range().snapshot();
     slider.set_range(*initial_range.start(), *initial_range.end());
@@ -489,7 +489,7 @@ pub fn realize_slider_config(config: SliderConfig<Held>, ctx: &RenderContext<'_>
 mod tests {
     use core::time::Duration;
 
-    use waterui::animation::{Animation, NoAnimation};
+    use waterui_core::animation::{Animation, NoAnimation};
 
     use super::*;
 
@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn accessibility_text_strips_bidi_marks() {
-        use waterui::text::StyledStr;
+        use waterui_text::StyledStr;
         let styled = StyledStr::plain("Volume\u{202a}up\u{202c}");
         assert_eq!(accessibility_text(&styled), "Volumeup");
     }

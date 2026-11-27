@@ -37,11 +37,11 @@ use cocoa_ui::avkit::{
 use cocoa_ui::avkit::{PipEvent, PlayerView};
 use cocoa_ui::objc2_av_foundation::{AVAssetVariant, AVMediaSelectionGroup};
 use cocoa_ui::{MainThreadMarker, Retained, Size as CocoaSize, main_queue};
+use nami::{Binding, Computed, Signal};
 use waterkit_audio::{
     MediaCommand, MediaMetadata as SessionMetadata, MediaSession, PlaybackState as SessionState,
     PlaybackStatus as SessionStatus, QueueNavigationControls,
 };
-use waterui::reactive::{Binding, Computed, Signal};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
@@ -535,14 +535,14 @@ impl State {
             // contract violation of the framework that selected it; the
             // playback stays platform-managed.
             PlaybackPowerPolicy::RequireAudioOffload => {
-                waterui::contract_violation!(
+                waterui_core::contract_violation!(
                     "RequireAudioOffload cannot be satisfied by the AVPlayer realization; \
                      select the WaterKit self-drawn video realization; \
                      the playback is platform-managed"
                 );
             }
             PlaybackPowerPolicy::RequireAudioVideoTunneling => {
-                waterui::contract_violation!(
+                waterui_core::contract_violation!(
                     "RequireAudioVideoTunneling cannot be satisfied by the AVPlayer realization; \
                      select the WaterKit self-drawn video realization; \
                      the playback is platform-managed"
@@ -550,7 +550,7 @@ impl State {
             }
             // `PlaybackPowerPolicy` is non-exhaustive: an unknown requirement
             // is the same violation.
-            other => waterui::contract_violation!(
+            other => waterui_core::contract_violation!(
                 "apple video: unsupported playback power policy {other:?}; \
                  the playback is platform-managed"
             ),
@@ -1700,7 +1700,7 @@ fn bind(leaf: &mut NativeLeaf, coordinator: &Coordinator) {
 #[cfg(feature = "video")]
 fn render_video(config: NativeVideoConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     if config.projection.is_spherical() {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "spherical video projection is not supported by the AVPlayer realization; \
              select the WaterKit self-drawn video realization; the video is drawn flat"
         );
@@ -1734,7 +1734,7 @@ fn render_video(config: NativeVideoConfig, ctx: &RenderContext<'_>) -> NativeLea
 #[cfg(feature = "video_player")]
 fn render_video_player(config: NativeVideoPlayerConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     if config.projection.is_spherical() {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "spherical video projection is not supported by the AVPlayer realization; \
              select the WaterKit self-drawn video realization; the video is drawn flat"
         );

@@ -16,14 +16,15 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use cocoa_ui::{Point as CocoaPoint, Rect, view};
-use waterui::drag_drop::{DragPayload, DropDestination, DropInfo, Files, TransferKind};
-use waterui::{Str, Url};
 use waterui_backend_core::Environment;
 use waterui_core::Metadata;
+use waterui_core::Str;
 use waterui_core::layout::{
     LayoutError, Point as LayoutPoint, ProposalSize, Rect as LayoutRect, ResolvedExtent,
     StretchAxis, SubView, ViewDimensions,
 };
+use waterui_interaction::drag_drop::{DragPayload, DropDestination, DropInfo, Files, TransferKind};
+use waterui_url::Url;
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
@@ -433,7 +434,7 @@ pub fn realize_drop_destination_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui::drag_drop::PlatformRepresentation;
+    use waterui_interaction::drag_drop::PlatformRepresentation;
 
     #[test]
     #[cfg(target_os = "macos")]

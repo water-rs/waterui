@@ -34,14 +34,14 @@ use cocoa_ui::reduce_motion::{
 use cocoa_ui::uikit::{self, ApplicationHandlers, Window, WindowScene};
 use executor_core::{LocalExecutor as _, Task as _};
 use nami::{Binding, Signal as _};
-use waterui::app::{App, AppMenuBar, Windows};
-use waterui::theme::ColorScheme;
 #[cfg(feature = "menu")]
 use waterui_apple_menu::ios::{Declared, build_handler, declared, install_declared};
+use waterui_backend_core::app::{App, AppMenuBar, Windows};
 #[cfg(feature = "menu")]
 use waterui_controls::label::SemanticLabel;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::Menu;
+use waterui_controls::theme::ColorScheme;
 use waterui_core::{Environment, Retain, contract_violation};
 use waterui_locale::regional::refresh_system_locale;
 use waterui_structural_transition::ReduceMotion;
@@ -317,14 +317,14 @@ pub(in crate::runner) fn run<W: Windows, M: AppMenuBar>(
     init_tracing(
         inspector
             .as_ref()
-            .map(waterui::inspector::InspectorRuntime::tracing_layer),
+            .map(waterui_backend_core::inspector::InspectorRuntime::tracing_layer),
     );
     #[cfg(not(hydrolysis_inspector))]
     init_tracing();
     #[cfg(hydrolysis_inspector)]
-    let inspector_probe = inspector
-        .as_ref()
-        .map(|inspector| inspector.task_probe() as std::sync::Arc<dyn waterui::task::RuntimeProbe>);
+    let inspector_probe = inspector.as_ref().map(|inspector| {
+        inspector.task_probe() as std::sync::Arc<dyn waterui_backend_core::task::RuntimeProbe>
+    });
     #[cfg(not(hydrolysis_inspector))]
     let inspector_probe = None;
 
@@ -336,11 +336,13 @@ pub(in crate::runner) fn run<W: Windows, M: AppMenuBar>(
             executor.drain();
         }
     });
-    executor_core::try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
-        executor.clone(),
-        display_refresh_rate(mtm),
-        inspector_probe,
-    ))
+    executor_core::try_init_local_executor(
+        waterui_backend_core::task::monitored_local_executor_with_probes(
+            executor.clone(),
+            display_refresh_rate(mtm),
+            inspector_probe,
+        ),
+    )
     .unwrap_or_else(|_| panic!("hydrolysis UIKit: the main thread's executor is already attached"));
 
     #[cfg_attr(
@@ -352,7 +354,7 @@ pub(in crate::runner) fn run<W: Windows, M: AppMenuBar>(
     )]
     let mut services = Environment::new();
     #[cfg(hydrolysis_inspector)]
-    waterui::inspector::install(&mut services, inspector);
+    waterui_backend_core::inspector::install(&mut services, inspector);
     #[cfg(feature = "menu")]
     let menus = declared();
     let application = Rc::new(UiKitApplication {
@@ -428,9 +430,9 @@ fn application_handlers(
 
 /// The fastest attached screen's refresh rate, for the executor's frame
 /// budget.
-fn display_refresh_rate(mtm: MainThreadMarker) -> waterui::task::RefreshRate {
+fn display_refresh_rate(mtm: MainThreadMarker) -> waterui_backend_core::task::RefreshRate {
     use cocoa_ui::objc2_ui_kit::UIScreen;
-    use waterui::task::RefreshRate;
+    use waterui_backend_core::task::RefreshRate;
 
     // `screens` is deprecated in favour of scene-session discovery, but at
     // startup no scene session exists yet — this is the only API that can
@@ -480,7 +482,7 @@ fn env_filter() -> tracing_subscriber::EnvFilter {
 /// for a level — a physical device's unified log is unreachable from the
 /// host, and `devicectl --console` only carries stderr.
 fn init_tracing(
-    #[cfg(hydrolysis_inspector)] inspector: Option<waterui::inspector::InspectorLayer>,
+    #[cfg(hydrolysis_inspector)] inspector: Option<waterui_backend_core::inspector::InspectorLayer>,
 ) {
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;

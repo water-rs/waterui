@@ -12,7 +12,7 @@
 //!   row so `WuiList` can draw the platform's affordance; the marker is the
 //!   accessibility identifier `dev.waterui.navigation-link-hint`.
 
-use waterui::navigation::{
+use waterui_backend_core::navigation::{
     NavigationLinkHint, NavigationTransitionDestination, NavigationTransitionSource,
 };
 use waterui_core::Metadata;

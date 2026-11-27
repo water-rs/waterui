@@ -23,8 +23,8 @@ use nami::Signal;
 use serde::Deserialize;
 use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
-use waterui::app::{App, AppMenuBar, AppParts, Windows};
-use waterui::window::WindowState;
+use waterui_backend_core::app::{App, AppMenuBar, AppParts, Windows};
+use waterui_backend_core::window::WindowState;
 use waterui_core::{Environment, Retain, contract_violation};
 use waterui_structural_transition::ReduceMotion;
 use web_sys::Response;
@@ -525,11 +525,13 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
         // server the page cannot host, so no probe exists to hand it. The
         // browser's rAF rate is not queryable up front, so the executor budgets
         // at the headless rate.
-        let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
-            local_executor,
-            waterui::task::RefreshRate::HEADLESS,
-            None,
-        ));
+        let _ = try_init_local_executor(
+            waterui_backend_core::task::monitored_local_executor_with_probes(
+                local_executor,
+                waterui_backend_core::task::RefreshRate::HEADLESS,
+                None,
+            ),
+        );
 
         // The page is the application's one window: it has no windowless
         // state to stay resident in, and closing the tab ends the application

@@ -14,8 +14,8 @@ use core::cell::Cell;
 use cocoa_ui::dynamic_range::{self, DynamicRange};
 use cocoa_ui::view;
 use cocoa_ui::{PlatformView, Rect};
-use waterui::Signal;
-use waterui::metadata::secure::{DynamicRange as WaterDynamicRange, DynamicRangeMetadata};
+use nami::Signal;
+use waterui_controls::secure::{DynamicRange as WaterDynamicRange, DynamicRangeMetadata};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,

@@ -1,4 +1,4 @@
-//! `waterui::component::ControlSize` mapped onto the platform's size
+//! `waterui_controls::ControlSize` mapped onto the platform's size
 //! classes.
 //!
 //! The platform offers four sizes — `mini`, `small`, `regular`, `large` —
@@ -9,7 +9,7 @@
 //! is `large`.
 
 use cocoa_ui::slider::ControlSize;
-use waterui::component::ControlSize as WuiControlSize;
+use waterui_controls::ControlSize as WuiControlSize;
 
 /// `size` drawn for a control whose documented default is `default`.
 ///

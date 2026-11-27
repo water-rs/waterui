@@ -22,7 +22,7 @@ use crate::renderer::accessibility::{
 use crate::renderer::{SemanticCore, WindowId};
 use std::rc::Rc;
 use std::sync::Arc;
-use waterui::window::Window;
+use waterui_backend_core::window::Window;
 use waterui_core::contract_violation;
 use waterui_structural_transition::ReduceMotion;
 
@@ -254,19 +254,19 @@ impl SemanticRuntime {
         #[cfg(hydrolysis_inspector)]
         let inspector = init_main_thread_executors();
         #[cfg(hydrolysis_inspector)]
-        let inspector_probe = inspector
-            .as_ref()
-            .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
+        let inspector_probe = inspector.as_ref().map(|inspector| {
+            inspector.task_probe() as Arc<dyn waterui_backend_core::task::RuntimeProbe>
+        });
         #[cfg(not(hydrolysis_inspector))]
-        let inspector_probe: Option<Arc<dyn waterui::task::RuntimeProbe>> = {
+        let inspector_probe: Option<Arc<dyn waterui_backend_core::task::RuntimeProbe>> = {
             init_global_executor();
             None
         };
         let mut env = env;
         #[cfg(not(target_arch = "wasm32"))]
-        waterui::install_application_resources(&mut env);
+        waterui_backend_core::install_application_resources(&mut env);
         #[cfg(hydrolysis_inspector)]
-        waterui::inspector::install(&mut env, inspector);
+        waterui_backend_core::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         #[cfg(any(test, hydrolysis_platform_services))]
         install_platform_services(&mut env);
@@ -278,7 +278,11 @@ impl SemanticRuntime {
         // and actions do not depend on one. No platform appearance either: the
         // scheme is Light unless the application installs its own.
         let _ = env.get_or_insert_with::<ReduceMotion, _>(Default::default);
-        crate::theme::install_theme_tokens(&mut env, None, waterui::theme::ColorScheme::Light);
+        crate::theme::install_theme_tokens(
+            &mut env,
+            None,
+            waterui_controls::theme::ColorScheme::Light,
+        );
         let fonts = build_fonts(&env);
         fonts.clone().install(&mut env);
 
@@ -292,11 +296,13 @@ impl SemanticRuntime {
         let local_executor = HeadlessMainThreadExecutor::thread_shared();
         // A semantic host paces frames itself, so the executor budgets at the
         // headless rate.
-        let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
-            local_executor.clone(),
-            waterui::task::RefreshRate::HEADLESS,
-            inspector_probe,
-        ));
+        let _ = try_init_local_executor(
+            waterui_backend_core::task::monitored_local_executor_with_probes(
+                local_executor.clone(),
+                waterui_backend_core::task::RefreshRate::HEADLESS,
+                inspector_probe,
+            ),
+        );
 
         window.frame.set(waterui_core::layout::Rect::new(
             waterui_core::layout::Point::zero(),
@@ -499,13 +505,11 @@ impl SemanticRuntime {
         // A popup whose state flipped `Closed` — its menu group dismissed it
         // — leaves the tree. Flag the main window so the merged update
         // re-emits without it.
-        if self
-            .popup_windows
-            .iter()
-            .any(|popup| popup.window.state.snapshot() == waterui::window::WindowState::Closed)
-        {
+        if self.popup_windows.iter().any(|popup| {
+            popup.window.state.snapshot() == waterui_backend_core::window::WindowState::Closed
+        }) {
             self.popup_windows.retain(|popup| {
-                popup.window.state.snapshot() != waterui::window::WindowState::Closed
+                popup.window.state.snapshot() != waterui_backend_core::window::WindowState::Closed
             });
             self.window.refresh_requested = true;
         }
@@ -631,7 +635,8 @@ fn semantic_window_origin(window: &SemanticWindow) -> HydrolysisWindowOrigin {
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
 fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) -> bool {
-    let mut should_close = window.window.state.snapshot() == waterui::window::WindowState::Closed;
+    let mut should_close =
+        window.window.state.snapshot() == waterui_backend_core::window::WindowState::Closed;
     let events: Vec<InputEvent> = window.pending_events.drain(..).collect();
     // Same ordered IME keystroke ownership as the rendered runner
     // (`ime::ime_owned_events` tracks the composition through the batch).
@@ -657,8 +662,8 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                 // executor.
                 if window.window.closable {
                     window.window.request_close(env);
-                    should_close =
-                        window.window.state.snapshot() == waterui::window::WindowState::Closed;
+                    should_close = window.window.state.snapshot()
+                        == waterui_backend_core::window::WindowState::Closed;
                 }
                 true
             }
@@ -1106,7 +1111,7 @@ mod tests {
         runtime.pump();
         assert_eq!(
             runtime.window.window.state.snapshot(),
-            waterui::window::WindowState::Normal,
+            waterui_backend_core::window::WindowState::Normal,
             "a non-closable window must ignore a close request"
         );
 
@@ -1115,7 +1120,7 @@ mod tests {
         runtime.pump();
         assert_eq!(
             runtime.window.window.state.snapshot(),
-            waterui::window::WindowState::Closed,
+            waterui_backend_core::window::WindowState::Closed,
             "a closable window must close on a close request"
         );
     }

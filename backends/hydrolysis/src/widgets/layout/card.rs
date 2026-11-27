@@ -1,4 +1,4 @@
-//! Hydrolysis realization of [`Card`](waterui::widget::Card): a theme-driven
+//! Hydrolysis realization of [`Card`](waterui_controls::Card): a theme-driven
 //! container [`Surface`] framing optional title, subtitle, and body content.
 
 use core::cell::RefCell;
@@ -7,19 +7,19 @@ use std::rc::Rc;
 
 use kurbo::Rect;
 use nami::{Binding, Signal as _};
-use waterui::animation::Animation;
-use waterui::graphics::color::Color;
-use waterui::text::Text;
-use waterui::text::font::Body;
-use waterui::theme::{ForegroundOverride, install_font_signal};
-use waterui::widget::{CardConfig, CardStyle};
+use waterui_controls::theme::{ForegroundOverride, install_font_signal};
+use waterui_controls::{CardConfig, CardStyle};
 use waterui_core::Environment;
+use waterui_core::animation::Animation;
 use waterui_core::layout::{
     LayoutDirection, ProposalSize, Size as LayoutSize, StretchAxis, ViewDimensions,
     layout_direction,
 };
 use waterui_core::plugin::Plugin;
+use waterui_graphics::color::Color;
 use waterui_interaction::interaction::InteractionState;
+use waterui_text::Text;
+use waterui_text::font::Body;
 
 use crate::num_cast::f64_as_f32;
 use crate::renderer::chrome::LiveChromeParts;
@@ -33,7 +33,7 @@ use crate::theme::{
     WidgetTheme,
 };
 
-/// Retained render state for a [`Card`](waterui::widget::Card).
+/// Retained render state for a [`Card`](waterui_controls::Card).
 pub struct CardRenderState<E: TextEngine> {
     style: CardStyle,
     title_text: Option<Text>,

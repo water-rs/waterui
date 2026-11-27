@@ -253,7 +253,7 @@ impl FieldChrome {
         let color = Rc::clone(&self.label_color);
         let color = Color::from_signal(self.report.clone().map(move |state| {
             color.borrow().as_ref().map_or_else(
-                || Color::new(waterui::theme::color::Foreground),
+                || Color::new(waterui_controls::theme::color::Foreground),
                 |color| color.target(&Inputs::at_rest(Rect::ZERO, state, &())),
             )
         }));

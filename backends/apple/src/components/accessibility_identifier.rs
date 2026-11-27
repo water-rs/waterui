@@ -13,7 +13,7 @@ use cocoa_ui::PlatformView;
 use cocoa_ui::accessibility as a11y;
 use cocoa_ui::view;
 use objc2_foundation::NSString;
-use waterui::accessibility::AccessibilityIdentifier;
+use waterui_accessibility::AccessibilityIdentifier;
 use waterui_core::Metadata;
 
 #[cfg(target_os = "macos")]

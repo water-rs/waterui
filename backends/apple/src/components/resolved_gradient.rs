@@ -11,14 +11,14 @@ use std::rc::Rc;
 use cocoa_ui::gradient::{
     GradientLayer, GradientPaint, GradientShape, GradientSpace, GradientStop,
 };
-use waterui::Signal as _;
-use waterui::graphics::Gradient;
-use waterui::graphics::backend::draw::{
-    ColorSpace, ColorStop, Extend, Interpolation, LinearDisplayP3, LinearGradient, Paint,
-    RadialGradient, Srgb, SweepGradient, WorkingColor,
-};
+use nami::Signal as _;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
+use waterui_graphics::Gradient;
+use waterui_graphics::backend::draw::{
+    ColorSpace, ColorStop, Extend, Interpolation, LinearDisplayP3, LinearGradient, Paint,
+    RadialGradient, Srgb, SweepGradient, WorkingColor,
 };
 
 use crate::contract::NativeLeaf;
@@ -77,7 +77,7 @@ fn layer_stops(
 /// gradient; the gradient is drawn pad-extended.
 fn check_pad(extend: Extend) {
     if extend != Extend::Pad {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "the Apple backend draws only pad-extended gradients (Gradient's constructors build no other), got {extend:?}; \
              the gradient is drawn pad-extended"
         );
@@ -188,7 +188,7 @@ fn sweep_paint(gradient: &SweepGradient) -> GradientPaint {
     let turn = if span > 0.0 && span <= f64::from(core::f32::consts::TAU) {
         (span / TAU).min(1.0)
     } else {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "Apple angular gradient sweep must satisfy 0 < span <= TAU, got {span}; \
              the sweep is drawn as one full turn"
         );
@@ -298,9 +298,9 @@ pub fn realize_gradient(gradient: Gradient, ctx: &RenderContext<'_>) -> NativeLe
 mod tests {
     use super::*;
     use kurbo::Point;
-    use waterui::Environment;
-    use waterui::color::{Color, Working};
+    use waterui_core::Environment;
     use waterui_core::layout::UnitPoint;
+    use waterui_graphics::color::{Color, Working};
 
     const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
     const GREEN: WorkingColor = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn angular_gradient_maps_a_partial_sweep() {
-        use waterui::Angle;
+        use waterui_core::Angle;
 
         let gradient = Gradient::angular(
             vec![
@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn angular_gradient_with_a_full_turn_sweep_ends_at_location_one() {
-        use waterui::Angle;
+        use waterui_core::Angle;
 
         let gradient = Gradient::angular(
             vec![(0.0, working(RED)), (1.0, working(BLUE))],

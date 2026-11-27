@@ -20,7 +20,7 @@ use cocoa_ui::uikit::{
     WindowScene, window_root,
 };
 use nami::Signal as _;
-use waterui::theme::ColorScheme;
+use waterui_controls::theme::ColorScheme;
 use waterui_layout::padding::EdgeInsets;
 
 #[cfg(feature = "accessibility")]

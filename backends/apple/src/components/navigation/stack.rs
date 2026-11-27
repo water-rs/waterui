@@ -22,12 +22,12 @@ use core::cell::RefCell;
 
 use cocoa_ui::{Retained, view};
 #[cfg(target_os = "ios")]
-use waterui::navigation::ResolvedNavigationView;
-use waterui::navigation::{
+use waterui_backend_core::navigation::ResolvedNavigationView;
+use waterui_backend_core::navigation::{
     AnyNavigationTransition, CustomNavigationController, NativeNavigationTransition,
     NavigationController, NavigationStackLayout, NavigationTransaction,
 };
-use waterui::{Environment, State};
+use waterui_core::{Environment, State};
 
 use super::Fill;
 use crate::contract::{Held, NativeLeaf, RenderContext};
@@ -187,16 +187,16 @@ mod platform {
         HostView, LargeTitle, NavContentController, NavPage, NavSearch, bar_item,
     };
     use cocoa_ui::view;
-    use waterui::Environment;
-    use waterui::Str;
-    use waterui::navigation::{
+    use nami::Signal;
+    use waterui_backend_core::navigation::{
         AnyNavigationTransition, NativeNavigationTransition, NavigationController,
         NavigationDestinationState, NavigationSearch, NavigationTitleDisplayMode,
         NavigationTransaction, NavigationTransactionId, ResolvedNavigationView, SlotBuilder,
     };
-    use waterui::reactive::Signal;
-    use waterui::resolve::Resolvable;
-    use waterui::theme::color::Foreground;
+    use waterui_controls::theme::color::Foreground;
+    use waterui_core::Environment;
+    use waterui_core::Str;
+    use waterui_core::resolve::Resolvable;
 
     use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext, Renderer};
     use crate::theme::platform_color;
@@ -324,7 +324,7 @@ mod platform {
             Self {
                 column: true,
                 ..Self::new(AnyNavigationTransition::new(
-                    waterui::navigation::navigation_transition::automatic(),
+                    waterui_backend_core::navigation::navigation_transition::automatic(),
                 ))
             }
         }
@@ -919,12 +919,12 @@ mod platform {
     use cocoa_ui::geometry::Size as KitSize;
     use cocoa_ui::objc2_app_kit::{NSImage, NSView, NSWindowStyleMask};
     use cocoa_ui::view::{self, bounds, set_frame};
-    use waterui::Environment;
-    use waterui::navigation::{
+    use nami::Signal;
+    use waterui_backend_core::navigation::{
         AnyNavigationTransition, NativeNavigationTransition, NavigationController,
         NavigationDestinationState, NavigationTransaction, ResolvedNavigationView,
     };
-    use waterui::reactive::Signal;
+    use waterui_core::Environment;
     use waterui_core::layout::ProposalSize;
 
     use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext, Renderer};
@@ -1527,12 +1527,12 @@ mod tests {
     use alloc::vec::Vec;
     use core::cell::RefCell;
 
-    use waterui::navigation::{
+    use waterui_backend_core::navigation::{
         IntoNavigationStackLayout as _, NavigationController, NavigationPath, NavigationStack,
         NavigationTransaction, NavigationView,
     };
-    use waterui::prelude::text;
-    use waterui::{Environment, State};
+    use waterui_core::{Environment, State};
+    use waterui_text::text;
 
     use super::{Held, Receiver, Sink};
 

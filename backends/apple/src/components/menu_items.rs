@@ -9,18 +9,18 @@ use alloc::vec::Vec;
 use cocoa_ui::menu::Command as KitCommand;
 #[cfg(any(feature = "context_menu", feature = "text_field"))]
 use cocoa_ui::menu::MenuTreeNode;
-use waterui::component::button::ButtonRole;
+use nami::Signal;
+#[cfg(feature = "menu")]
+use nami::watcher::{BoxWatcherGuard, Metadata};
+use waterui_backend_core::Environment;
+use waterui_controls::button::ButtonRole;
 #[cfg(all(
     target_os = "macos",
     any(feature = "menu", feature = "context_menu", feature = "text_field")
 ))]
-use waterui::component::menu::CloseWindowChord;
-use waterui::component::menu::{ResolvedCommand, ResolvedMenuItem};
-use waterui::reactive::Signal;
-#[cfg(feature = "menu")]
-use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
-use waterui::text::StyledStr;
-use waterui_backend_core::Environment;
+use waterui_controls::menu::CloseWindowChord;
+use waterui_controls::menu::{ResolvedCommand, ResolvedMenuItem};
+use waterui_text::StyledStr;
 
 use crate::contract::Held;
 
@@ -330,9 +330,9 @@ mod tests {
 
     use cocoa_ui::appkit::{KeyModifiers, MenuAction};
     use cocoa_ui::menu::MenuTreeNode;
-    use waterui::component::menu::{CloseWindowChord, Command, Menu, ResolvedMenuItem, Shortcut};
-    use waterui::reactive::Computed;
+    use nami::Computed;
     use waterui_backend_core::Environment;
+    use waterui_controls::menu::{CloseWindowChord, Command, Menu, ResolvedMenuItem, Shortcut};
 
     use super::tree_nodes;
 

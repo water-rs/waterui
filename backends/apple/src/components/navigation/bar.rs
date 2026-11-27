@@ -19,17 +19,17 @@ use cocoa_ui::geometry::Rect;
 #[cfg(target_os = "ios")]
 use cocoa_ui::uikit::HostView;
 use cocoa_ui::{MainThreadMarker, Retained, view};
+use nami::Computed;
 #[cfg(target_os = "macos")]
-use waterui::Str;
-use waterui::component::LabelDisplayMode;
-use waterui::navigation::{
+use nami::Signal;
+use waterui_backend_core::Environment;
+use waterui_backend_core::navigation::{
     Bar, BarColor, NavigationSearch, NavigationTitleDisplayMode, NavigationToolbarPlacement,
     ResolvedNavigationToolbar, ResolvedNavigationToolbarItem, SlotBuilder,
 };
-use waterui::reactive::Computed;
+use waterui_controls::LabelDisplayMode;
 #[cfg(target_os = "macos")]
-use waterui::reactive::Signal;
-use waterui_backend_core::Environment;
+use waterui_core::Str;
 use waterui_core::layout::ProposalSize;
 
 use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext, Renderer};
@@ -65,7 +65,7 @@ pub struct BarItem {
     /// The rendered content view.
     pub leaf: NativeLeaf,
     /// The item's name as resolved content, when declared.
-    pub title: Option<Computed<waterui::text::StyledStr>>,
+    pub title: Option<Computed<waterui_text::StyledStr>>,
     /// The item's icon: a platform symbol name, or a rendered icon view.
     pub icon: Option<BarItemIcon>,
 }
@@ -221,7 +221,7 @@ impl BarState {
 
 /// A title rendered and read back — the view plus the text its leaf's
 /// labels carry.
-fn bar_title(view: Option<waterui::text::Text>, ctx: &RenderContext<'_>) -> BarTitle {
+fn bar_title(view: Option<waterui_text::Text>, ctx: &RenderContext<'_>) -> BarTitle {
     let leaf = ctx.render(view);
     let text = extract_title_text(leaf.view());
     BarTitle { leaf, text }
@@ -293,7 +293,7 @@ pub fn bar_item_frame(item: &BarItem) -> cocoa_ui::Rect {
 pub fn search_prompt(
     search: &NavigationSearch,
     env: &Environment,
-) -> Option<Computed<waterui::text::StyledStr>> {
+) -> Option<Computed<waterui_text::StyledStr>> {
     search
         .prompt()
         .map(|prompt| prompt.resolve(env).into_content())
@@ -550,6 +550,6 @@ pub(super) fn ios_suggestions_controller(
 }
 
 /// A resolved color signal, when the bar color has resolved.
-pub fn bar_color(bar: &BarState) -> Option<&Computed<waterui::graphics::color::WorkingColor>> {
+pub fn bar_color(bar: &BarState) -> Option<&Computed<waterui_graphics::color::WorkingColor>> {
     bar.color.as_ref().and_then(|color| color.resolved())
 }

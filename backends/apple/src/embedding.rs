@@ -11,11 +11,9 @@ use std::{
     rc::Rc,
 };
 
-use waterui::{
-    Environment,
-    app::{App, AppMenuBar, Windows},
-    reactive::Binding,
-};
+use nami::Binding;
+use waterui_backend_core::app::{App, AppMenuBar, Windows};
+use waterui_core::Environment;
 use waterui_core::layout::{LayoutDirection, ProposalSize};
 use waterui_locale::Locale;
 
@@ -57,7 +55,7 @@ impl Runtime {
     pub fn for_test() -> Self {
         let mut env = Environment::new();
         env.insert(crate::first_paint::FirstPaint::default());
-        waterui::text::install_system_font_collection(&mut env);
+        waterui_text::install_system_font_collection(&mut env);
         Self {
             env,
             fonts: std::cell::RefCell::default(),
@@ -115,7 +113,7 @@ impl HostEnvironment {
             .map_err(|error| format!("{error}"))
             .and_then(|tag| tag.parse::<Locale>().map_err(|error| format!("{error}")))
             .unwrap_or_else(|error| {
-                waterui::contract_violation!(
+                waterui_core::contract_violation!(
                     "the host locale {tag:?} is not valid UTF-8 and a valid BCP-47 tag: \
                      {error}; English is used"
                 );
@@ -170,11 +168,11 @@ impl HostScope {
     fn install(env: &mut Environment, host: &HostEnvironment) -> Self {
         let signals = crate::theme::install(env, host.scheme);
         crate::theme::refresh_host(&signals, host.scheme, &host.fonts);
-        let direction = waterui::reactive::binding(host.direction);
+        let direction = nami::binding(host.direction);
         env.insert(direction.clone());
         env.insert(host.locale.clone());
         env.insert(waterui_locale::regional::current_settings().with_locale(&host.locale));
-        let locale = waterui::reactive::binding(host.locale.clone());
+        let locale = nami::binding(host.locale.clone());
         env.insert(locale.clone());
         Self {
             signals,
@@ -258,8 +256,8 @@ pub unsafe extern "C" fn waterui_apple_runtime_create(
     #[cfg(target_os = "ios")]
     env.insert(crate::scene_registry::SceneRegistry::<crate::windows::Scenes>::default());
     #[cfg(feature = "inspector")]
-    waterui::inspector::install(&mut env, inspector);
-    waterui::text::install_system_font_collection(&mut env);
+    waterui_backend_core::inspector::install(&mut env, inspector);
+    waterui_text::install_system_font_collection(&mut env);
     let runtime = Box::new(Runtime {
         env,
         fonts: std::cell::RefCell::default(),
@@ -350,7 +348,7 @@ pub unsafe fn mount<W: Windows, M: AppMenuBar>(
     let env = parts.env;
     let mut windows = crate::windows::connect_windows(parts.windows, &env).into_iter();
     let Some(declaration) = windows.next() else {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "an embedded app must declare a root window; nothing is mounted and the host shows no content"
         );
         return std::ptr::null_mut();
@@ -534,7 +532,7 @@ pub(crate) fn place_then_join<R>(
 #[cfg(any(preview_entry, feature = "native-test"))]
 pub(crate) fn mount_content(
     root: &HostView,
-    view: impl waterui::View,
+    view: impl waterui_core::View,
     env: &Environment,
     keepalive: &mut KeepAlive,
     mtm: MainThreadMarker,
@@ -671,7 +669,7 @@ pub unsafe extern "C" fn waterui_apple_update_environment(
     // string and the readable doubles per the documented ABI.
     let mount = unsafe { &*mount.cast::<Mount>() };
     let Some(scope) = mount.host_scope.as_ref() else {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "environment updates require a mount created with a host environment; \
              the update is ignored"
         );

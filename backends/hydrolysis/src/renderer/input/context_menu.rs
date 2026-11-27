@@ -441,15 +441,15 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // close handle exactly as a popup window's would be.
         let menu_state = Binding::new(WindowState::Normal);
         group.push(menu_state.clone());
-        let menu = RetainedSubview::new(
+        let menu = RetainedSubview::new(waterui_core::env::With::new(
             popup_menu_content::<E>(
                 nodes,
                 placement,
                 theme,
                 self.popup_menu.popup_opener.clone(),
-            )
-            .with(State(group.clone())),
-        );
+            ),
+            State(group.clone()),
+        ));
         self.popup_menu.context_menu_presentation = Some(ContextMenuPresentation {
             source_bounds,
             menu,

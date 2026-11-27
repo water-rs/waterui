@@ -9,18 +9,18 @@ use alloc::rc::Rc;
 use core::cell::RefCell;
 
 use cocoa_ui::Retained;
-use waterui::Str;
-use waterui::animation::{Animation, ChangeAnimation};
-use waterui::graphics::color::WorkingColor;
-use waterui::reactive::Signal;
-use waterui::reactive::watcher::Metadata;
-use waterui::resolve::Resolvable;
-use waterui::text::font::{Body, ResolvedFont};
-use waterui::theme::color::Foreground;
+use nami::Signal;
+use nami::watcher::Metadata;
+use waterui_controls::theme::color::Foreground;
+use waterui_core::Str;
+use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, VerticalAlignment,
     ViewDimensions,
 };
+use waterui_core::resolve::Resolvable;
+use waterui_graphics::color::WorkingColor;
+use waterui_text::font::{Body, ResolvedFont};
 
 use super::font::platform_font;
 use crate::contract::{NativeLeaf, RenderContext};

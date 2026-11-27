@@ -334,7 +334,7 @@ fn append_corner(
 
 pub use crate::theme::path_commands_to_path;
 
-pub fn anchor_point(bounds: kurbo::Rect, anchor: waterui::style::Anchor) -> kurbo::Point {
+pub fn anchor_point(bounds: kurbo::Rect, anchor: waterui_shape::style::Anchor) -> kurbo::Point {
     kurbo::Point::new(
         bounds.width().mul_add(f64::from(anchor.x), bounds.x0),
         bounds.height().mul_add(f64::from(anchor.y), bounds.y0),

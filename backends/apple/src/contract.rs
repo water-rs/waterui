@@ -26,11 +26,11 @@ use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
 use cocoa_ui::uikit::HostView;
 use cocoa_ui::view::retain_base;
-use waterui::reactive::Signal;
-use waterui::reactive::watcher::Context;
-use waterui::shape::ClipShape;
+use nami::Signal;
+use nami::watcher::Context;
 use waterui_backend_core::{Child, ChildView, Environment, View};
 use waterui_core::layout::SubView;
+use waterui_shape::ClipShape;
 
 use cocoa_ui::Retained;
 
@@ -195,7 +195,7 @@ impl NativeLeaf {
     /// outer declaration wins, the inner one dropping unowned.
     pub fn set_transition(&mut self, claim: crate::transition::TransitionClaim) {
         if self.transition.is_some() {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "waterui-apple: a `.transition(...)` declaration beneath another `.transition(...)` \
                  is never owned — remove the inner declaration (docs/layout-spec.md §4.5)"
             );
@@ -341,7 +341,7 @@ impl NativeLeaf {
     #[must_use]
     pub fn mount(mut self, parent: &PlatformView) -> Mounted {
         if self.transition.take().is_some() {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "waterui-apple: `.transition(...)` reached a view with no structural transition \
                  owner. A transition declares how a view is inserted and removed, so it must be \
                  the outermost modifier of the content a structural site swaps — of a \
@@ -540,7 +540,7 @@ impl Mounted {
     pub(crate) fn into_retired_leaf(mut self) -> NativeLeaf {
         let mut leaf = self.0.take().expect(LIVE_MOUNTED);
         if !view_is_ghost(&leaf.view) {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "waterui-apple: `into_retired_leaf` needs a retired `HostView` — \
                  retire the transition host before ending the mount; \
                  the containment ends as a plain unmount does"

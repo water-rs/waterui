@@ -27,19 +27,18 @@ use nami::{Binding, Computed, Signal};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use waterui::component::focus::Focused;
-use waterui::metadata::anchored_overlay::{AnchorEdge, AnchorPlacement, Dismissal, EdgeAlignment};
-use waterui::navigation::split::NavigationSplitDetailBuilder;
-use waterui::navigation::{
+use waterui_backend_core::navigation::split::NavigationSplitDetailBuilder;
+use waterui_backend_core::navigation::{
     AnyNavigationTransition, Bar, NavigationDestinationState, NavigationSearch,
     NavigationSplitLayout, NavigationStackLayout, NavigationTitleDisplayMode,
     NavigationToolbarPlacement, NavigationTransitionDirection, ResolvedNavigationView,
     RetainedNavigationTransition, SlotBuilder,
 };
-use waterui::theme::color::{Background, Surface};
-use waterui::theme::install_font_signal;
+use waterui_controls::anchored_overlay::{AnchorEdge, AnchorPlacement, Dismissal, EdgeAlignment};
 use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::text_field::TextField;
+use waterui_controls::theme::color::{Background, Surface};
+use waterui_controls::theme::install_font_signal;
 use waterui_core::contract_violation;
 use waterui_core::extract::State;
 use waterui_core::id::Id;
@@ -48,6 +47,7 @@ use waterui_core::layout::{
 };
 use waterui_core::{Environment, Metadata, Native};
 use waterui_graphics::color::Color;
+use waterui_interaction::focus::Focused;
 use waterui_interaction::interaction::InteractionState;
 use waterui_structural_transition::{ReduceMotion, TransitionProperties};
 use waterui_text::font::Body;
@@ -394,7 +394,7 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
                 // A search field shows only its placeholder, so the prompt doubles
                 // as the accessible name and the visible label is suppressed.
                 let prompt = search.prompt().cloned().unwrap_or_else(|| {
-                    waterui::text::Text::localized_or("waterui.navigation.search", "Search")
+                    waterui_text::Text::localized_or("waterui.navigation.search", "Search")
                 });
                 let mut field = TextField::new(prompt.clone(), search.text())
                     .hide_label()
@@ -1336,9 +1336,9 @@ pub struct NavigationSplitRenderState<E: crate::text::TextEngine> {
     content_builder: Option<NavigationSplitDetailBuilder<HeldChild<E>>>,
     secondary_selection: Option<nami::Binding<Option<Id>>>,
     detail_builder: NavigationSplitDetailBuilder<HeldChild<E>>,
-    visibility: Computed<waterui::navigation::NavigationSplitColumnVisibility>,
-    column_width: waterui::navigation::ColumnWidth,
-    style: waterui::navigation::NavigationSplitStyle,
+    visibility: Computed<waterui_backend_core::navigation::NavigationSplitColumnVisibility>,
+    column_width: waterui_backend_core::navigation::ColumnWidth,
+    style: waterui_backend_core::navigation::NavigationSplitStyle,
     primary: RetainedSubview<E>,
     placeholder: RetainedSubview<E>,
     content: Option<(Id, bool, RetainedSubview<E>)>,
@@ -1512,9 +1512,9 @@ struct SplitMeasurePlan {
 
 fn split_measure_plan(
     three_column: bool,
-    column_width: waterui::navigation::ColumnWidth,
-    style: waterui::navigation::NavigationSplitStyle,
-    visibility: waterui::navigation::NavigationSplitColumnVisibility,
+    column_width: waterui_backend_core::navigation::ColumnWidth,
+    style: waterui_backend_core::navigation::NavigationSplitStyle,
+    visibility: waterui_backend_core::navigation::NavigationSplitColumnVisibility,
     proposal: ProposalSize,
 ) -> SplitMeasurePlan {
     let desired_column_width = resolved_split_column_width(column_width, style);
@@ -1768,13 +1768,17 @@ pub fn render_navigation_split_parts<E: crate::text::TextEngine>(
 }
 
 fn resolved_split_column_width(
-    width: waterui::navigation::ColumnWidth,
-    style: waterui::navigation::NavigationSplitStyle,
+    width: waterui_backend_core::navigation::ColumnWidth,
+    style: waterui_backend_core::navigation::NavigationSplitStyle,
 ) -> f64 {
     match style {
-        waterui::navigation::NavigationSplitStyle::Automatic
-        | waterui::navigation::NavigationSplitStyle::Balanced => f64::from(width.ideal()),
-        waterui::navigation::NavigationSplitStyle::ProminentDetail => f64::from(width.min()),
+        waterui_backend_core::navigation::NavigationSplitStyle::Automatic
+        | waterui_backend_core::navigation::NavigationSplitStyle::Balanced => {
+            f64::from(width.ideal())
+        }
+        waterui_backend_core::navigation::NavigationSplitStyle::ProminentDetail => {
+            f64::from(width.min())
+        }
         _ => {
             contract_violation!(
                 "hydrolysis NavigationSplitStyle variant {style:?} is not implemented; falling back to Balanced width"
@@ -1799,12 +1803,12 @@ struct CompactSplitSelection {
 fn split_collapses(
     three_column: bool,
     desired_column_width: f64,
-    visibility: waterui::navigation::NavigationSplitColumnVisibility,
+    visibility: waterui_backend_core::navigation::NavigationSplitColumnVisibility,
     width: Option<f64>,
 ) -> bool {
     matches!(
         visibility,
-        waterui::navigation::NavigationSplitColumnVisibility::DetailOnly
+        waterui_backend_core::navigation::NavigationSplitColumnVisibility::DetailOnly
     ) || width.is_some_and(|width| {
         width < split_compact_threshold(desired_column_width * if three_column { 2.0 } else { 1.0 })
     })
@@ -1817,10 +1821,10 @@ fn split_collapses(
 fn split_shows_all_columns(
     three_column: bool,
     desired_column_width: f64,
-    visibility: waterui::navigation::NavigationSplitColumnVisibility,
+    visibility: waterui_backend_core::navigation::NavigationSplitColumnVisibility,
     width: Option<f64>,
 ) -> bool {
-    use waterui::navigation::NavigationSplitColumnVisibility as Visibility;
+    use waterui_backend_core::navigation::NavigationSplitColumnVisibility as Visibility;
     !three_column
         || matches!(visibility, Visibility::All)
         || (matches!(visibility, Visibility::Automatic)
@@ -3686,12 +3690,12 @@ mod tests {
     use crate::renderer::tests::{MinimalTestTheme, test_environment};
     use kurbo::Point;
     use nami::Binding;
-    use waterui::component::text;
-    use waterui::navigation::{
+    use waterui_backend_core::navigation::{
         ColumnWidth, NavigationPath, NavigationSplitStyle, NavigationSplitView, NavigationStack,
         NavigationView,
     };
     use waterui_core::handler::AnyViewBuilder;
+    use waterui_text::text;
 
     /// The sidebar's width is a policy of the split style, not of the column
     /// constraints alone: a detail-first layout squeezes the sidebar to its

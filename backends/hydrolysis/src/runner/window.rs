@@ -34,8 +34,10 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use waterui::theme::color::Background;
-use waterui::window::{ResolvedWindowBackground, Window, WindowParts, WindowState, WindowToolbar};
+use waterui_backend_core::window::{
+    ResolvedWindowBackground, Window, WindowParts, WindowState, WindowToolbar,
+};
+use waterui_controls::theme::color::Background;
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use waterui_core::Error;
 use waterui_core::contract_violation;
@@ -170,7 +172,7 @@ impl<E: crate::text::TextEngine> RootWindows<E> {
         }
     }
 
-    /// Connects every collected [`WindowChannel`](waterui::window::WindowChannel)
+    /// Connects every collected [`WindowChannel`](waterui_backend_core::window::WindowChannel)
     /// to `opener`.
     pub(crate) fn connect_channels(
         channels: Vec<RootChannelConnector<E>>,
@@ -194,13 +196,16 @@ struct RootWindowSink<'a, E: TextEngine> {
 }
 
 impl<E: TextEngine> WindowSink for RootWindowSink<'_, E> {
-    fn window<C: ViewBuilder, T: waterui::window::WindowToolbar>(&mut self, window: Window<C, T>) {
+    fn window<C: ViewBuilder, T: waterui_backend_core::window::WindowToolbar>(
+        &mut self,
+        window: Window<C, T>,
+    ) {
         self.initial.push(root_window(window, self.env));
     }
 
-    fn channel<C: ViewBuilder, T: waterui::window::WindowToolbar>(
+    fn channel<C: ViewBuilder, T: waterui_backend_core::window::WindowToolbar>(
         &mut self,
-        channel: waterui::window::WindowChannel<C, T>,
+        channel: waterui_backend_core::window::WindowChannel<C, T>,
     ) {
         let target = Rc::new(RefCell::new(ChannelTarget::Pending(Vec::new())));
         let receiver_target = Rc::clone(&target);
@@ -1763,7 +1768,7 @@ impl SurfaceBackground {
             ResolvedWindowBackground::Material(material) => match Blending::of(material) {
                 Blending::WithinWindow(_) => srgb(Color::new(Background).resolve(env).snapshot()),
                 Blending::BehindWindow(level) => level
-                    .tint(waterui::theme::current_color_scheme(env).snapshot())
+                    .tint(waterui_controls::theme::current_color_scheme(env).snapshot())
                     .srgb(),
             },
         }
@@ -3112,7 +3117,8 @@ where
     P: PlatformWindow,
     F: Fn(&RuntimeWindow<P, E>, &Environment) -> Environment,
 {
-    let mut should_close = runtime.window.state.snapshot() == waterui::window::WindowState::Closed;
+    let mut should_close =
+        runtime.window.state.snapshot() == waterui_backend_core::window::WindowState::Closed;
     // The platform's touch-gesture parameters ride the event drain: a host
     // update (metrics, configuration) reaches the gesture before the
     // events it applies to.
@@ -3188,8 +3194,8 @@ where
                     // on `state` wakes the loop for the reap — while a
                     // handlerless request closes synchronously as before.
                     runtime.window.request_close(env);
-                    should_close =
-                        runtime.window.state.snapshot() == waterui::window::WindowState::Closed;
+                    should_close = runtime.window.state.snapshot()
+                        == waterui_backend_core::window::WindowState::Closed;
                 }
             }
             InputEvent::Moved { x, y } => {
@@ -3575,13 +3581,14 @@ where
                 // fullscreen window's state is not overridden by the flag.
                 let state = runtime.window.state.snapshot();
                 let next = if maximized {
-                    waterui::window::WindowState::Maximized
+                    waterui_backend_core::window::WindowState::Maximized
                 } else {
-                    waterui::window::WindowState::Normal
+                    waterui_backend_core::window::WindowState::Normal
                 };
                 if matches!(
                     state,
-                    waterui::window::WindowState::Normal | waterui::window::WindowState::Maximized
+                    waterui_backend_core::window::WindowState::Normal
+                        | waterui_backend_core::window::WindowState::Maximized
                 ) && state != next
                 {
                     runtime.suppress_state_echo.set(true);

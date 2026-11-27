@@ -22,10 +22,10 @@ use core::num::NonZeroU32;
 use cocoa_ui::PlatformView;
 use cocoa_ui::Retained;
 use cocoa_ui::metal_presenter::{DrawableFrame, MetalPresenter};
+use nami::watcher::BoxWatcherGuard;
+use nami::{Computed, Signal};
 use objc2::MainThreadMarker;
 use objc2_metal::{MTLPixelFormat, MTLTexture};
-use waterui::reactive::watcher::BoxWatcherGuard;
-use waterui::reactive::{Computed, Signal};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
@@ -896,7 +896,7 @@ impl SurfaceState {
     fn declares_format(&self, pixel_format: MTLPixelFormat) -> bool {
         let declared = state_format(self);
         if pixel_format != declared {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "GpuSurface target must be in the surface's declared presentation format \
                  ({declared:?}), got {pixel_format:?}; the target is not drawn"
             );
@@ -1034,7 +1034,7 @@ fn metal_texture_format(
         MTLPixelFormat::BGRA8Unorm_sRGB => Some(wgpu::TextureFormat::Bgra8UnormSrgb),
         MTLPixelFormat::RGBA16Float => Some(wgpu::TextureFormat::Rgba16Float),
         other => {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "GpuSurface external Metal texture has unsupported format {other:?}; \
                  the frame is not drawn"
             );
@@ -2422,7 +2422,7 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
     fn end_capture_suppression(&self) {
         let count = self.state.capture_suppression.get();
         if count == 0 {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "GpuSurface capture suppression scopes are unbalanced; the end is ignored"
             );
             return;
@@ -2478,7 +2478,7 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
                 // recorded count is the unbalance the assert names.
                 let orphaned = self.state.orphaned_external_scopes.get();
                 if orphaned == 0 {
-                    waterui::contract_violation!(
+                    waterui_core::contract_violation!(
                         "GpuSurface external rendering scopes are unbalanced; the end is ignored"
                     );
                     return;
@@ -2781,7 +2781,7 @@ fn submit_external_marker(
 /// pipeline; the standard-range format is used.
 fn state_format(state: &SurfaceState) -> MTLPixelFormat {
     state.presentation_format.get().unwrap_or_else(|| {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "GpuSurface must have a configured dynamic range before external capture; \
              the standard-range format is used"
         );

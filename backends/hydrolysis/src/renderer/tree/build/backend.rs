@@ -3,23 +3,15 @@
 
 use core::marker::PhantomData;
 
-use waterui::animation::FrameRateVote;
-use waterui::sheet::Sheet;
+use waterui_controls::sheet::Sheet;
+use waterui_core::animation::FrameRateVote;
 
 #[cfg(waterui_feature = "dialog")]
 use crate::theme::DialogLook;
 use crate::theme::SheetLook;
 
-#[cfg(waterui_feature = "gpu")]
-use waterui::graphics::backend::GpuContentLeaf;
-#[cfg(any(
-    waterui_feature = "gpu",
-    waterui_feature = "cpu",
-    waterui_feature = "canvas"
-))]
-use waterui::graphics::backend::Picture;
 #[cfg(waterui_feature = "navigation")]
-use waterui::navigation::ResolvedNavigationView;
+use waterui_backend_core::navigation::ResolvedNavigationView;
 use waterui_backend_core::{
     ChildView, NativeBackend, NativeBackendFamily, Realize, mark_reached, report_unprovided,
 };
@@ -30,6 +22,14 @@ use waterui_core::backend::cast;
 use waterui_core::backend::{ChildSlot, ErasedPayload};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{NativeView, View};
+#[cfg(waterui_feature = "gpu")]
+use waterui_graphics::backend::GpuContentLeaf;
+#[cfg(any(
+    waterui_feature = "gpu",
+    waterui_feature = "cpu",
+    waterui_feature = "canvas"
+))]
+use waterui_graphics::backend::Picture;
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -97,9 +97,9 @@ impl<'r, E: crate::text::TextEngine> HydroBackend<'r, E> {
         env: &Environment,
     ) -> RenderNode<E> {
         let mut child_env = env.clone();
-        child_env.insert(waterui::layout::stack::Axis::Vertical);
-        let container = waterui::layout::container::FixedContainer::new(
-            waterui::layout::stack::VStackLayout::default(),
+        child_env.insert(waterui_layout::stack::Axis::Vertical);
+        let container = waterui_layout::container::FixedContainer::new(
+            waterui_layout::stack::VStackLayout::default(),
             vec![label.build().into_child(), HeldChild::from_view(body)],
         );
         let node = self.fixed_container(container, &child_env, ());
@@ -142,12 +142,12 @@ macro_rules! accessibility_scopes {
 /// Wraps a held child view in an environment scope overriding `Foreground` to `color`.
 pub fn held_with_foreground<E: crate::text::TextEngine>(
     content: HeldChild<E>,
-    color: waterui::Color,
+    color: waterui_graphics::Color,
 ) -> HeldChild<E> {
     HeldChild::from_fn(move |backend, env, ()| {
         let mut scoped = env.clone();
         waterui_core::plugin::Plugin::install(
-            waterui::theme::ForegroundOverride::new(color),
+            waterui_controls::theme::ForegroundOverride::new(color),
             &mut scoped,
         );
         backend.env_scope(content, scoped)
@@ -210,7 +210,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             hydrolysis_wpe_webview,
         )))]
         {
-            waterui::webview::UnavailableWebViewController
+            waterui_backend_core::webview::UnavailableWebViewController
         }
     }
 
@@ -236,7 +236,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     /// it replaces the default rather than stacking with it.
     fn fixed_container<C: ChildView<Self>>(
         &mut self,
-        native: waterui::layout::container::FixedContainer<Vec<C>>,
+        native: waterui_layout::container::FixedContainer<Vec<C>>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -300,7 +300,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "gpu")]
     fn external_frame(
         &mut self,
-        native: waterui::graphics::gpu::external::ExternalFrameView,
+        native: waterui_graphics::gpu::external::ExternalFrameView,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -330,7 +330,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "video")]
     fn video(
         &mut self,
-        native: waterui::video::video::NativeVideoConfig,
+        native: waterui_backend_core::video::video::NativeVideoConfig,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -353,7 +353,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "video")]
     fn video_player(
         &mut self,
-        native: waterui::video::video::NativeVideoPlayerConfig,
+        native: waterui_backend_core::video::video::NativeVideoPlayerConfig,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -376,7 +376,12 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // This backend bridges no platform map: the GPU map (`map-gpu`) draws
     // it, and a build without one draws no map.
     #[cfg(waterui_feature = "map")]
-    fn map(&mut self, native: waterui::map::MapConfig, env: &Environment, (): ()) -> RenderNode<E> {
+    fn map(
+        &mut self,
+        native: waterui_backend_core::map::MapConfig,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
         mark_reached!("map");
         #[cfg(feature = "map-gpu")]
         {
@@ -393,7 +398,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "webview")]
     fn web_view(
         &mut self,
-        native: waterui::webview::WebViewOpen,
+        native: waterui_backend_core::webview::WebViewOpen,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -420,7 +425,12 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         }
     }
 
-    fn color(&mut self, native: waterui::Color, env: &Environment, (): ()) -> RenderNode<E> {
+    fn color(
+        &mut self,
+        native: waterui_graphics::Color,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
         mark_reached!("color");
         let renderer = &mut *self.renderer;
         RenderNode::Color(ColorNode {
@@ -433,7 +443,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "highlight")]
     fn code(
         &mut self,
-        native: waterui::text::code::CodeConfig,
+        native: waterui_text::code::CodeConfig,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -443,7 +453,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn text(
         &mut self,
-        native: waterui::text::TextConfig,
+        native: waterui_text::TextConfig,
         _env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -480,7 +490,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn lazy_container<C: ChildView<Self>>(
         &mut self,
-        native: waterui::layout::container::LazyContainer<C>,
+        native: waterui_layout::container::LazyContainer<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -541,7 +551,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn opacity<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::filter::Opacity, C>,
+        metadata: Metadata<waterui_shape::filter::Opacity, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -556,7 +566,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn scale<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::style::Scale, C>,
+        metadata: Metadata<waterui_shape::style::Scale, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -571,7 +581,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn rotation<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::style::Rotation, C>,
+        metadata: Metadata<waterui_shape::style::Rotation, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -586,7 +596,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn offset<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::style::Offset, C>,
+        metadata: Metadata<waterui_shape::style::Offset, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -704,7 +714,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // the content directly — fully transparent, keeping reactive descendants live.
     fn secure<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::secure::Secure, C>,
+        metadata: Metadata<waterui_controls::secure::Secure, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -719,7 +729,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // it passes through to the content like `Secure` above.
     fn dynamic_range<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::secure::DynamicRangeMetadata, C>,
+        metadata: Metadata<waterui_controls::secure::DynamicRangeMetadata, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -731,7 +741,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn ignore_safe_area<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::layout::safe_area::IgnoreSafeArea, C>,
+        metadata: Metadata<waterui_layout::safe_area::IgnoreSafeArea, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -748,7 +758,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "navigation")]
     fn navigation_link_hint<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::navigation::NavigationLinkHint, C>,
+        metadata: Metadata<waterui_backend_core::navigation::NavigationLinkHint, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -761,7 +771,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "navigation")]
     fn navigation_transition_source<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::navigation::NavigationTransitionSource, C>,
+        metadata: Metadata<waterui_backend_core::navigation::NavigationTransitionSource, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -780,7 +790,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "navigation")]
     fn navigation_transition_destination<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::navigation::NavigationTransitionDestination, C>,
+        metadata: Metadata<waterui_backend_core::navigation::NavigationTransitionDestination, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -798,7 +808,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn material_background<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::background::MaterialBackground, C>,
+        metadata: Metadata<waterui_shape::background::MaterialBackground, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -817,7 +827,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn glass_background<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::background::GlassBackground, C>,
+        metadata: Metadata<waterui_shape::background::GlassBackground, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -838,7 +848,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn material_group<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::background::MaterialGroup, C>,
+        metadata: Metadata<waterui_shape::background::MaterialGroup, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -855,7 +865,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn floating<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::floating::Floating, C>,
+        metadata: Metadata<waterui_shape::floating::Floating, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -889,7 +899,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // the `apply_*` helpers in `metadata.rs`.
     fn clip_shape<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::shape::ClipShape, C>,
+        metadata: Metadata<waterui_shape::ClipShape, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -902,7 +912,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn border<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::border::Border, C>,
+        metadata: Metadata<waterui_shape::border::Border, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -915,7 +925,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn shadow<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::style::Shadow, C>,
+        metadata: Metadata<waterui_shape::style::Shadow, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -989,7 +999,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "dialog")]
     fn dialog<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::dialog::Dialog, C>,
+        metadata: Metadata<waterui_controls::dialog::Dialog, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1017,7 +1027,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "snackbar")]
     fn snackbar_host<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::snackbar::SnackbarHostConfig<S>, C>,
+        metadata: Metadata<waterui_controls::snackbar::SnackbarHostConfig<S>, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1049,7 +1059,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn cursor<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::cursor::Cursor, C>,
+        metadata: Metadata<waterui_interaction::cursor::Cursor, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1062,7 +1072,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn draggable<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::drag_drop::Draggable, C>,
+        metadata: Metadata<waterui_interaction::drag_drop::Draggable, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1080,7 +1090,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn drop_destination<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::drag_drop::DropDestination, C>,
+        metadata: Metadata<waterui_interaction::drag_drop::DropDestination, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1099,7 +1109,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "menu")]
     fn resolved_context_menu<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::context_menu::ResolvedContextMenu<S>, C>,
+        metadata: Metadata<waterui_controls::context_menu::ResolvedContextMenu<S>, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1128,7 +1138,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn hittable<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::interaction::Hittable, C>,
+        metadata: Metadata<waterui_interaction::interaction::Hittable, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1202,7 +1212,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn focused<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::component::focus::Focused, C>,
+        metadata: Metadata<waterui_interaction::focus::Focused, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1254,7 +1264,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn scroll<C: ChildView<Self>>(
         &mut self,
-        native: waterui::layout::scroll::ScrollView<C>,
+        native: waterui_layout::scroll::ScrollView<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1293,7 +1303,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     ))]
     fn scene(
         &mut self,
-        native: waterui::graphics::backend::SceneView,
+        native: waterui_graphics::backend::SceneView,
         _env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1306,7 +1316,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "canvas")]
     fn canvas(
         &mut self,
-        native: waterui::graphics::canvas::CanvasView,
+        native: waterui_graphics::canvas::CanvasView,
         _env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1317,7 +1327,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(any(waterui_feature = "gpu", waterui_feature = "cpu"))]
     fn shader_paint(
         &mut self,
-        native: waterui::graphics::ShaderPaintView,
+        native: waterui_graphics::ShaderPaintView,
         _env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1328,7 +1338,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "effects")]
     fn filtered<C: ChildView<Self>>(
         &mut self,
-        native: waterui::graphics::backend::FilteredView<C>,
+        native: waterui_graphics::backend::FilteredView<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1355,7 +1365,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // instead of freezing in a one-shot `Captured` bake.
     fn button<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::button::ButtonConfig<C>,
+        native: waterui_controls::button::ButtonConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1369,7 +1379,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "link")]
     fn link<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::link::LinkConfig<C>,
+        native: waterui_controls::link::LinkConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1383,7 +1393,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "menu")]
     fn menu<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::menu::ResolvedMenu<C>,
+        native: waterui_controls::menu::ResolvedMenu<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1397,7 +1407,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "toggle")]
     fn toggle<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::toggle::ToggleConfig<C>,
+        native: waterui_controls::toggle::ToggleConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1411,7 +1421,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "slider")]
     fn slider<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::slider::SliderConfig<C>,
+        native: waterui_controls::slider::SliderConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1425,7 +1435,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "stepper")]
     fn stepper<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::stepper::StepperConfig<C>,
+        native: waterui_controls::stepper::StepperConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1438,7 +1448,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn progress<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::progress::ProgressConfig<C>,
+        native: waterui_controls::progress::ProgressConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1454,7 +1464,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "calendar")]
     fn calendar<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::calendar::CalendarConfig<C>,
+        native: waterui_backend_core::form::calendar::CalendarConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1466,7 +1476,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "multi-date-picker")]
     fn multi_date_picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::multi_date::MultiDatePickerConfig<C>,
+        native: waterui_backend_core::form::picker::multi_date::MultiDatePickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1478,7 +1488,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "date-picker")]
     fn date_picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::date::DatePickerConfig<C>,
+        native: waterui_backend_core::form::picker::date::DatePickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1492,7 +1502,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "color-picker")]
     fn color_picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::color::ColorPickerConfig<C>,
+        native: waterui_backend_core::form::picker::color::ColorPickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1506,7 +1516,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "picker")]
     fn picker<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::picker::PickerConfig<C>,
+        native: waterui_backend_core::form::picker::PickerConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1520,7 +1530,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "text-field")]
     fn text_field<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::text_field::TextFieldConfig<C>,
+        native: waterui_controls::text_field::TextFieldConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1534,7 +1544,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "secure-field")]
     fn secure_field<C: ChildView<Self>>(
         &mut self,
-        native: waterui::form::secure::SecureFieldConfig<C>,
+        native: waterui_backend_core::form::secure::SecureFieldConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1548,7 +1558,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "avatar")]
     fn avatar<C: ChildView<Self>>(
         &mut self,
-        native: waterui::widget::avatar::AvatarConfig<C>,
+        native: waterui_controls::avatar::AvatarConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1561,7 +1571,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn badge<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::badge::BadgeConfig<C>,
+        native: waterui_controls::badge::BadgeConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1574,7 +1584,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn card<C: ChildView<Self>>(
         &mut self,
-        native: waterui::widget::card::CardConfig<C>,
+        native: waterui_controls::card::CardConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1587,7 +1597,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn disclosure<C: ChildView<Self>>(
         &mut self,
-        native: waterui::widget::disclosure::DisclosureConfig<C>,
+        native: waterui_controls::disclosure::DisclosureConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1601,7 +1611,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "list")]
     fn list<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::list::ListConfig<C>,
+        native: waterui_controls::list::ListConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1616,7 +1626,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "list")]
     fn list_row<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::list::ListRowConfig<C>,
+        native: waterui_controls::list::ListRowConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1630,7 +1640,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "table")]
     fn table<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::table::TableConfig<C>,
+        native: waterui_controls::table::TableConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1643,7 +1653,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn gradient(
         &mut self,
-        native: waterui::graphics::Gradient,
+        native: waterui_graphics::Gradient,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1654,7 +1664,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn shape(
         &mut self,
-        native: waterui::shape::ResolvedShape,
+        native: waterui_shape::ResolvedShape,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1685,7 +1695,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "navigation")]
     fn navigation_split<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::split::NavigationSplitLayout<C>,
+        native: waterui_backend_core::navigation::split::NavigationSplitLayout<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1697,7 +1707,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "navigation")]
     fn navigation_stack<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::NavigationStackLayout<C>,
+        native: waterui_backend_core::navigation::NavigationStackLayout<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1709,7 +1719,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     #[cfg(waterui_feature = "navigation")]
     fn tabs<C: ChildView<Self>>(
         &mut self,
-        native: waterui::navigation::tab::TabsLayout<C>,
+        native: waterui_backend_core::navigation::tab::TabsLayout<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1720,7 +1730,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn spacer(
         &mut self,
-        native: waterui::layout::Spacer,
+        native: waterui_layout::Spacer,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -1734,7 +1744,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // persistent `Widget` nodes that re-render from a retained cell each flush.
     fn divider(
         &mut self,
-        native: waterui::layout::Divider,
+        native: waterui_controls::Divider,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {

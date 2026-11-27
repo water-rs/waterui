@@ -27,7 +27,7 @@ use std::rc::{Rc, Weak};
 use jni::Env;
 use jni::objects::JObject;
 use rustc_hash::FxHashMap;
-use waterui::Environment;
+use waterui_core::Environment;
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{AnyView, Metadata};
 use waterui_video_gpu::{AndroidVideoSurfaceBridge, AndroidVideoSurfaceHost};

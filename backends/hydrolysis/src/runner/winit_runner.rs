@@ -24,13 +24,15 @@ use executor_core::{
 #[cfg(any(target_os = "windows", test))]
 use nami::Binding;
 use nami::Signal;
-use waterui::app::{
+use waterui_backend_core::app::{
     App, AppMenuBar, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost,
     TerminationKind, Windows,
 };
+use waterui_backend_core::window::{
+    Activation, Monitor, MonitorSelector, WindowParts, WindowState,
+};
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-use waterui::theme::ColorScheme;
-use waterui::window::{Activation, Monitor, MonitorSelector, WindowParts, WindowState};
+use waterui_controls::theme::ColorScheme;
 #[cfg(hydrolysis_wayland_platform)]
 use waterui_core::Str;
 #[cfg(target_os = "windows")]
@@ -261,12 +263,12 @@ const fn ends_event_loop(policy: LastWindowPolicy, open_windows: usize) -> bool 
 /// repeat case is the common one.)
 #[cfg(any(target_os = "windows", test))]
 fn sync_system_color_scheme(
-    scheme: &nami::Binding<waterui::theme::ColorScheme>,
+    scheme: &nami::Binding<waterui_controls::theme::ColorScheme>,
     theme: winit::window::Theme,
 ) {
     let resolved = match theme {
-        winit::window::Theme::Dark => waterui::theme::ColorScheme::Dark,
-        winit::window::Theme::Light => waterui::theme::ColorScheme::Light,
+        winit::window::Theme::Dark => waterui_controls::theme::ColorScheme::Dark,
+        winit::window::Theme::Light => waterui_controls::theme::ColorScheme::Light,
     };
     crate::theme::sync_color_scheme(scheme, resolved);
 }
@@ -858,7 +860,9 @@ impl LocalExecutor for WinitMainThreadExecutor {
 pub fn run<W: Windows, M: AppMenuBar>(
     app: App<W, M>,
     style: impl crate::Style,
-    #[cfg(hydrolysis_inspector)] inspector: Option<waterui::inspector::InspectorRuntime>,
+    #[cfg(hydrolysis_inspector)] inspector: Option<
+        waterui_backend_core::inspector::InspectorRuntime,
+    >,
 ) {
     let AppParts {
         windows,
@@ -889,8 +893,8 @@ pub fn run<W: Windows, M: AppMenuBar>(
         // Dock icon and menu bar keep working, and a window shown later
         // still takes focus per its own policy.
         let activate_at_launch = windows.iter().any(|window| {
-            window.activation == waterui::window::Activation::OnShow
-                && window.state.snapshot() != waterui::window::WindowState::Closed
+            window.activation == waterui_backend_core::window::Activation::OnShow
+                && window.state.snapshot() != waterui_backend_core::window::WindowState::Closed
         });
         // `NSApp.mainMenu` belongs to hydrolysis: `NativeMenuBar::install`
         // has already projected the declared menu bar onto it, and winit's
@@ -924,12 +928,12 @@ pub fn run<W: Windows, M: AppMenuBar>(
     #[cfg(all(hydrolysis_inspector, feature = "inspector-signals"))]
     let _signal_scope = inspector
         .as_ref()
-        .map(waterui::inspector::InspectorRuntime::observe_signals);
+        .map(waterui_backend_core::inspector::InspectorRuntime::observe_signals);
 
     let mut env = env;
-    waterui::install_application_resources(&mut env);
+    waterui_backend_core::install_application_resources(&mut env);
     #[cfg(hydrolysis_inspector)]
-    waterui::inspector::install(&mut env, inspector);
+    waterui_backend_core::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     #[cfg(any(test, hydrolysis_platform_services))]
@@ -1027,8 +1031,8 @@ pub fn run<W: Windows, M: AppMenuBar>(
     fonts.clone().install(&mut env);
     // `native_collection` above reports an environment without a
     // `ResourceContext`; with none there is no bundle to stage an icon in.
-    let window_icon =
-        waterui::ResourceContext::from_environment(&env).and_then(load_staged_window_icon);
+    let window_icon = waterui_backend_core::ResourceContext::from_environment(&env)
+        .and_then(load_staged_window_icon);
     // The machine installs `Quit` into the composition-root environment and
     // hands its hooks that environment as it stands now; their futures run
     // on the local executor the first `resumed` installs.
@@ -1247,7 +1251,7 @@ struct WinitRunner {
     /// (`platform::macos_appearance`); other platforms' sources land with
     /// their own issues.
     #[cfg(target_os = "windows")]
-    system_color_scheme: nami::Binding<waterui::theme::ColorScheme>,
+    system_color_scheme: nami::Binding<waterui_controls::theme::ColorScheme>,
     /// The system Reduce Motion preference observed via `SPI_GETCLIENTAREAANIMATION`
     /// and `WM_SETTINGCHANGE`.
     #[cfg(target_os = "windows")]
@@ -1287,7 +1291,9 @@ struct WinitRunner {
 ///
 /// Absence is a legitimate state (bare `cargo run`, tests, previews without
 /// staging); a present-but-undecodable icon is reported and skipped.
-fn load_staged_window_icon(resources: &waterui::ResourceContext) -> Option<winit::window::Icon> {
+fn load_staged_window_icon(
+    resources: &waterui_backend_core::ResourceContext,
+) -> Option<winit::window::Icon> {
     let root = waterui_assets::bundle_root(resources);
     let path = root.join(waterui_assets::WINDOW_ICON_FILE);
     let file = std::fs::File::open(&path).ok()?;
@@ -1360,8 +1366,8 @@ fn native_window_attributes<C, T>(
     // a state written between creation and map, or a manager that ignored
     // the attribute, is covered by the same mapped signal.
     let state = window.state.snapshot();
-    let fullscreen = matches!(state, waterui::window::WindowState::Fullscreen);
-    let maximized = matches!(state, waterui::window::WindowState::Maximized);
+    let fullscreen = matches!(state, waterui_backend_core::window::WindowState::Fullscreen);
+    let maximized = matches!(state, waterui_backend_core::window::WindowState::Maximized);
     // Windows keeps two icons per window: `with_window_icon` sets the small
     // title-bar one (`ICON_SMALL`); the taskbar and Alt-Tab read the big
     // one (`ICON_BIG`), which only `with_taskbar_icon` stages.
@@ -1381,18 +1387,22 @@ fn native_window_attributes<C, T>(
         .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
         .with_maximized(maximized)
         .with_window_level(match window.level.snapshot() {
-            waterui::window::WindowLevel::Normal => winit::window::WindowLevel::Normal,
-            waterui::window::WindowLevel::AlwaysOnTop => winit::window::WindowLevel::AlwaysOnTop,
+            waterui_backend_core::window::WindowLevel::Normal => winit::window::WindowLevel::Normal,
+            waterui_backend_core::window::WindowLevel::AlwaysOnTop => {
+                winit::window::WindowLevel::AlwaysOnTop
+            }
         })
         // `Activation::OnClick` and `Never` both map without activation: the
         // platform parts that `with_active` cannot express (X11 `WM_HINTS`,
         // the AppKit style mask, `WS_EX_NOACTIVATE`) are applied after
         // creation, before the window is mapped.
-        .with_active(activates && window.activation == waterui::window::Activation::OnShow)
+        .with_active(
+            activates && window.activation == waterui_backend_core::window::Activation::OnShow,
+        )
         .with_transparent(super::window_requires_transparency(window, env))
         .with_decorations(!matches!(
             window.style.snapshot(),
-            waterui::window::WindowStyle::Borderless
+            waterui_backend_core::window::WindowStyle::Borderless
         ))
         .with_inner_size(winit::dpi::LogicalSize::new(
             f64::from(frame.width()),
@@ -1732,7 +1742,7 @@ impl WinitRunner {
         // windows front without activation (see that function).
         if runtime.window.state.snapshot() != WindowState::Closed {
             crate::runner::placement::show_at_mount(runtime.platform.native_window(), activation);
-            if activates && activation == waterui::window::Activation::OnShow {
+            if activates && activation == waterui_backend_core::window::Activation::OnShow {
                 runtime.platform.native_window().focus_window();
             }
         }
@@ -1760,22 +1770,26 @@ impl WinitRunner {
                     tracing::debug!(
                         "hydrolysis runner: no monitor reported a refresh rate, executor paced at the headless rate"
                     );
-                    waterui::task::RefreshRate::HEADLESS
+                    waterui_backend_core::task::RefreshRate::HEADLESS
                 },
-                waterui::task::RefreshRate::from_millihertz,
+                waterui_backend_core::task::RefreshRate::from_millihertz,
             );
         #[cfg(hydrolysis_inspector)]
         let inspector_probe = self
             .env
-            .get::<waterui::inspector::InspectorRuntime>()
-            .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
+            .get::<waterui_backend_core::inspector::InspectorRuntime>()
+            .map(|inspector| {
+                inspector.task_probe() as Arc<dyn waterui_backend_core::task::RuntimeProbe>
+            });
         #[cfg(not(hydrolysis_inspector))]
-        let inspector_probe: Option<Arc<dyn waterui::task::RuntimeProbe>> = None;
-        let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
-            local_executor,
-            refresh_rate,
-            inspector_probe,
-        ));
+        let inspector_probe: Option<Arc<dyn waterui_backend_core::task::RuntimeProbe>> = None;
+        let _ = try_init_local_executor(
+            waterui_backend_core::task::monitored_local_executor_with_probes(
+                local_executor,
+                refresh_rate,
+                inspector_probe,
+            ),
+        );
         // Locale changes reach views through a mailbox, whose pump needs the
         // executor installed just above.
         waterui_locale::start_system_locale_listener();
@@ -2388,7 +2402,7 @@ mod tests {
     };
     #[cfg(windows)]
     use super::{TerminationAction, TerminationRequests};
-    use waterui::window::{Window, WindowState};
+    use waterui_backend_core::window::{Window, WindowState};
     use waterui_core::{Binding, binding};
 
     #[cfg(windows)]
@@ -2403,7 +2417,7 @@ mod tests {
 
     #[test]
     fn quit_policy_ends_the_loop_once_no_window_is_left() {
-        use waterui::app::LastWindowPolicy;
+        use waterui_backend_core::app::LastWindowPolicy;
 
         // At startup, a quitting app that declares no window has nothing to run.
         assert!(ends_event_loop(LastWindowPolicy::Quit, 0));
@@ -2413,7 +2427,7 @@ mod tests {
 
     #[test]
     fn stay_resident_policy_keeps_the_loop_with_no_window() {
-        use waterui::app::LastWindowPolicy;
+        use waterui_backend_core::app::LastWindowPolicy;
 
         assert!(!ends_event_loop(LastWindowPolicy::StayResident, 0));
         assert!(!ends_event_loop(LastWindowPolicy::StayResident, 1));
@@ -2505,7 +2519,7 @@ mod tests {
         use nami::Signal as _;
         use std::cell::Cell;
         use std::rc::Rc;
-        use waterui::theme::ColorScheme;
+        use waterui_controls::theme::ColorScheme;
         use winit::window::Theme;
 
         let scheme = binding(ColorScheme::Light);

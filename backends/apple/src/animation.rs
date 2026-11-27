@@ -10,8 +10,8 @@
 use std::rc::Rc;
 
 use cocoa_ui::core_animation::{Playback, Timing};
-use waterui::animation::{Animation, ChangeAnimation};
-use waterui::reactive::watcher::Metadata;
+use nami::watcher::Metadata;
+use waterui_core::animation::{Animation, ChangeAnimation};
 
 /// The kit playback specification `animation` plays under: its shared timing,
 /// delay, speed, and repeat policy, matching core and the Cherenkov engine.
@@ -56,7 +56,7 @@ mod tests {
     use core::time::Duration;
 
     use super::*;
-    use waterui::animation::Repeat;
+    use waterui_core::animation::Repeat;
 
     /// `Animation::DEFAULT` maps to the 0.25s ease-in-out bezier the FFI
     /// spells the system animation as.
@@ -103,7 +103,10 @@ mod tests {
         let Timing::Spring(spring) = timing(&Animation::spring(120.0, 14.0)).timing else {
             panic!("a spring plays as a spring");
         };
-        assert_eq!(spring, waterui::easing::Spring::from_physics(120.0, 14.0));
+        assert_eq!(
+            spring,
+            waterui_core::easing::Spring::from_physics(120.0, 14.0)
+        );
         assert!((spring.stiffness() - 120.0).abs() < 1e-9);
         assert!((spring.damping_coefficient() - 14.0).abs() < 1e-9);
     }

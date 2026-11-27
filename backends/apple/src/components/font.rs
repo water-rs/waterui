@@ -12,7 +12,7 @@
 //! symbolic trait. On iOS it bolds as the body style.
 
 use cocoa_ui::Retained;
-use waterui::text::font::{FontDesign, FontWeight, ResolvedFont};
+use waterui_text::font::{FontDesign, FontWeight, ResolvedFont};
 
 /// The platform weight of a `FontWeight` on the `UIFont`/`NSFont` scale.
 pub(super) const fn platform_weight(weight: FontWeight) -> f64 {
@@ -112,7 +112,7 @@ pub(super) fn platform_font(
                 }
             }
             resolved_font.unwrap_or_else(|| {
-                waterui::contract_violation!(
+                waterui_core::contract_violation!(
                     "WaterUI: font family '{family}' not found. Ensure the font is bundled and \
                      registered; the font's design face is used"
                 );
@@ -148,10 +148,10 @@ pub(super) fn resolved_weight(mtm: cocoa_ui::MainThreadMarker, resolved: &Resolv
 mod tests {
     use alloc::vec::Vec;
 
-    use waterui::reactive::{Computed, Signal};
-    use waterui::text::font::{Body, Font, Headline};
-    use waterui::text::font::{FontWeight, ResolvedFont};
+    use nami::{Computed, Signal};
     use waterui_backend_core::Environment;
+    use waterui_text::font::{Body, Font, Headline};
+    use waterui_text::font::{FontWeight, ResolvedFont};
 
     use super::{FaceWeight, face_weight, family_candidates, platform_weight};
 

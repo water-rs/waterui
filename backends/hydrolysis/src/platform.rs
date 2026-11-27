@@ -5,12 +5,12 @@ use std::rc::Rc;
 use cherenkov_gpu::interop::OutputColor;
 #[cfg(hydrolysis_cherenkov)]
 use nami::Signal;
-use waterui::cursor::CursorStyle;
-use waterui::window::WindowParts as WuiWindow;
+use waterui_backend_core::window::WindowParts as WuiWindow;
 #[cfg(hydrolysis_cherenkov)]
-use waterui::window::WindowState;
+use waterui_backend_core::window::WindowState;
 use waterui_core::contract_violation;
 use waterui_frame_rate::FrameRate;
+use waterui_interaction::cursor::CursorStyle;
 
 #[cfg(hydrolysis_gpu_painter)]
 use crate::engine::format_output_color;
@@ -4608,7 +4608,7 @@ mod winit_impl {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use nami::Signal;
-    use waterui::window::{UserAttention, WindowLevel, WindowState};
+    use waterui_backend_core::window::{UserAttention, WindowLevel, WindowState};
     use waterui_core::contract_violation;
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use winit::{
@@ -5413,7 +5413,7 @@ mod winit_impl {
     /// native window, so unchanged syncs cost no platform calls.
     #[derive(Clone, Debug, PartialEq)]
     struct AppliedWindowProperties {
-        title: waterui::Str,
+        title: waterui_core::Str,
         resizable: bool,
         closable: bool,
         decorations: bool,
@@ -5426,7 +5426,7 @@ mod winit_impl {
         resize_increments: Option<waterui_core::layout::Size>,
         /// The window's own icon, or `None` for the application icon the
         /// runner staged at creation.
-        icon: Option<waterui::window::WindowIcon>,
+        icon: Option<waterui_backend_core::window::WindowIcon>,
     }
 
     /// A monitor's logical rect: `(position, extent)` — the shape
@@ -5941,7 +5941,7 @@ mod winit_impl {
         /// Windows `set_window_icon` covers only the small title-bar icon
         /// (`ICON_SMALL`), so the same image also goes to the taskbar and
         /// Alt-Tab icon (`ICON_BIG`).
-        fn apply_window_icon(&self, icon: Option<&waterui::window::WindowIcon>) {
+        fn apply_window_icon(&self, icon: Option<&waterui_backend_core::window::WindowIcon>) {
             let icon = icon.map_or_else(
                 || self.application_icon.clone(),
                 |icon| {
@@ -7006,7 +7006,7 @@ mod winit_impl {
             let title = window.display_title().snapshot();
             let decorations = !matches!(
                 window.style.snapshot(),
-                waterui::window::WindowStyle::Borderless
+                waterui_backend_core::window::WindowStyle::Borderless
             );
             let state = window.state.snapshot();
             let frame = validated_window_frame(window.frame.snapshot());
@@ -7506,7 +7506,7 @@ mod winit_impl {
         #[test]
         fn window_state_transitions_land_from_any_prior_state() {
             use super::{WindowStateOp, window_state_ops};
-            use waterui::window::WindowState;
+            use waterui_backend_core::window::WindowState;
 
             // The flags a platform window carries between calls, applied in
             // the order `window_state_ops` emits them.
@@ -7954,8 +7954,8 @@ mod winit_impl {
         /// material window keeps the opaque surface every other window has.
         #[test]
         fn a_behind_window_material_window_gets_a_multiplied_alpha_mode() {
-            use waterui::background::Material;
-            use waterui::window::Window;
+            use waterui_backend_core::window::Window;
+            use waterui_shape::background::Material;
             use wgpu::CompositeAlphaMode as Mode;
 
             let env = waterui_core::Environment::new();
@@ -8067,7 +8067,7 @@ mod winit_impl {
 
         #[test]
         fn the_requested_frame_is_reapplied_on_the_first_mapped_event() {
-            use waterui::window::WindowState;
+            use waterui_backend_core::window::WindowState;
             use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
             use winit::event::WindowEvent;
 
@@ -8331,7 +8331,7 @@ mod winit_impl {
 
         #[test]
         fn the_placement_guard_applies_only_until_the_first_mapped_event() {
-            use waterui::window::WindowState;
+            use waterui_backend_core::window::WindowState;
             use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
             use winit::event::WindowEvent;
 
@@ -8358,7 +8358,7 @@ mod winit_impl {
 
         #[test]
         fn a_premap_state_is_reapplied_on_the_first_mapped_event() {
-            use waterui::window::WindowState;
+            use waterui_backend_core::window::WindowState;
             use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
             use winit::event::WindowEvent;
 

@@ -21,22 +21,25 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use kurbo::Affine;
-use nami::{Binding, Signal as _};
-use waterui::accessibility::AccessibilityRole;
-use waterui::sheet::{SHEET_DEFAULT_LABEL_KEY, Sheet, SheetContentScope, SheetDetent};
-use waterui::theme::color::Scrim;
-use waterui::{Computed, Plugin, SignalExt as _, Str, ViewExt as _};
+use nami::{Binding, Computed, Signal as _, SignalExt as _};
+use waterui_accessibility::{AccessibilityHidden, AccessibilityLabel, AccessibilityRole};
 use waterui_backend_core::SlotView;
+use waterui_controls::sheet::{SHEET_DEFAULT_LABEL_KEY, Sheet, SheetContentScope, SheetDetent};
+use waterui_controls::theme::color::Scrim;
+use waterui_core::env::With;
 use waterui_core::extract::State as EnvState;
 use waterui_core::handler::shared_action;
 use waterui_core::layout::{
     Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
     SubviewPlacement,
 };
-use waterui_core::{Environment, OneOf2, View};
+use waterui_core::plugin::Plugin;
+use waterui_core::{Environment, Metadata, OneOf2, Str, View};
 use waterui_graphics::color::Color;
+use waterui_interaction::gesture::{GestureObserver, TapGesture};
 use waterui_layout::container::FixedContainer;
-use waterui_layout::padding::EdgeInsets;
+use waterui_layout::frame::Frame;
+use waterui_layout::padding::{EdgeInsets, Padding};
 use waterui_layout::stack::{Alignment, HorizontalAlignment, vstack, zstack};
 use waterui_shape::{CornerRadius, RoundedRectangle, ShapeExt as _};
 use waterui_text::text::Text;
@@ -174,9 +177,15 @@ pub fn sheet_modal_layer<E: TextEngine>(
     let detent = sheet.primary_detent();
     let max_width = look.max_width;
     let scrim_sheet = sheet.clone();
-    let scrim = Color::new(Scrim)
-        .on_tap(move |env: Environment| scrim_sheet.run_user_dismiss(&env))
-        .a11y_hidden(true);
+    let scrim = Metadata::new(
+        Metadata::new(
+            Color::new(Scrim),
+            GestureObserver::without_event(TapGesture::new(), move |env: Environment| {
+                scrim_sheet.run_user_dismiss(&env);
+            }),
+        ),
+        AccessibilityHidden::new(true),
+    );
     FixedContainer::new(
         SheetLayout { detent, max_width },
         (
@@ -267,41 +276,58 @@ impl<E: TextEngine> View for SheetSurface<E> {
             .content()
             .map(|styled| styled.to_plain())
             .computed();
-        let content = SlotView::new(sheet.build_content()).with(SheetContentScope);
+        let content = With::new(SlotView::new(sheet.build_content()), SheetContentScope);
         let full_screen = sheet.primary_detent() == SheetDetent::FullScreen;
         if full_screen {
-            let surface = look.container_color.on_tap(|| {}).a11y_hidden(true);
-            OneOf2::A(
-                zstack((surface, content))
-                    .a11y_label(spoken)
-                    .a11y_role(AccessibilityRole::Dialog),
-            )
+            let surface = Metadata::new(
+                Metadata::new(
+                    look.container_color,
+                    GestureObserver::without_event(TapGesture::new(), || {}),
+                ),
+                AccessibilityHidden::new(true),
+            );
+            OneOf2::A(Metadata::new(
+                Metadata::new(zstack((surface, content)), AccessibilityLabel::new(spoken)),
+                AccessibilityRole::Dialog,
+            ))
         } else {
             let body = if sheet.is_dismissible() && look.show_drag_handle {
-                let handle = RoundedRectangle::new(CornerRadius::fraction(1.0))
-                    .fill(look.drag_handle_color)
-                    .size(look.drag_handle_width, look.drag_handle_height)
-                    .padding_with(EdgeInsets::new(
-                        look.drag_handle_vertical_padding,
-                        0.0,
-                        look.drag_handle_vertical_padding,
-                        0.0,
-                    ))
-                    .a11y_hidden(true);
+                let handle = Metadata::new(
+                    Padding::new(
+                        EdgeInsets::new(
+                            look.drag_handle_vertical_padding,
+                            0.0,
+                            look.drag_handle_vertical_padding,
+                            0.0,
+                        ),
+                        Frame::new(
+                            RoundedRectangle::new(CornerRadius::fraction(1.0))
+                                .fill(look.drag_handle_color),
+                        )
+                        .width(look.drag_handle_width)
+                        .height(look.drag_handle_height),
+                    ),
+                    AccessibilityHidden::new(true),
+                );
                 OneOf2::A(vstack((handle, content)).alignment(HorizontalAlignment::Center))
             } else {
                 OneOf2::B(content)
             };
-            let surface = RoundedRectangle::new(CornerRadius::points(look.corner_radius))
-                .fill(look.container_color)
-                .on_tap(|| {})
-                .a11y_hidden(true);
-            OneOf2::B(
-                zstack((surface, body))
-                    .alignment(Alignment::Top)
-                    .a11y_label(spoken)
-                    .a11y_role(AccessibilityRole::Dialog),
-            )
+            let surface = Metadata::new(
+                Metadata::new(
+                    RoundedRectangle::new(CornerRadius::points(look.corner_radius))
+                        .fill(look.container_color),
+                    GestureObserver::without_event(TapGesture::new(), || {}),
+                ),
+                AccessibilityHidden::new(true),
+            );
+            OneOf2::B(Metadata::new(
+                Metadata::new(
+                    zstack((surface, body)).alignment(Alignment::Top),
+                    AccessibilityLabel::new(spoken),
+                ),
+                AccessibilityRole::Dialog,
+            ))
         }
     }
 }
@@ -355,7 +381,7 @@ impl<E: TextEngine> HydrolysisRenderer<E> {
 #[cfg(test)]
 mod tests {
     use super::SheetLayout;
-    use waterui::sheet::SheetDetent;
+    use waterui_controls::sheet::SheetDetent;
     use waterui_core::layout::{
         Layout, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView,
         ViewDimensions,

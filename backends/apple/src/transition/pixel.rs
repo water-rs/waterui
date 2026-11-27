@@ -22,9 +22,9 @@ use std::sync::{Arc, Mutex};
 
 use cocoa_ui::capture::{CaptureError, ViewCapture};
 use cocoa_ui::{MainThreadMarker, PlatformView, Retained, view};
+use nami::{Binding, SignalExt};
 use objc2::runtime::ProtocolObject;
 use objc2_metal::MTLTexture;
-use waterui::reactive::{Binding, SignalExt};
 use waterui_backend_core::Environment;
 use waterui_core::layout::{LayoutDirection, Point, Rect as CoreRect, Size};
 use waterui_graphics::backend::{AnyEffect, ParamGuards};

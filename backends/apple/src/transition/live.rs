@@ -7,7 +7,7 @@ use alloc::rc::Rc;
 use core::cell::RefCell;
 
 use cocoa_ui::{PlatformView, view};
-use waterui::reactive::Signal as _;
+use nami::Signal as _;
 use waterui_backend_core::Environment;
 use waterui_core::layout::{Size, SubView};
 use waterui_structural_transition::{GhostSlot, TransitionGeometry, TransitionPhase};
@@ -212,7 +212,7 @@ impl LiveChild {
         // ended at once: the site's `None` answer releases the slot.
         #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
         if state.captures_content() {
-            waterui::contract_violation!(
+            waterui_core::contract_violation!(
                 "waterui-apple: a pixel transition needs the filtered pipeline \
                  (the view_effect or applied_filter feature)"
             );

@@ -13,7 +13,7 @@ use crate::platform::RasterOffscreen;
 use crate::platform::{HeadlessColorFormat, PainterUnavailable};
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use cherenkov_gpu::interop::OutputColor;
-use waterui::window::{Window, WindowContent, WindowParts, WindowToolbar};
+use waterui_backend_core::window::{Window, WindowContent, WindowParts, WindowToolbar};
 use waterui_core::layout::Rect;
 use waterui_structural_transition::ReduceMotion;
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
@@ -362,7 +362,7 @@ impl PlatformWindow for HeadlessPlatformWindow {
         self.inner.sync_text_input_state(state);
     }
 
-    fn set_cursor_style(&mut self, style: waterui::cursor::CursorStyle) {
+    fn set_cursor_style(&mut self, style: waterui_interaction::cursor::CursorStyle) {
         self.inner.set_cursor_style(style);
     }
 }
@@ -917,7 +917,10 @@ impl HeadlessRuntime {
     /// [`Self::new_for_tests`].
     #[cfg(any(test, feature = "testing"))]
     #[must_use]
-    pub fn new_for_tests_with_window<C: ViewBuilder, T: waterui::window::WindowToolbar>(
+    pub fn new_for_tests_with_window<
+        C: ViewBuilder,
+        T: waterui_backend_core::window::WindowToolbar,
+    >(
         env: Environment,
         window: Window<C, T>,
         width: u32,
@@ -988,17 +991,17 @@ impl HeadlessRuntime {
         #[cfg(hydrolysis_inspector)]
         let inspector = init_main_thread_executors();
         #[cfg(hydrolysis_inspector)]
-        let inspector_probe = inspector
-            .as_ref()
-            .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
+        let inspector_probe = inspector.as_ref().map(|inspector| {
+            inspector.task_probe() as Arc<dyn waterui_backend_core::task::RuntimeProbe>
+        });
         #[cfg(not(hydrolysis_inspector))]
-        let inspector_probe: Option<Arc<dyn waterui::task::RuntimeProbe>> = {
+        let inspector_probe: Option<Arc<dyn waterui_backend_core::task::RuntimeProbe>> = {
             super::init_global_executor();
             None
         };
-        waterui::install_application_resources(&mut env);
+        waterui_backend_core::install_application_resources(&mut env);
         #[cfg(hydrolysis_inspector)]
-        waterui::inspector::install(&mut env, inspector);
+        waterui_backend_core::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         #[cfg(any(test, hydrolysis_platform_services))]
         install_platform_services(&mut env);
@@ -1011,7 +1014,7 @@ impl HeadlessRuntime {
         crate::theme::install_theme_tokens(
             &mut env,
             Some(&style),
-            waterui::theme::ColorScheme::Light,
+            waterui_controls::theme::ColorScheme::Light,
         );
         let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
         // The application's fonts, built once: the platform's collection plus
@@ -1033,11 +1036,13 @@ impl HeadlessRuntime {
         let local_executor = HeadlessMainThreadExecutor::thread_shared();
         // A headless host paces frames itself, so the executor budgets at the
         // headless rate.
-        let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
-            local_executor.clone(),
-            waterui::task::RefreshRate::HEADLESS,
-            inspector_probe,
-        ));
+        let _ = try_init_local_executor(
+            waterui_backend_core::task::monitored_local_executor_with_probes(
+                local_executor.clone(),
+                waterui_backend_core::task::RefreshRate::HEADLESS,
+                inspector_probe,
+            ),
+        );
 
         window.frame.set(waterui_core::layout::Rect::new(
             waterui_core::layout::Point::zero(),
@@ -1651,13 +1656,11 @@ impl HeadlessRuntime {
         // A popup whose state flipped `Closed` — its menu group dismissed it
         // — leaves the merged tree. Flag the main window so the update
         // re-emits without it.
-        if self
-            .popup_windows
-            .iter()
-            .any(|popup| popup.window.state.snapshot() == waterui::window::WindowState::Closed)
-        {
+        if self.popup_windows.iter().any(|popup| {
+            popup.window.state.snapshot() == waterui_backend_core::window::WindowState::Closed
+        }) {
             self.popup_windows.retain(|popup| {
-                popup.window.state.snapshot() != waterui::window::WindowState::Closed
+                popup.window.state.snapshot() != waterui_backend_core::window::WindowState::Closed
             });
             self.runtime.request_refresh();
             self.runtime.request_redraw();

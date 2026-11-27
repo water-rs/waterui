@@ -70,7 +70,7 @@ fn unmap(map: &SegmentMaps<'_>, normalized: f64) -> f64 {
 /// font's default variation.
 fn user_values(font: &CTFont, coords: &[i16]) -> Option<Vec<(Tag, f64)>> {
     let Some(fvar_bytes) = table(font, *b"fvar") else {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "a run with variation coordinates names a variable font; \
              the run draws at the font's default variation"
         );
@@ -96,7 +96,7 @@ fn user_values(font: &CTFont, coords: &[i16]) -> Option<Vec<(Tag, f64)>> {
         }
     };
     if coords.len() > axes.len() {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "a glyph run has {} variation coordinates for a font with {} axes; \
              the run draws at the font's default variation",
             coords.len(),

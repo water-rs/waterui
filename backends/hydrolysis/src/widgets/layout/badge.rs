@@ -1,7 +1,7 @@
 use nami::{Computed, Signal};
 use std::cell::RefCell;
 use std::rc::Rc;
-use waterui::component::badge::{BadgeConfig, BadgeValue};
+use waterui_controls::badge::{BadgeConfig, BadgeValue};
 use waterui_core::Environment;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, ViewDimensions};
 use waterui_text::styled::StyledStr;

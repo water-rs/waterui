@@ -25,11 +25,11 @@ use cocoa_ui::uikit::input_view::InputView;
 use cocoa_ui::uikit::{KeyboardBand, PointerCursor, WindowScene};
 use cocoa_ui::{MainThreadMarker, Retained};
 use nami::Signal as _;
-use waterui::cursor::CursorStyle;
-use waterui::window::{WindowParts, WindowState};
+use waterui_backend_core::window::{WindowParts, WindowState};
 use waterui_core::Environment;
 use waterui_core::layout::{Size, layout_direction};
 use waterui_frame_rate::FrameRate;
+use waterui_interaction::cursor::CursorStyle;
 
 use waterui_layout::padding::EdgeInsets;
 

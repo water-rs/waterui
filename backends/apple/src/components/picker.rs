@@ -19,20 +19,20 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use cocoa_ui::{PlatformView, Rect, view};
-use waterui::component::ControlSize;
+use nami::{Computed, Signal};
+use waterui_backend_core::form::picker::{PickerConfig, PickerItem, PickerStyle as WuiPickerStyle};
+use waterui_controls::ControlSize;
 #[cfg(target_os = "macos")]
-use waterui::component::LabelDisplayMode;
-use waterui::component::form::picker::{PickerConfig, PickerItem, PickerStyle as WuiPickerStyle};
-use waterui::reactive::{Computed, Signal};
-use waterui::resolve::Resolvable;
-use waterui::text::StyledStr;
-use waterui::text::font::{Body, ResolvedFont};
+use waterui_controls::LabelDisplayMode;
 use waterui_core::id::Id;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_core::resolve::Resolvable;
 use waterui_interaction::interaction::Disabled;
+use waterui_text::StyledStr;
+use waterui_text::font::{Body, ResolvedFont};
 
 use super::font::platform_font;
 use crate::components::control_size::platform_control_size;
@@ -98,7 +98,7 @@ struct PickerState {
     /// The platform selection control.
     picker: Picker,
     /// The two-way selection the control writes into.
-    selection: waterui::reactive::Binding<Id>,
+    selection: nami::Binding<Id>,
     /// `index → tag`, parallel to `titles`.
     tags: Vec<Id>,
     /// The plain titles currently shown, parallel to `tags`.

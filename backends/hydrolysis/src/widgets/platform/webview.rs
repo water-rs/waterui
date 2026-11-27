@@ -52,38 +52,38 @@ mod web;
 #[cfg(hydrolysis_web_system_webview)]
 pub use web::{WebIframeHandle, WebSystemWebViewController};
 
-/// The compile-time selected [`WebViewController`](waterui::webview::WebViewController)
+/// The compile-time selected [`WebViewController`](waterui_backend_core::webview::WebViewController)
 /// for this Hydrolysis build.
 #[cfg(hydrolysis_macos_system_webview)]
 pub type SelectedWebViewController = MacSystemWebViewController;
 
-/// The compile-time selected [`WebViewController`](waterui::webview::WebViewController)
+/// The compile-time selected [`WebViewController`](waterui_backend_core::webview::WebViewController)
 /// for this Hydrolysis build.
 #[cfg(hydrolysis_android_system_webview)]
 pub type SelectedWebViewController = AndroidSystemWebViewController;
 
-/// The compile-time selected [`WebViewController`](waterui::webview::WebViewController)
+/// The compile-time selected [`WebViewController`](waterui_backend_core::webview::WebViewController)
 /// for this Hydrolysis build.
 #[cfg(hydrolysis_web_system_webview)]
 pub type SelectedWebViewController = WebSystemWebViewController;
 
-/// The compile-time selected [`WebViewController`](waterui::webview::WebViewController)
+/// The compile-time selected [`WebViewController`](waterui_backend_core::webview::WebViewController)
 /// for this Hydrolysis build.
 #[cfg(hydrolysis_cef_webview)]
 pub type SelectedWebViewController = waterui_browser_cef::CefController;
 
-/// The compile-time selected [`WebViewController`](waterui::webview::WebViewController)
+/// The compile-time selected [`WebViewController`](waterui_backend_core::webview::WebViewController)
 /// for this Hydrolysis build.
 #[cfg(hydrolysis_wpe_webview)]
 pub type SelectedWebViewController = waterui_browser_wpe::WpeController;
 
-/// Fallback [`WebViewController`](waterui::webview::WebViewController) when
+/// Fallback [`WebViewController`](waterui_backend_core::webview::WebViewController) when
 /// `waterui/webview` is unified without a Hydrolysis engine feature.
 #[cfg(all(
     waterui_feature = "webview",
     not(any(hydrolysis_webview_engine, hydrolysis_android_system_webview))
 ))]
-pub type SelectedWebViewController = waterui::webview::UnavailableWebViewController;
+pub type SelectedWebViewController = waterui_backend_core::webview::UnavailableWebViewController;
 
 /// Wraps a opened `WKWebView` handle in a [`HostedView`](crate::HostedView).
 #[cfg(hydrolysis_macos_system_webview)]

@@ -11,8 +11,9 @@ use cocoa_ui::geometry::{Rect as KitRect, Size as KitSize};
 use cocoa_ui::text::strip_bidi_controls;
 use cocoa_ui::view::hide_from_accessibility;
 use cocoa_ui::{Retained, view};
-use waterui::Signal as _;
-use waterui::widget::disclosure::{DisclosureConfig, SlotBuilder};
+use nami::Signal as _;
+use waterui_controls::disclosure::DisclosureConfig;
+use waterui_controls::slot::SlotBuilder;
 use waterui_core::layout::{
     LayoutDirection, LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions, layout_direction,

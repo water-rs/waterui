@@ -993,9 +993,9 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetColorSc
     guard(&mut env, |_env| {
         initializing!(session_ptr, pending, {
             pending.appearance.color_scheme = if night {
-                waterui::theme::ColorScheme::Dark
+                waterui_controls::theme::ColorScheme::Dark
             } else {
-                waterui::theme::ColorScheme::Light
+                waterui_controls::theme::ColorScheme::Light
             };
             return Ok(());
         });

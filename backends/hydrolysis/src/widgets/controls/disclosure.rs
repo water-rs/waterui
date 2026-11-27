@@ -1,4 +1,4 @@
-//! Hydrolysis realization of [`Disclosure`](waterui::widget::disclosure::Disclosure):
+//! Hydrolysis realization of [`Disclosure`](waterui_controls::disclosure::Disclosure):
 //! a keyboard-focusable header row carrying an animated [`ToggleControl`] indicator
 //! and a lazily realized body when expanded.
 
@@ -12,7 +12,7 @@ use accesskit::{
 };
 use kurbo::Rect;
 use nami::{Binding, Signal as _};
-use waterui::widget::disclosure::DisclosureConfig;
+use waterui_controls::disclosure::DisclosureConfig;
 use waterui_core::Environment;
 use waterui_core::layout::{
     LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions, layout_direction,
@@ -35,7 +35,7 @@ use crate::theme::{
 };
 use crate::widgets::util::{mirrored_in, widget_disabled};
 
-/// Retained render state for a [`Disclosure`](waterui::widget::disclosure::Disclosure).
+/// Retained render state for a [`Disclosure`](waterui_controls::disclosure::Disclosure).
 ///
 /// The header label stays retained for its lifetime so measurements match renders,
 /// while the expandable content sub-view is created only when `expanded` is `true`

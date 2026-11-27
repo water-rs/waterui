@@ -13,15 +13,15 @@ use cocoa_ui::objc2_foundation::ns_string;
 use cocoa_ui::{PlatformView, Rect, view};
 #[cfg(target_os = "macos")]
 use cocoa_ui::{core_animation, layer};
-#[cfg(target_os = "macos")]
-use waterui::animation::ChangeAnimation;
-use waterui::filter::Opacity;
-use waterui::reactive::Signal;
+use nami::Signal;
 use waterui_core::Metadata;
+#[cfg(target_os = "macos")]
+use waterui_core::animation::ChangeAnimation;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_shape::filter::Opacity;
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
@@ -41,7 +41,7 @@ fn apply_opacity(alpha: f32, host: &PlatformView) {
     let alpha = if (0.0..=1.0).contains(&alpha) {
         alpha
     } else {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "Metadata<Opacity> value out of range: {alpha}; the nearest value in 0.0..=1.0 applies"
         );
         alpha.clamp(0.0, 1.0)

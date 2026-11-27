@@ -10,12 +10,12 @@ use core::cell::{Cell, RefCell};
 
 use cocoa_ui::Rect;
 use cocoa_ui::view;
-use waterui::interaction::Hittable;
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_interaction::interaction::Hittable;
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;

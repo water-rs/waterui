@@ -13,16 +13,16 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use cocoa_ui::{ColorScheme, Retained};
-use waterui::graphics::color::{
+use nami::{Binding, SignalExt};
+#[cfg(target_os = "macos")]
+use nami::{Signal, SignalIdentity};
+use waterui_backend_core::Environment;
+use waterui_controls::theme::{self, color};
+use waterui_graphics::color::{
     WorkingColor, srgb_to_linear,
     working::{self},
 };
-use waterui::reactive::{Binding, SignalExt};
-#[cfg(target_os = "macos")]
-use waterui::reactive::{Signal, SignalIdentity};
-use waterui::text::font::{self, FontWeight, ResolvedFont};
-use waterui::theme::{self, color};
-use waterui_backend_core::Environment;
+use waterui_text::font::{self, FontWeight, ResolvedFont};
 
 /// One font slot: the platform text style it follows and the setter that
 /// writes a resolved [`cocoa_ui::system_font::FontMetrics`] into its
@@ -36,7 +36,7 @@ struct FontSlot {
 /// alive; every slot's `Computed` also holds its `Binding`, so nothing but
 /// [`refresh`] needs to reach it.
 pub struct ThemeSignals {
-    scheme: Binding<waterui::graphics::color::ColorScheme>,
+    scheme: Binding<waterui_graphics::color::ColorScheme>,
     /// Each color slot's refresh: re-reads the platform color in both
     /// schemes into the slot's per-scheme signals.
     colors: Vec<Box<dyn Fn()>>,
@@ -182,7 +182,7 @@ pub fn token_color(
     signal: &impl Signal<Output = WorkingColor>,
 ) -> Retained<cocoa_ui::objc2_app_kit::NSColor> {
     let Some(slots) = env.get::<SystemLabelSlots>() else {
-        waterui::contract_violation!(
+        waterui_core::contract_violation!(
             "the environment has no Apple theme installed, so no label slot is known; \
              the color's current value is drawn"
         );
@@ -211,7 +211,7 @@ pub fn install_controller(
 /// the platform's current appearance. The app feeds [`refresh`] each time
 /// the platform appearance changes.
 pub fn install(env: &mut Environment, scheme: ColorScheme) -> ThemeSignals {
-    let scheme_binding = waterui::reactive::binding(color_scheme(scheme));
+    let scheme_binding = nami::binding(color_scheme(scheme));
     theme::install_color_scheme(env, scheme_binding.computed());
 
     let mut signals = ThemeSignals {
@@ -366,8 +366,8 @@ impl ThemeSignals {
         resolver: impl Fn(ColorScheme) -> Option<cocoa_ui::Rgba> + 'static,
     ) {
         let unresolved = working::from_linear_srgb([0.0, 0.0, 0.0], 1.0);
-        let light = waterui::reactive::binding(unresolved);
-        let dark = waterui::reactive::binding(unresolved);
+        let light = nami::binding(unresolved);
+        let dark = nami::binding(unresolved);
         theme::install_color_derivation::<S>(
             env,
             theme::ColorDerivation::per_scheme(light.clone(), dark.clone()),
@@ -386,7 +386,7 @@ impl ThemeSignals {
         env: &mut Environment,
         style: cocoa_ui::system_font::TextStyle,
     ) {
-        let binding = waterui::reactive::binding(ResolvedFont::new(0.0, FontWeight::Normal));
+        let binding = nami::binding(ResolvedFont::new(0.0, FontWeight::Normal));
         theme::install_font_signal::<F>(env, binding.computed());
         self.fonts.push(FontSlot {
             style,
@@ -405,10 +405,10 @@ impl ThemeSignals {
 }
 
 /// The waterui color scheme a platform scheme projects to.
-const fn color_scheme(scheme: ColorScheme) -> waterui::graphics::color::ColorScheme {
+const fn color_scheme(scheme: ColorScheme) -> waterui_graphics::color::ColorScheme {
     match scheme {
-        ColorScheme::Light => waterui::graphics::color::ColorScheme::Light,
-        ColorScheme::Dark => waterui::graphics::color::ColorScheme::Dark,
+        ColorScheme::Light => waterui_graphics::color::ColorScheme::Light,
+        ColorScheme::Dark => waterui_graphics::color::ColorScheme::Dark,
     }
 }
 
@@ -464,10 +464,10 @@ fn font_weight(weight: f64) -> FontWeight {
 #[allow(clippy::float_cmp)]
 mod tests {
     use cocoa_ui::Rgba;
-    use waterui::graphics::color::ColorScheme as WuiColorScheme;
+    use waterui_graphics::color::ColorScheme as WuiColorScheme;
 
     use super::{color_scheme, font_weight, into_working};
-    use waterui::text::font::FontWeight;
+    use waterui_text::font::FontWeight;
 
     /// Every canonical platform weight snaps to its named weight, including
     /// the float32-rounded constants `AppKit`/`UIKit` publish.
@@ -514,8 +514,7 @@ mod tests {
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "no Apple theme installed"))]
     fn token_color_without_a_theme_draws_the_current_value() {
-        let color =
-            waterui::reactive::Computed::constant(into_working(Rgba::new(1.0, 0.0, 0.0, 1.0)));
+        let color = nami::Computed::constant(into_working(Rgba::new(1.0, 0.0, 0.0, 1.0)));
         let _ = super::token_color(&waterui_backend_core::Environment::new(), &color);
     }
 

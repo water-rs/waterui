@@ -20,13 +20,13 @@ use accesskit::Role as AccessibilityNodeRole;
 use executor_core::spawn_local;
 use std::cell::RefCell;
 use std::rc::Rc;
-use waterui::component::link::LinkConfig;
-use waterui::cursor::CursorStyle;
 use waterui_controls::ControlSize;
 use waterui_controls::button::ButtonStyle;
+use waterui_controls::link::LinkConfig;
 use waterui_core::Environment;
 use waterui_core::Signal as _;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
+use waterui_interaction::cursor::CursorStyle;
 
 const LINK_PRESENTATION: ControlPresentation = ControlPresentation {
     style: ButtonStyle::Link,

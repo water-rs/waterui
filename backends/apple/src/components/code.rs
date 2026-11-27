@@ -9,20 +9,22 @@ use core::fmt::{self, Debug, Formatter};
 use cocoa_ui::geometry::Rect as KitRect;
 use cocoa_ui::layer;
 use cocoa_ui::{PlatformView, Retained, view};
-use waterui::component::button::{ButtonStyle, button};
-use waterui::graphics::color::{Color, WorkingColor};
-use waterui::reactive::SignalExt as _;
-use waterui::resolve::Resolvable;
-use waterui::text::code::CodeConfig;
-use waterui::text::font::{Body, Caption, Font};
-use waterui::text::text;
-use waterui::theme::color::{Accent, Border as BorderToken, MutedForeground, SurfaceVariant};
-use waterui::theme::{ForegroundOverride, install_font_signal};
+use nami::SignalExt as _;
+use waterui_controls::button::{ButtonStyle, button};
+use waterui_controls::theme::color::{
+    Accent, Border as BorderToken, MutedForeground, SurfaceVariant,
+};
+use waterui_controls::theme::{ForegroundOverride, install_font_signal};
 use waterui_core::Environment;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
 use waterui_core::plugin::Plugin;
+use waterui_core::resolve::Resolvable;
+use waterui_graphics::color::{Color, WorkingColor};
+use waterui_text::code::CodeConfig;
+use waterui_text::font::{Body, Caption, Font};
+use waterui_text::text;
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
 use crate::proposal::{self, Placement};

@@ -382,7 +382,7 @@ pub struct MaterialRequest {
     pub level: crate::renderer::material::WithinWindowLevel,
     /// The member's resolved colour scheme at flush: a subtree may
     /// install its own scheme, so the scheme keys the backdrop group.
-    pub scheme: waterui::theme::ColorScheme,
+    pub scheme: waterui_controls::theme::ColorScheme,
     /// The view's rect in its own space: the member's clip.
     pub bounds: kurbo::Rect,
     /// Whether the member presents this frame: an invisible member

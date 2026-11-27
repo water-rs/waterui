@@ -6,10 +6,10 @@
 use super::*;
 #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
 use crate::renderer::accessibility::accessibility_role_to_accesskit_role;
-#[cfg(feature = "navigation")]
-use waterui::navigation::ResolvedNavigationView;
 #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
 use waterui_backend_core::ProvidedSemantics;
+#[cfg(feature = "navigation")]
+use waterui_backend_core::navigation::ResolvedNavigationView;
 // A build with no selected engine reports a WebView as a contract violation.
 #[cfg(all(
     waterui_feature = "webview",
@@ -159,7 +159,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// row insets. Stretch is `Horizontal` (read from the config).
     #[cfg(feature = "list")]
     pub(super) fn build_list_row(
-        config: waterui::component::list::ListRowConfig<HeldChild<E>>,
+        config: waterui_controls::list::ListRowConfig<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -343,7 +343,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         not(any(hydrolysis_cef_webview, hydrolysis_wpe_webview))
     ))]
     pub(super) fn build_webview(
-        open: waterui::webview::WebViewOpen,
+        open: waterui_backend_core::webview::WebViewOpen,
         env: &Environment,
         renderer: &SemanticCore<E>,
     ) -> Self {

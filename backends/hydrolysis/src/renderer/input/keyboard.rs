@@ -262,7 +262,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Shared by the rendered flush and the semantic accessibility walk.
     pub(crate) fn wire_focused_target(
         &mut self,
-        value: &waterui::component::focus::Focused,
+        value: &waterui_interaction::focus::Focused,
         should_focus: bool,
         scope: &Rc<NodeCell<E>>,
     ) {
