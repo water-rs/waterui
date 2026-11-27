@@ -4,7 +4,6 @@
 //! that is genuinely unknown renders as unknown rather than as zero.
 
 use waterui::prelude::*;
-use waterui::shape::ShapeExt as _;
 use waterui::theme::color::{Accent, MutedForeground};
 use waterui_inspector_protocol::LogLevel;
 
