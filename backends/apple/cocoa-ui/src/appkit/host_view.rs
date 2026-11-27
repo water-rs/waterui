@@ -124,6 +124,9 @@ pub struct HostViewIvars {
     /// outside hit testing, accessibility and focus. Not a handler slot, so
     /// `clear_handlers` cannot revoke it.
     retired: Cell<bool>,
+    /// Whether `.a11y_hidden(true)` hides this host and its descendant views
+    /// from `AppKit` accessibility.
+    accessibility_hidden: Cell<bool>,
     /// When set, an empty `accessibilityTitle` falls back to the combined
     /// text of visible descendant labels and accessible elements.
     combines_accessibility_title: Cell<bool>,
@@ -168,6 +171,7 @@ impl fmt::Debug for HostViewIvars {
             .field("capturable", &self.capturable.get().is_some())
             .field("emitter", &self.emitter)
             .field("retired", &self.retired.get())
+            .field("accessibility_hidden", &self.accessibility_hidden.get())
             .field(
                 "combines_accessibility_title",
                 &self.combines_accessibility_title.get(),
@@ -655,14 +659,14 @@ define_class!(
             })
         }
 
-        // SAFETY: see the module safety note. A retired host reports no
-        // accessibility children — the ghost is outside the tree.
+        // SAFETY: see the module safety note. A retired or accessibility-hidden
+        // host reports no accessibility children.
         #[unsafe(method_id(accessibilityChildren))]
         fn accessibility_children_override(
             &self,
         ) -> Option<Retained<NSArray<objc2::runtime::AnyObject>>> {
             guarded("HostView accessibilityChildren", || {
-                if self.ivars().retired.get() {
+                if self.ivars().retired.get() || self.ivars().accessibility_hidden.get() {
                     return Some(NSArray::new());
                 }
                 // SAFETY: see the module safety note.
@@ -670,11 +674,11 @@ define_class!(
             })
         }
 
-        // SAFETY: see the module safety note. A retired host is not an
-        // accessibility element.
+        // SAFETY: see the module safety note. A retired or accessibility-hidden
+        // host is not an accessibility element.
         #[unsafe(method(isAccessibilityElement))]
         fn is_accessibility_element_override(&self) -> Bool {
-            if self.ivars().retired.get() {
+            if self.ivars().retired.get() || self.ivars().accessibility_hidden.get() {
                 return Bool::NO;
             }
             // SAFETY: see the module safety note.
@@ -955,6 +959,12 @@ impl HostView {
     #[must_use]
     pub fn is_retired(&self) -> bool {
         self.ivars().retired.get()
+    }
+
+    /// Hides or unhides this host and its descendant views from `AppKit`
+    /// accessibility without altering `retired`.
+    pub fn set_accessibility_hidden(&self, hidden: bool) {
+        self.ivars().accessibility_hidden.set(hidden);
     }
 
     /// Whether the intrinsic content size reports the height the current

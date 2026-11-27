@@ -77,6 +77,7 @@ impl View for IconGlyph {
             |icon_size| icon_size.size().clone(),
         );
         let font = Font::default().font_size(size).family(self.font_family);
-        StyledStr::plain(codepoint_to_string(self.codepoint)).font(font)
+        let glyph = StyledStr::plain(codepoint_to_string(self.codepoint)).font(font);
+        crate::icon::wrap_icon_accessibility(glyph, env)
     }
 }

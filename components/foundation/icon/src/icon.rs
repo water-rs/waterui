@@ -1,15 +1,34 @@
 //! Unified [`Icon`] view and shared [`IconSize`] environment channel.
 
+use waterui_accessibility::{
+    AccessibilityChildren, AccessibilityHidden, AccessibilityLabel, AccessibilityRole, default_role,
+};
 use waterui_core::plugin::Plugin;
-use waterui_core::{Computed, Environment, IntoSignalF32, SignalExt as _, View};
+use waterui_core::{Computed, Environment, IntoSignalF32, Metadata, OneOf2, SignalExt as _, View};
 #[cfg(feature = "svg")]
-use waterui_core::{OneOf4, Str};
+use waterui_core::{OneOf3, Str};
 #[cfg(feature = "svg")]
 use waterui_layout::frame::Frame;
 #[cfg(feature = "svg")]
 use waterui_svg::Svg;
 
 use crate::IconGlyph;
+
+/// Hides an unnamed icon's internal glyph/SVG geometry from assistive technology
+/// (decorative by default), and exposes a single [`AccessibilityRole::Image`]
+/// leaf with suppressed internal descendants when an explicit `.a11y_label(...)`
+/// is present in `env`.
+pub fn wrap_icon_accessibility<V: View>(view: V, env: &Environment) -> impl View {
+    if env.get::<AccessibilityLabel>().is_some() {
+        OneOf2::A(default_role(
+            env,
+            Metadata::new(view, AccessibilityChildren::ExcludeDescendants),
+            AccessibilityRole::Image,
+        ))
+    } else {
+        OneOf2::B(Metadata::new(view, AccessibilityHidden::new(true)))
+    }
+}
 
 /// Default logical icon size in points when no [`IconSize`] plugin is installed.
 pub const DEFAULT_ICON_SIZE: f32 = 24.0;
@@ -140,20 +159,21 @@ fn fit_viewbox(viewbox: Option<(f32, f32)>, size: f32) -> (f32, f32) {
 impl View for Icon {
     fn body(self, env: &Environment) -> impl View {
         match self.backing {
-            IconBacking::Glyph(glyph) => OneOf4::A(glyph),
+            IconBacking::Glyph(glyph) => OneOf2::A(glyph),
             IconBacking::Svg { svg, viewbox } => {
-                if let Some(icon_size) = env.get::<IconSize>() {
+                let svg_view = if let Some(icon_size) = env.get::<IconSize>() {
                     let width = icon_size.size().map(move |s| fit_viewbox(viewbox, s).0);
                     let height = icon_size.size().map(move |s| fit_viewbox(viewbox, s).1);
-                    return OneOf4::B(Frame::new(svg).width(width).height(height));
-                }
-                if let Some((vw, vh)) = viewbox
+                    OneOf3::A(Frame::new(svg).width(width).height(height))
+                } else if let Some((vw, vh)) = viewbox
                     && (vw > DEFAULT_ICON_SIZE || vh > DEFAULT_ICON_SIZE)
                 {
                     let (w, h) = fit_viewbox(Some((vw, vh)), DEFAULT_ICON_SIZE);
-                    return OneOf4::C(Frame::new(svg).ideal_width(w).ideal_height(h));
-                }
-                OneOf4::D(svg)
+                    OneOf3::B(Frame::new(svg).ideal_width(w).ideal_height(h))
+                } else {
+                    OneOf3::C(svg)
+                };
+                OneOf2::B(wrap_icon_accessibility(svg_view, env))
             }
         }
     }
@@ -170,6 +190,7 @@ impl View for Icon {
 
 #[cfg(all(test, feature = "svg"))]
 mod tests {
+    use alloc::boxed::Box;
     use alloc::vec::Vec;
     use core::any::TypeId;
 
@@ -183,11 +204,21 @@ mod tests {
 
     use crate::{Icon, IconGlyph, IconSize};
 
-    struct RecordedSlot(TypeId);
+    type StaticDispatch = Box<dyn FnOnce(&mut StaticOnlyBackend, &Environment)>;
+
+    struct RecordedSlot {
+        type_id: TypeId,
+        dispatch: StaticDispatch,
+    }
 
     impl ChildSlot for RecordedSlot {
-        fn from_view<V: View>(_view: V) -> Self {
-            Self(TypeId::of::<V>())
+        fn from_view<V: View>(view: V) -> Self {
+            Self {
+                type_id: TypeId::of::<V>(),
+                dispatch: Box::new(move |backend, env| {
+                    view.dispatch(backend, env, ());
+                }),
+            }
         }
     }
 
@@ -206,17 +237,18 @@ mod tests {
             if let Ok(container) = cast::<T, FixedContainer<Vec<RecordedSlot>>>(native) {
                 let (_, children) = container.into_inner();
                 self.child_types
-                    .extend(children.into_iter().map(|slot| slot.0));
+                    .extend(children.into_iter().map(|slot| slot.type_id));
             }
         }
 
         fn metadata<K: MetadataKey>(
             &mut self,
-            _metadata: Metadata<K, Self::Slot>,
-            _env: &Environment,
+            metadata: Metadata<K, Self::Slot>,
+            env: &Environment,
             (): (),
         ) {
             self.reached += 1;
+            (metadata.content.dispatch)(self, env);
         }
 
         fn erased(&mut self, _view: AnyView, _env: &Environment, (): ()) {

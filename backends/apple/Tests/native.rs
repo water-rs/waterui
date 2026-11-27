@@ -408,6 +408,7 @@ fn trials() -> Vec<Trial> {
     #[cfg(feature = "link")]
     tests.extend(link::trials());
     tests.extend(markdown_a11y::trials());
+    tests.extend(icon_a11y::trials());
     #[cfg(feature = "highlight")]
     tests.extend(code::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
@@ -19113,6 +19114,211 @@ mod markdown_a11y {
                 has_hidden,
                 "expected decorative empty-alt image to be hidden from accessibility"
             );
+        }
+    }
+}
+
+mod icon_a11y {
+    use cocoa_ui::{PlatformView, Retained, view};
+    use libtest_mimic::Trial;
+    use waterui::ViewExt as _;
+    use waterui::component::{button, label};
+    use waterui::icon::{Icon, IconGlyph};
+
+    #[cfg(target_os = "ios")]
+    use super::mtm;
+    use super::resolve;
+
+    const PUA_CODEPOINT: char = '\u{e5c4}';
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test("icon_a11y::unnamed_icons_hide_pua_and_svg_geometry", || {
+                unnamed_icons_hide_pua_and_svg_geometry();
+                Ok(())
+            }),
+            Trial::test(
+                "icon_a11y::named_icons_publish_image_role_without_pua",
+                || {
+                    named_icons_publish_image_role_without_pua();
+                    Ok(())
+                },
+            ),
+            Trial::test("icon_a11y::hidden_named_icons_stay_out_of_tree", || {
+                hidden_named_icons_stay_out_of_tree();
+                Ok(())
+            }),
+            Trial::test("icon_a11y::button_with_icon_announces_only_label", || {
+                button_with_icon_announces_only_label();
+                Ok(())
+            }),
+        ]
+    }
+
+    fn collect_views(root: &PlatformView, out: &mut Vec<Retained<PlatformView>>) {
+        out.push(view::retain_base(root));
+        for sub in view::subviews(root) {
+            collect_views(&sub, out);
+        }
+    }
+
+    fn glyph_icon() -> Icon {
+        Icon::from_glyph(IconGlyph::new(PUA_CODEPOINT, "Helvetica"))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn visible_ax_elements(root: &PlatformView) -> Vec<(String, String)> {
+        use cocoa_ui::objc2::runtime::ProtocolObject;
+        use cocoa_ui::objc2_app_kit::NSAccessibility;
+
+        fn walk(view: &PlatformView, out: &mut Vec<(String, String)>) {
+            let element = ProtocolObject::<dyn NSAccessibility>::from_ref(view);
+            if element.isAccessibilityElement() {
+                let role = element
+                    .accessibilityRole()
+                    .map_or_default(|r| r.to_string());
+                let text = element
+                    .accessibilityLabel()
+                    .or_else(|| element.accessibilityTitle())
+                    .map_or_default(|l| l.to_string());
+                out.push((role, text));
+            }
+            let children = element.accessibilityChildren();
+            if let Some(children) = children {
+                for child in &children {
+                    if let Some(child_view) = child.downcast_ref::<PlatformView>() {
+                        walk(child_view, out);
+                    }
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        walk(root, &mut out);
+        out
+    }
+
+    #[cfg(target_os = "ios")]
+    fn visible_ax_elements(root: &PlatformView) -> Vec<(bool, String)> {
+        use cocoa_ui::accessibility::{Role, traits};
+        use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility;
+
+        let mtm = mtm();
+        let image_trait = traits(Role::Image).expect("UIKit defines image accessibility trait");
+        let mut views = Vec::new();
+        collect_views(root, &mut views);
+        let mut out = Vec::new();
+        for candidate in &views {
+            if !candidate.accessibilityElementsHidden(mtm) && candidate.isAccessibilityElement(mtm)
+            {
+                let is_image = candidate.accessibilityTraits(mtm) & image_trait != 0;
+                let label = candidate
+                    .accessibilityLabel(mtm)
+                    .map_or_default(|s| s.to_string());
+                out.push((is_image, label));
+            }
+        }
+        out
+    }
+
+    fn unnamed_icons_hide_pua_and_svg_geometry() {
+        let pua = PUA_CODEPOINT.to_string();
+        for view in [
+            resolve::render(glyph_icon()),
+            resolve::render(IconGlyph::new(PUA_CODEPOINT, "Helvetica")),
+            resolve::render(waterui_icons_lucide::trash()),
+        ] {
+            let elements = visible_ax_elements(view.view());
+            assert!(
+                elements.is_empty(),
+                "unnamed icon must expose no visible accessibility elements, got {elements:?}"
+            );
+            assert!(
+                !elements.iter().any(|(_, label)| label.contains(&pua)),
+                "PUA codepoint must never appear in accessibility elements"
+            );
+        }
+    }
+
+    fn named_icons_publish_image_role_without_pua() {
+        let pua = PUA_CODEPOINT.to_string();
+        for view in [
+            resolve::render(glyph_icon().a11y_label("Remove draft")),
+            resolve::render(IconGlyph::new(PUA_CODEPOINT, "Helvetica").a11y_label("Remove draft")),
+            resolve::render(waterui_icons_lucide::trash().a11y_label("Remove draft")),
+        ] {
+            let elements = visible_ax_elements(view.view());
+            #[cfg(target_os = "macos")]
+            assert_eq!(
+                elements,
+                vec![(String::from("AXImage"), String::from("Remove draft"))],
+                "named icon must expose one AXImage element without PUA child"
+            );
+            #[cfg(target_os = "ios")]
+            assert_eq!(
+                elements,
+                vec![(true, String::from("Remove draft"))],
+                "named icon must expose one Image-traited element without PUA child"
+            );
+            assert!(
+                !elements.iter().any(|(_, label)| label.contains(&pua)),
+                "PUA codepoint must never appear in named icon elements"
+            );
+        }
+    }
+
+    fn hidden_named_icons_stay_out_of_tree() {
+        for view in [
+            resolve::render(glyph_icon().a11y_label("Remove draft").a11y_hidden(true)),
+            resolve::render(
+                waterui_icons_lucide::trash()
+                    .a11y_label("Remove draft")
+                    .a11y_hidden(true),
+            ),
+        ] {
+            let elements = visible_ax_elements(view.view());
+            assert!(
+                elements.is_empty(),
+                "a11y_hidden(true) icon must expose no accessibility elements, got {elements:?}"
+            );
+        }
+    }
+
+    fn button_with_icon_announces_only_label() {
+        let pua = PUA_CODEPOINT.to_string();
+        for view in [
+            resolve::render(button(label("Delete").icon(glyph_icon())).action(|| {})),
+            resolve::render(
+                button(label("Delete").icon(waterui_icons_lucide::trash())).action(|| {}),
+            ),
+        ] {
+            let mut views = Vec::new();
+            collect_views(view.view(), &mut views);
+            #[cfg(target_os = "macos")]
+            {
+                use cocoa_ui::objc2::runtime::ProtocolObject;
+                use cocoa_ui::objc2_app_kit::NSAccessibility;
+
+                let labels: Vec<String> = views
+                    .iter()
+                    .filter_map(|candidate| {
+                        let element = ProtocolObject::<dyn NSAccessibility>::from_ref(&**candidate);
+                        element
+                            .isAccessibilityElement()
+                            .then(|| element.accessibilityLabel().map(|l| l.to_string()))
+                            .flatten()
+                    })
+                    .collect();
+                assert_eq!(labels, vec![String::from("Delete")]);
+            }
+            #[cfg(target_os = "ios")]
+            {
+                let elements = visible_ax_elements(view.view());
+                assert_eq!(elements.len(), 1);
+                assert_eq!(elements[0].1, "Delete");
+            }
+            let elements = visible_ax_elements(view.view());
+            assert!(!elements.iter().any(|(_, label)| label.contains(&pua)));
         }
     }
 }

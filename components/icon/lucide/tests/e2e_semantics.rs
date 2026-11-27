@@ -57,6 +57,62 @@ fn repro_19_icon_larger_than_viewbox(app: &mut OffscreenApp) {
     );
 }
 
+fn unnamed_trash_icon_view() -> impl waterui::View {
+    waterui_icons_lucide::trash()
+}
+
+#[waterui::test(unnamed_trash_icon_view)]
+fn unnamed_lucide_icon_emits_no_slug_or_image_node(app: &mut SemanticApp) {
+    app.query().role(Role::IMAGE).assert_not_exists();
+    app.query().label("trash").assert_not_exists();
+}
+
+fn labeled_trash_icon_view() -> impl waterui::View {
+    waterui_icons_lucide::trash().a11y_label("Remove draft")
+}
+
+#[waterui::test(labeled_trash_icon_view)]
+fn labeled_lucide_icon_exposes_single_image_node(app: &mut SemanticApp) {
+    assert_eq!(
+        app.query()
+            .role(Role::IMAGE)
+            .label("Remove draft")
+            .all()
+            .len(),
+        1
+    );
+    app.query().label("trash").assert_not_exists();
+}
+
+fn hidden_trash_icon_view() -> impl waterui::View {
+    waterui_icons_lucide::trash()
+        .a11y_label("Remove draft")
+        .a11y_hidden(true)
+}
+
+#[waterui::test(hidden_trash_icon_view)]
+fn hidden_lucide_icon_is_absent(app: &mut SemanticApp) {
+    app.query().role(Role::IMAGE).assert_not_exists();
+    app.query().label("Remove draft").assert_not_exists();
+}
+
+fn delete_button_with_lucide_icon() -> impl waterui::View {
+    waterui::component::button(
+        waterui::component::label("Delete").icon(waterui_icons_lucide::trash()),
+    )
+    .action(|| {})
+}
+
+#[waterui::test(delete_button_with_lucide_icon)]
+fn button_with_lucide_icon_announces_only_control_label(app: &mut SemanticApp) {
+    assert_eq!(
+        app.query().role(Role::BUTTON).label("Delete").all().len(),
+        1
+    );
+    app.query().role(Role::IMAGE).assert_not_exists();
+    app.query().label("trash").assert_not_exists();
+}
+
 fn unsized_icon_view() -> impl waterui::View {
     waterui::component::scroll::scroll_both(
         waterui_icons_lucide::house()

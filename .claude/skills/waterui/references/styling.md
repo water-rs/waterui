@@ -369,6 +369,14 @@ channel (`.icon_size(..)`, defaulting to `24.0` points). Font Awesome's default
 `webfont` mode draws from bundled Font Awesome fonts (`fa-solid-900.ttf`,
 `fa-regular-400.ttf`, `fa-brands-400.ttf`); its `svg` feature needs no font.
 
+Portable `Icon` and `IconGlyph` are decorative (hidden from assistive technology)
+by default so screen readers never speak private-use Unicode codepoints or raw
+pack slugs; attach `.a11y_label("...")` on a standalone icon to publish an
+`AccessibilityRole::Image` node with that localized label, or `.a11y_hidden(true)`
+to keep it hidden explicitly. Inside labelled controls such as
+`button(label("Delete").icon(mdi::delete()))`, only the semantic control label
+is announced.
+
 Match the set to the design language: a Material 3 app uses Material icons, not Lucide.
 
 `SfSymbol` lives in `waterui-backend-core` strictly behind `#[cfg(target_vendor = "apple")]`

@@ -397,9 +397,14 @@ mod imp {
         element.setAccessibilityIdentifier(Some(identifier));
     }
 
-    /// Hides or unhides `element`: hiding removes it from the
+    /// Hides or unhides `element`: hiding removes it (and, for a
+    /// [`HostView`](crate::appkit::HostView), its descendant views) from the
     /// accessibility tree.
     pub fn set_hidden(element: &ProtocolObject<dyn NSAccessibility>, hidden: bool) {
+        let any: &AnyObject = element.as_ref();
+        if let Some(host) = any.downcast_ref::<crate::appkit::HostView>() {
+            host.set_accessibility_hidden(hidden);
+        }
         element.setAccessibilityElement(!hidden);
     }
 

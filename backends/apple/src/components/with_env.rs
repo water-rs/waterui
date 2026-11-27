@@ -99,8 +99,31 @@ pub fn realize_environment_metadata(
     let host_view: &PlatformView = &host;
 
     // The metadata's environment replaces the subtree's — `WuiWithEnv`
-    // resolved `metadata.content` against `metadata.value` alone.
-    let env = metadata.value;
+    // resolved `metadata.content` against `metadata.value` alone. Restore
+    // nearest-consumer accessibility metadata scoped above this wrapper so
+    // `icon.icon_size(..).a11y_label(..)` or snapshots taken prior to naming
+    // do not drop accessibility scope.
+    let mut env = metadata.value;
+    macro_rules! restore_a11y {
+        ($($ty:ty),+ $(,)?) => {
+            $(
+                if env.get::<$ty>().is_none()
+                    && let Some(value) = ctx.env().get::<$ty>().cloned()
+                {
+                    env.insert(value);
+                }
+            )+
+        };
+    }
+    restore_a11y!(
+        waterui_accessibility::AccessibilityLabel,
+        waterui_accessibility::AccessibilityValue,
+        waterui_accessibility::AccessibilityRole,
+        waterui_accessibility::AccessibilityHidden,
+        waterui_accessibility::AccessibilityChildren,
+        waterui_accessibility::AccessibilityGeometry,
+        waterui_accessibility::AccessibilityStateSignal,
+    );
     let child = ctx.with_env(&env).realize(metadata.content);
     // A handler around this wrapper resolves in the scope of the whole
     // env-only chain below it, so it sees every `.state(..)` install in

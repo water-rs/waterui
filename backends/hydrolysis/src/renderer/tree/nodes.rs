@@ -2417,6 +2417,13 @@ pub(super) fn emit_graphics_image_accessibility<E: crate::text::TextEngine>(
     if renderer.is_accessibility_hidden(env) {
         return None;
     }
+    let label = renderer.resolve_accessibility_label(env, default_label);
+    let value = renderer.resolve_accessibility_value(env, default_value);
+    if label.is_none() && value.is_none() && !focusable && env.get::<AccessibilityRole>().is_none()
+    {
+        renderer.note_suppressed_graphics_leaf(ctx);
+        return None;
+    }
     let mut node = AccessibilityNode::new(SemanticCore::<E>::resolve_accessibility_role(
         env,
         AccessibilityNodeRole::Image,
@@ -2427,10 +2434,10 @@ pub(super) fn emit_graphics_image_accessibility<E: crate::text::TextEngine>(
         // traversal reach it through this action.
         node.add_action(AccessibilityAction::Focus);
     }
-    if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
+    if let Some(label) = label {
         node.set_label(label);
     }
-    if let Some(value) = renderer.resolve_accessibility_value(env, default_value) {
+    if let Some(value) = value {
         node.set_value(value);
     }
     renderer.register_accessibility_leaf(ctx, node, env, None)

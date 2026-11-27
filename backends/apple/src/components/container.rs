@@ -1629,11 +1629,12 @@ pub fn realize_lazy_container<C: ChildView<AppleBackend>>(
     let host = HostView::new(mtm, Rect::ZERO);
 
     let lazy = LazyConfig::new(&*layout, virtualize_axes);
+    let child_env = crate::components::accessibility_metadata::child_env(ctx.env());
     let state = Rc::new(RefCell::new(ContainerState {
         layout,
         snapshot: contents.snapshot(),
         contents,
-        renderer: ctx.renderer(),
+        renderer: ctx.with_env(&child_env).renderer(),
         host: host.clone(),
         lazy,
         direction,
