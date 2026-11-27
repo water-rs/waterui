@@ -4742,6 +4742,7 @@ dependencies = [
  "waterui-frame-rate",
  "waterui-graphics",
  "waterui-icon",
+ "waterui-icons-lucide",
  "waterui-image",
  "waterui-inspector-protocol",
  "waterui-interaction",
@@ -13388,6 +13389,7 @@ name = "waterui-icon"
 version = "0.5.1"
 dependencies = [
  "waterui",
+ "waterui-accessibility",
  "waterui-core",
  "waterui-layout",
  "waterui-svg",

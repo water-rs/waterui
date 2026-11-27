@@ -2560,18 +2560,17 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         &mut self,
         ctx: Option<crate::renderer::RenderContext>,
     ) {
-        let Some(ctx) = ctx else {
-            return;
-        };
         if self.accessibility.suppression_depth > 0 {
             return;
         }
         let Some(&parent) = self.accessibility.parent_stack.last() else {
             return;
         };
-        let bounds = ctx.bounds();
-        if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
-            return;
+        if let Some(ctx) = ctx {
+            let bounds = ctx.bounds();
+            if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+                return;
+            }
         }
         self.accessibility.suppressed_leaf_parents.insert(parent);
     }

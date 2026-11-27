@@ -159,9 +159,10 @@ impl NativeBackend for AppleBackend {
     ) -> NativeLeaf {
         mark_reached!("fixed_container");
         let ctx = self.entry(env);
+        let child_env = crate::components::accessibility_metadata::child_env(env);
         crate::components::fixed_container::realize_fixed_container(
             native,
-            |child| child.realize(self, env, ()),
+            |child| child.realize(self, &child_env, ()),
             &ctx,
         )
     }
@@ -186,7 +187,10 @@ impl NativeBackend for AppleBackend {
         let ctx = self.entry(env);
         crate::components::scroll::realize_scroll_view(
             native,
-            |content, child_env| content.realize(self, child_env, ()),
+            |content, child_env| {
+                let child_env = crate::components::accessibility_metadata::child_env(child_env);
+                content.realize(self, &child_env, ())
+            },
             &ctx,
         )
     }

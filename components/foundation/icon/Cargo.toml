@@ -15,6 +15,7 @@ default = []
 svg = ["dep:waterui-svg", "dep:waterui-layout"]
 
 [dependencies]
+waterui-accessibility.workspace = true
 waterui-core.workspace = true
 waterui-text.workspace = true
 waterui-layout = { workspace = true, optional = true }
