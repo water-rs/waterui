@@ -359,7 +359,13 @@ fn gliding_tabs_look() -> (TabsLook, GlidingTabProbes) {
     );
 
     let look = TabsLook::new(
-        TabsMetrics::new(56.0, 64.0, 8.0, 4.0),
+        TabsMetrics {
+            bar_height: 56.0,
+            button_min_width: 64.0,
+            button_horizontal_inset: 8.0,
+            icon_label_spacing: 4.0,
+            icon_size: 24.0,
+        },
         Custom::new((), |recorder, frame, ()| {
             recorder.fill(frame, solid(0.95, 0.95, 0.97));
         }),

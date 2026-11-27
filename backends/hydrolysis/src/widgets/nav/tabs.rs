@@ -34,6 +34,7 @@ use waterui_core::layout::{LayoutDirection, ProposalSize, Size as LayoutSize, Vi
 use waterui_core::plugin::Plugin;
 use waterui_core::views::AnyViewsSnapshot;
 use waterui_graphics::color::Color;
+use waterui_icon::{DEFAULT_ICON_SIZE, IconSize};
 use waterui_text::font::Body;
 
 #[cfg(feature = "accessibility")]
@@ -97,6 +98,10 @@ pub struct TabsRenderState<E: crate::text::TextEngine> {
     /// The parts recorded from the look, held while the look, the frames
     /// and the tabs stay the same.
     parts: Option<LiveTabsParts>,
+    /// Live icon point size installed into each tab item's icon environment
+    /// via [`IconSize`], kept in sync with the active [`TabsMetrics::icon_size`]
+    /// so layout switches resize icons without rebuilding sub-views.
+    icon_size: Binding<f32>,
     _watch: BoxWatcherGuard,
 }
 
@@ -135,11 +140,20 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
             tabs_dirty,
             look: None,
             parts: None,
+            icon_size: Binding::new(DEFAULT_ICON_SIZE),
             _watch: watch,
         };
         state.reconcile();
         state.flush_pending_selection();
         state
+    }
+
+    /// Updates the live [`IconSize`] binding when `size` differs from its
+    /// current value, avoiding redundant reactive notifications.
+    fn set_icon_size(&self, size: f32) {
+        if (self.icon_size.snapshot() - size).abs() > f32::EPSILON {
+            self.icon_size.set(size);
+        }
     }
 
     /// The container's spec.
@@ -154,7 +168,9 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
         let spec = self.spec();
         if self.held(spec).is_none() {
             self.parts = None;
-            self.look = Some((spec, theme.tabs(&spec, env)));
+            let look = theme.tabs(&spec, env);
+            self.set_icon_size(look.metrics(TabItemLayout::Vertical).icon_size);
+            self.look = Some((spec, look));
         }
         self.held(spec).expect("the look was just ensured").clone()
     }
@@ -282,9 +298,10 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
         for tab in &mut self.tabs {
             let item_env = tab_reactive_env(tab.tag, &self.selection, look, env);
             let label_env = tab_label_env(&item_env, look);
+            let icon_env = tab_icon_env(&item_env, &self.icon_size);
             tab.label.ensure_built(renderer, &label_env);
             if let Some(icon) = &mut tab.icon {
-                icon.ensure_built(renderer, &item_env);
+                icon.ensure_built(renderer, &icon_env);
             }
             tab.content.ensure_built(renderer, env);
         }
@@ -456,27 +473,22 @@ pub fn measure_tabs_node<E: crate::text::TextEngine>(
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     // Decide the layout once from the bar's own extent so the measured bar
-    // and the drawn bar answer the same layout (see `tabs_decide_placement`).
+    // and the drawn bar answer the same layout (see `decide_tabs_placement`).
     let look = state.peek(theme, env);
-    let label_env = tab_label_env(env, Some(&look));
-    let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = state
-        .tabs
-        .iter()
-        .map(|tab| {
-            let label_size = tab.label.measure_built(hydro, &label_env, theme);
-            let icon_size = tab
-                .icon
-                .as_ref()
-                .map(|icon| icon.measure_built(hydro, env, theme));
-            (label_size, icon_size)
-        })
-        .collect();
     let margin = bottom_floating_margin(&look, state.style);
-    let (layout, metrics, compact_width) = tabs_decide_placement(
+    let DecidedTabsPlacement {
+        layout,
+        metrics,
+        compact_width,
+        item_sizes,
+    } = decide_tabs_placement(
+        state,
+        hydro,
+        env,
+        theme,
         &look,
         state.style,
         proposal.width.map(f64::from),
-        &item_sizes,
     );
     let content_proposal = tabs_content_proposal(
         proposal,
@@ -678,6 +690,11 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
     let [bar] = &chrome.bars;
     let content_rect = chrome.content;
     let measure_label_env = tab_label_env(env, Some(&look));
+    let measure_icon_env = {
+        let st = state.borrow();
+        st.set_icon_size(theme_metrics.icon_size);
+        tab_icon_env(env, &st.icon_size)
+    };
     let (bar_surface, divider, items_rect) = (
         bar_geometry.bar_surface,
         bar_geometry.divider,
@@ -702,7 +719,7 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
                 let icon_size = cell.tabs[index]
                     .icon
                     .as_ref()
-                    .map(|icon| icon.measure_built(ctx.state_mut(), env, &theme));
+                    .map(|icon| icon.measure_built(ctx.state_mut(), &measure_icon_env, &theme));
                 (label_size, icon_size)
             };
             let (icon, label) =
@@ -885,13 +902,14 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
                     let item_env = tab_item_env(env, &look, Some(index) == selected_index);
                     let item_label_env = tab_label_env(&item_env, Some(&look));
                     let mut st = state.borrow_mut();
+                    let item_icon_env = tab_icon_env(&item_env, &st.icon_size);
                     // The icon draws whether or not the label has text to show.
                     if let (Some(icon), Some(icon_rect)) = (&mut st.tabs[index].icon, icon_rect) {
                         let icon_area = bar.area_for(icon_rect);
                         icon.place(
                             ctx.renderer_mut(),
                             render_ctx,
-                            &item_env,
+                            &item_icon_env,
                             ProposalSize::UNSPECIFIED,
                             icon_rect,
                             icon_area,
@@ -990,6 +1008,14 @@ fn tab_label_env(env: &Environment, look: Option<&TabsLook>) -> Environment {
     scoped
 }
 
+/// The environment a tab's icon builds, measures, and places under: installs
+/// the reactive [`IconSize`] channel driven by the active [`TabsMetrics::icon_size`].
+fn tab_icon_env(env: &Environment, icon_size: &Binding<f32>) -> Environment {
+    let mut scoped = env.clone();
+    Plugin::install(IconSize::new(icon_size.clone()), &mut scoped);
+    scoped
+}
+
 fn tab_foreground_env(env: &Environment, color: Color) -> Environment {
     let mut scoped = env.clone();
     Plugin::install(ForegroundOverride::new(color), &mut scoped);
@@ -1020,28 +1046,27 @@ fn resolve_tabs_layout<E: TextEngine>(
 ) -> (TabItemLayout, TabsMetrics, Option<f64>, f64) {
     let margin = bottom_floating_margin(look, style);
     if style != TabStyle::Sidebar && matches!(look.get_bar_width(), TabBarWidth::Compact { .. }) {
-        let measure_label_env = tab_label_env(env, Some(look));
-        let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = {
+        {
             let mut st = state.borrow_mut();
             st.prebuild_labels_for_look(ctx.renderer_mut(), env, Some(look));
-            let renderer = ctx.renderer_mut();
-            st.tabs
-                .iter()
-                .map(|tab| {
-                    let label_size =
-                        tab.label
-                            .measure_built(renderer.state_mut(), &measure_label_env, theme);
-                    let icon_size = tab
-                        .icon
-                        .as_ref()
-                        .map(|icon| icon.measure_built(renderer.state_mut(), env, theme));
-                    (label_size, icon_size)
-                })
-                .collect()
-        };
-        let (layout, metrics, compact_width) =
-            tabs_decide_placement(look, style, Some(ctx.bounds.width()), &item_sizes);
-        return (layout, metrics, compact_width, margin);
+        }
+        let st = state.borrow();
+        let bounds_width = ctx.bounds.width();
+        let decided = decide_tabs_placement(
+            &st,
+            ctx.state_mut(),
+            env,
+            theme,
+            look,
+            style,
+            Some(bounds_width),
+        );
+        return (
+            decided.layout,
+            decided.metrics,
+            decided.compact_width,
+            margin,
+        );
     }
     let base_extent = tabs_bar_item_extent(ctx.bounds.width(), style, look);
     let extent = if style == TabStyle::Sidebar {
@@ -1050,7 +1075,9 @@ fn resolve_tabs_layout<E: TextEngine>(
         margin.mul_add(-2.0, base_extent).max(0.0)
     };
     let layout = look.item_layout(crate::num_cast::f64_as_f32(extent));
-    (layout, look.metrics(layout), None, margin)
+    let metrics = look.metrics(layout);
+    state.borrow().set_icon_size(metrics.icon_size);
+    (layout, metrics, None, margin)
 }
 
 /// Reactive `Foreground` override installed when building a tab item's icon
@@ -1125,22 +1152,141 @@ fn compact_bar_width(
     }
 }
 
-fn tabs_decide_placement(
+fn measure_tab_labels<E: TextEngine>(
+    tabs: &[TabRenderState<E>],
+    hydro: &mut HydroState<E>,
+    label_env: &Environment,
+    theme: &Rc<dyn WidgetTheme>,
+) -> Vec<LayoutSize> {
+    tabs.iter()
+        .map(|tab| tab.label.measure_built(hydro, label_env, theme))
+        .collect()
+}
+
+fn measure_tab_icons<E: TextEngine>(
+    tabs: &[TabRenderState<E>],
+    hydro: &mut HydroState<E>,
+    icon_env: &Environment,
+    theme: &Rc<dyn WidgetTheme>,
+) -> Vec<Option<LayoutSize>> {
+    tabs.iter()
+        .map(|tab| {
+            tab.icon
+                .as_ref()
+                .map(|icon| icon.measure_built(hydro, icon_env, theme))
+        })
+        .collect()
+}
+
+fn zip_tab_item_sizes(
+    label_sizes: &[LayoutSize],
+    icon_sizes: Vec<Option<LayoutSize>>,
+) -> Vec<(LayoutSize, Option<LayoutSize>)> {
+    label_sizes.iter().copied().zip(icon_sizes).collect()
+}
+
+struct DecidedTabsPlacement {
+    layout: TabItemLayout,
+    metrics: TabsMetrics,
+    compact_width: Option<f64>,
+    item_sizes: Vec<(LayoutSize, Option<LayoutSize>)>,
+}
+
+/// Decides item layout, active [`TabsMetrics`], optional compact pill width,
+/// and measured `(label, icon)` sizes while keeping [`TabsRenderState::icon_size`]
+/// synchronized with the active metrics without rebuilding icon sub-views.
+#[expect(
+    clippy::too_many_lines,
+    reason = "handles fixed-extent, unconstrained full-width, and compact-pill breakpoint resolution in one pass"
+)]
+fn decide_tabs_placement<E: TextEngine>(
+    state: &TabsRenderState<E>,
+    hydro: &mut HydroState<E>,
+    env: &Environment,
+    theme: &Rc<dyn WidgetTheme>,
     look: &TabsLook,
     style: TabStyle,
     proposed_width: Option<f64>,
-    item_sizes: &[(LayoutSize, Option<LayoutSize>)],
-) -> (TabItemLayout, TabsMetrics, Option<f64>) {
+) -> DecidedTabsPlacement {
+    let label_env = tab_label_env(env, Some(look));
+    let icon_env = tab_icon_env(env, &state.icon_size);
+    let label_sizes = measure_tab_labels(&state.tabs, hydro, &label_env, theme);
+
     if style == TabStyle::Sidebar {
-        let (layout, metrics) = tabs_decide_layout(look, style, proposed_width, item_sizes);
-        return (layout, metrics, None);
+        let extent = tabs_bar_item_extent(proposed_width.unwrap_or(0.0), style, look);
+        let layout = look.item_layout(crate::num_cast::f64_as_f32(extent));
+        let metrics = look.metrics(layout);
+        state.set_icon_size(metrics.icon_size);
+        let icon_sizes = measure_tab_icons(&state.tabs, hydro, &icon_env, theme);
+        return DecidedTabsPlacement {
+            layout,
+            metrics,
+            compact_width: None,
+            item_sizes: zip_tab_item_sizes(&label_sizes, icon_sizes),
+        };
     }
+
     let margin = bottom_floating_margin(look, style);
     let available = proposed_width.map(|width| margin.mul_add(-2.0, width).max(0.0));
     match look.get_bar_width() {
         TabBarWidth::Full => {
-            let (layout, metrics) = tabs_decide_layout(look, style, available, item_sizes);
-            (layout, metrics, None)
+            if let Some(available_width) = available {
+                let extent = tabs_bar_item_extent(available_width, style, look);
+                let layout = look.item_layout(crate::num_cast::f64_as_f32(extent));
+                let metrics = look.metrics(layout);
+                state.set_icon_size(metrics.icon_size);
+                let icon_sizes = measure_tab_icons(&state.tabs, hydro, &icon_env, theme);
+                return DecidedTabsPlacement {
+                    layout,
+                    metrics,
+                    compact_width: None,
+                    item_sizes: zip_tab_item_sizes(&label_sizes, icon_sizes),
+                };
+            }
+            let vertical_metrics = look.metrics(TabItemLayout::Vertical);
+            let horizontal_metrics = look.metrics(TabItemLayout::Horizontal);
+            let label_only_extent: f64 = label_sizes
+                .iter()
+                .map(|&label_size| {
+                    tabs_item_natural_width(
+                        label_size,
+                        None,
+                        &vertical_metrics,
+                        TabItemLayout::Vertical,
+                    )
+                })
+                .sum();
+            if look.item_layout(crate::num_cast::f64_as_f32(label_only_extent))
+                == TabItemLayout::Horizontal
+            {
+                state.set_icon_size(horizontal_metrics.icon_size);
+                let icon_sizes = measure_tab_icons(&state.tabs, hydro, &icon_env, theme);
+                return DecidedTabsPlacement {
+                    layout: TabItemLayout::Horizontal,
+                    metrics: horizontal_metrics,
+                    compact_width: None,
+                    item_sizes: zip_tab_item_sizes(&label_sizes, icon_sizes),
+                };
+            }
+            state.set_icon_size(vertical_metrics.icon_size);
+            let mut item_sizes = zip_tab_item_sizes(
+                &label_sizes,
+                measure_tab_icons(&state.tabs, hydro, &icon_env, theme),
+            );
+            let (layout, metrics) = tabs_decide_layout(look, style, None, &item_sizes);
+            if (metrics.icon_size - vertical_metrics.icon_size).abs() > f32::EPSILON {
+                state.set_icon_size(metrics.icon_size);
+                item_sizes = zip_tab_item_sizes(
+                    &label_sizes,
+                    measure_tab_icons(&state.tabs, hydro, &icon_env, theme),
+                );
+            }
+            DecidedTabsPlacement {
+                layout,
+                metrics,
+                compact_width: None,
+                item_sizes,
+            }
         }
         TabBarWidth::Compact {
             item_min_width,
@@ -1151,8 +1297,89 @@ fn tabs_decide_placement(
             let max_width = max_width.map(f64::from);
             let horizontal_padding = f64::from(horizontal_padding);
             let vertical_metrics = look.metrics(TabItemLayout::Vertical);
+            let horizontal_metrics = look.metrics(TabItemLayout::Horizontal);
+
+            let upper_bound = match (available, max_width) {
+                (Some(a), Some(m)) if m.is_finite() && m >= 0.0 => Some(a.min(m)),
+                (Some(a), _) => Some(a),
+                (None, Some(m)) if m.is_finite() && m >= 0.0 => Some(m),
+                (None, _) => None,
+            };
+            let cannot_be_horizontal = upper_bound.is_some_and(|bound| {
+                look.item_layout(crate::num_cast::f64_as_f32(bound)) == TabItemLayout::Vertical
+            });
+            if cannot_be_horizontal {
+                state.set_icon_size(vertical_metrics.icon_size);
+                let item_sizes = zip_tab_item_sizes(
+                    &label_sizes,
+                    measure_tab_icons(&state.tabs, hydro, &icon_env, theme),
+                );
+                let mut pill_width = compact_bar_width(
+                    &item_sizes,
+                    &vertical_metrics,
+                    TabItemLayout::Vertical,
+                    item_min_width,
+                    max_width,
+                    horizontal_padding,
+                );
+                if let Some(available) = available {
+                    pill_width = pill_width.min(available);
+                }
+                return DecidedTabsPlacement {
+                    layout: TabItemLayout::Vertical,
+                    metrics: vertical_metrics,
+                    compact_width: Some(pill_width),
+                    item_sizes,
+                };
+            }
+
+            let label_only_items: Vec<(LayoutSize, Option<LayoutSize>)> =
+                label_sizes.iter().map(|&label| (label, None)).collect();
+            let mut min_vertical_width = compact_bar_width(
+                &label_only_items,
+                &vertical_metrics,
+                TabItemLayout::Vertical,
+                item_min_width,
+                max_width,
+                horizontal_padding,
+            );
+            if let Some(available) = available {
+                min_vertical_width = min_vertical_width.min(available);
+            }
+            if look.item_layout(crate::num_cast::f64_as_f32(min_vertical_width))
+                == TabItemLayout::Horizontal
+            {
+                state.set_icon_size(horizontal_metrics.icon_size);
+                let item_sizes = zip_tab_item_sizes(
+                    &label_sizes,
+                    measure_tab_icons(&state.tabs, hydro, &icon_env, theme),
+                );
+                let mut pill_width = compact_bar_width(
+                    &item_sizes,
+                    &horizontal_metrics,
+                    TabItemLayout::Horizontal,
+                    item_min_width,
+                    max_width,
+                    horizontal_padding,
+                );
+                if let Some(available) = available {
+                    pill_width = pill_width.min(available);
+                }
+                return DecidedTabsPlacement {
+                    layout: TabItemLayout::Horizontal,
+                    metrics: horizontal_metrics,
+                    compact_width: Some(pill_width),
+                    item_sizes,
+                };
+            }
+
+            state.set_icon_size(vertical_metrics.icon_size);
+            let mut item_sizes = zip_tab_item_sizes(
+                &label_sizes,
+                measure_tab_icons(&state.tabs, hydro, &icon_env, theme),
+            );
             let mut vertical_width = compact_bar_width(
-                item_sizes,
+                &item_sizes,
                 &vertical_metrics,
                 TabItemLayout::Vertical,
                 item_min_width,
@@ -1164,10 +1391,17 @@ fn tabs_decide_placement(
             }
             let layout = look.item_layout(crate::num_cast::f64_as_f32(vertical_width));
             let metrics = look.metrics(layout);
+            if (metrics.icon_size - vertical_metrics.icon_size).abs() > f32::EPSILON {
+                state.set_icon_size(metrics.icon_size);
+                item_sizes = zip_tab_item_sizes(
+                    &label_sizes,
+                    measure_tab_icons(&state.tabs, hydro, &icon_env, theme),
+                );
+            }
             let mut pill_width = match layout {
                 TabItemLayout::Vertical => vertical_width,
                 TabItemLayout::Horizontal => compact_bar_width(
-                    item_sizes,
+                    &item_sizes,
                     &metrics,
                     TabItemLayout::Horizontal,
                     item_min_width,
@@ -1178,7 +1412,12 @@ fn tabs_decide_placement(
             if let Some(available) = available {
                 pill_width = pill_width.min(available);
             }
-            (layout, metrics, Some(pill_width))
+            DecidedTabsPlacement {
+                layout,
+                metrics,
+                compact_width: Some(pill_width),
+                item_sizes,
+            }
         }
     }
 }

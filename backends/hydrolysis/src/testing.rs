@@ -137,7 +137,13 @@ pub fn plain_navigation_look() -> crate::theme::NavigationBarLook {
 #[must_use]
 #[cfg(waterui_feature = "navigation")]
 pub const fn plain_tabs_metrics() -> crate::theme::TabsMetrics {
-    crate::theme::TabsMetrics::new(48.0, 48.0, 16.0, 4.0)
+    crate::theme::TabsMetrics {
+        bar_height: 48.0,
+        button_min_width: 48.0,
+        button_horizontal_inset: 16.0,
+        icon_label_spacing: 4.0,
+        icon_size: 24.0,
+    }
 }
 
 /// The motion of a test style's tab highlights: 15 milliseconds, linear.
