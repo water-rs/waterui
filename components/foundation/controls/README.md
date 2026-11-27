@@ -348,7 +348,7 @@ fn note(value: &Binding<Str>) -> impl View {
 | `Toggle` | `Toggle::new(label, &Binding<bool>)`, `toggle(label, &binding)` | `switch()` / `checkbox()` presentation |
 | `Slider` | `Slider::new(label, &Binding<T: SliderValue>)`, `slider(label, &binding)` | `range`, `step`, `value_formatter`, `min_value_label`, `max_value_label` |
 | `Stepper` | `Stepper::new(label, &Binding<T: StepperValue>)`, `stepper(label, &binding)` | `range`, `step`, `value_formatter` |
-| `TextField` | `TextField::new(label, &Binding<T: TextFieldValue>)`, `field(label, &binding)` | `prompt`, `keyboard`, `line_limit`, `selection_menu` |
+| `TextField` | `TextField::new(label, &Binding<T: TextFieldValue>)`, `field(label, &binding)` | `prompt`, `keyboard`, `content_type`, `autocapitalization`, `autocorrect`, `submit_label`, `line_limit`, `selection_menu`, `on_submit` |
 | `Menu` | `Menu::new(label, impl MenuView)` | Renders as a popup trigger, or nests inside another menu |
 
 ### Labels
@@ -381,7 +381,9 @@ fn note(value: &Binding<Str>) -> impl View {
 - `ControlSize` — `ExtraSmall`, `Small`, `Medium`, `Large`, `ExtraLarge`, shared by buttons and sliders;
   scales height, padding, icon size, and corner shape together.
 - `ToggleStyle` — `Automatic`, `Switch`, `Checkbox`.
-- `input::KeyboardType` — `Text`, `Email`, `URL`, `Number`, `PhoneNumber`.
+- `input::KeyboardType` — `Text`, `Email`, `URL`, `Number`, `Decimal`, `PhoneNumber`.
+- `input::Capitalization` — `None`, `Words`, `Sentences`, `Characters`.
+- `input::SubmitLabel` — `Return`, `Done`, `Go`, `Next`, `Search`, `Send`, `Join`, `Continue`.
 
 ### Backend-facing configuration
 

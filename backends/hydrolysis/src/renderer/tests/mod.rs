@@ -777,6 +777,7 @@ fn text_field_model(value: &str, line_limit: Option<usize>) -> TextInputModel {
         line_limit,
         selection_menu: empty_selection_menu(),
         on_submit: None,
+        input: crate::renderer::text_editing::TextInputOptions::default(),
     }
 }
 

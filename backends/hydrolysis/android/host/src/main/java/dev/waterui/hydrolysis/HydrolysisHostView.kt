@@ -743,26 +743,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         // the mirror so the IMM's first queries agree with the editor.
         val state = editingState()
         inputContract = InputContract.from(state)
-        val password = state?.password == true
-        outAttrs.inputType =
-            EditorInfo.TYPE_CLASS_TEXT or
-                (if (password) {
-                    EditorInfo.TYPE_TEXT_VARIATION_PASSWORD or EditorInfo.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-                } else {
-                    0
-                }) or
-                (if (!password && (state == null || !state.singleLine)) {
-                    EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE
-                } else {
-                    0
-                })
-        outAttrs.imeOptions =
-            (if (state?.hasSubmit == true) EditorInfo.IME_ACTION_DONE else EditorInfo.IME_ACTION_NONE) or
-                EditorInfo.IME_FLAG_NO_FULLSCREEN or
-                (if (password) EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING else 0)
-        outAttrs.initialSelStart = state?.selStart ?: 0
-        outAttrs.initialSelEnd = state?.selEnd ?: 0
-        outAttrs.initialCapsMode = 0
+        applyEditorInfo(outAttrs, state)
         val connection =
             HydrolysisInputConnection(
                 this,
@@ -896,6 +877,79 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
 }
 
 /**
+ * Populates [EditorInfo] from the focused editor's resolved input options.
+ */
+internal fun applyEditorInfo(outAttrs: EditorInfo, state: EditingStatePayload?) {
+    val password = state?.password == true
+    val singleLine = state?.singleLine == true
+    outAttrs.inputType =
+        if (password) {
+            EditorInfo.TYPE_CLASS_TEXT or
+                EditorInfo.TYPE_TEXT_VARIATION_PASSWORD or
+                EditorInfo.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        } else {
+            when (state?.keyboard) {
+                "number" -> EditorInfo.TYPE_CLASS_NUMBER
+                "decimal" -> EditorInfo.TYPE_CLASS_NUMBER or EditorInfo.TYPE_NUMBER_FLAG_DECIMAL
+                "phoneNumber" -> EditorInfo.TYPE_CLASS_PHONE
+                else -> {
+                    val variation =
+                        when (state?.keyboard) {
+                            "email" -> EditorInfo.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+                            "url" -> EditorInfo.TYPE_TEXT_VARIATION_URI
+                            else -> 0
+                        }
+                    val capitalization =
+                        when (state?.capitalization) {
+                            "none" -> 0
+                            "words" -> EditorInfo.TYPE_TEXT_FLAG_CAP_WORDS
+                            "characters" -> EditorInfo.TYPE_TEXT_FLAG_CAP_CHARACTERS
+                            else -> EditorInfo.TYPE_TEXT_FLAG_CAP_SENTENCES
+                        }
+                    val autocorrect =
+                        if (state?.autocorrect == false) {
+                            EditorInfo.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                        } else {
+                            EditorInfo.TYPE_TEXT_FLAG_AUTO_CORRECT
+                        }
+                    val multiLine =
+                        if (state == null || !singleLine) {
+                            EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE
+                        } else {
+                            0
+                        }
+                    EditorInfo.TYPE_CLASS_TEXT or
+                        variation or
+                        capitalization or
+                        autocorrect or
+                        multiLine
+                }
+            }
+        }
+    val action =
+        when (state?.submitLabel) {
+            "done" -> EditorInfo.IME_ACTION_DONE
+            "go", "join" -> EditorInfo.IME_ACTION_GO
+            "next", "continue" -> EditorInfo.IME_ACTION_NEXT
+            "search" -> EditorInfo.IME_ACTION_SEARCH
+            "send" -> EditorInfo.IME_ACTION_SEND
+            else ->
+                if (state?.hasSubmit == true) {
+                    EditorInfo.IME_ACTION_DONE
+                } else {
+                    EditorInfo.IME_ACTION_NONE
+                }
+        }
+    outAttrs.imeOptions =
+        action or
+            EditorInfo.IME_FLAG_NO_FULLSCREEN or
+            (if (password) EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING else 0)
+    outAttrs.initialSelStart = state?.selStart ?: 0
+    outAttrs.initialSelEnd = state?.selEnd ?: 0
+    outAttrs.initialCapsMode = 0
+}
+
+/**
  * The slice of an editing-state push that [EditorInfo] is built from.
  * Text and selection stay on the live connection; the IME reads these
  * only when the connection is created.
@@ -906,6 +960,10 @@ private data class InputContract(
     val password: Boolean,
     val singleLine: Boolean,
     val hasSubmit: Boolean,
+    val keyboard: String,
+    val capitalization: String,
+    val autocorrect: Boolean,
+    val submitLabel: String,
 ) {
     companion object {
         fun from(state: EditingStatePayload?): InputContract =
@@ -916,6 +974,10 @@ private data class InputContract(
                     password = false,
                     singleLine = false,
                     hasSubmit = false,
+                    keyboard = "text",
+                    capitalization = "sentences",
+                    autocorrect = true,
+                    submitLabel = "return",
                 )
             } else {
                 InputContract(
@@ -924,6 +986,10 @@ private data class InputContract(
                     password = state.password,
                     singleLine = state.singleLine,
                     hasSubmit = state.hasSubmit,
+                    keyboard = state.keyboard,
+                    capitalization = state.capitalization,
+                    autocorrect = state.autocorrect,
+                    submitLabel = state.submitLabel,
                 )
             }
     }

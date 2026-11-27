@@ -35,6 +35,7 @@ use crate::action::ControlEvents;
 use crate::callback::guarded;
 use crate::geometry::Size;
 use crate::uikit::key_commands::{KeyCommandRegistry, KeyCommands};
+use crate::uikit::text_input::{Autocapitalization, Autocorrection, ReturnKey};
 
 /// The on-screen keyboard a [`TextField`] requests while editing.
 ///
@@ -49,8 +50,10 @@ pub enum Keyboard {
     Email,
     /// URL input.
     Url,
-    /// Numeric input.
+    /// Integer numeric input.
     Number,
+    /// Decimal numeric input — digits and the locale's decimal separator.
+    Decimal,
     /// Phone-number input.
     PhoneNumber,
 }
@@ -63,6 +66,7 @@ impl Keyboard {
             Self::Email => UIKeyboardType::EmailAddress,
             Self::Url => UIKeyboardType::URL,
             Self::Number => UIKeyboardType::NumberPad,
+            Self::Decimal => UIKeyboardType::DecimalPad,
             Self::PhoneNumber => UIKeyboardType::PhonePad,
         }
     }
@@ -253,6 +257,37 @@ impl TextField {
         // `UITextField` — see `send_trait_setter`.
         unsafe {
             send_trait_setter(self, sel!(setKeyboardType:), keyboard.native());
+        }
+    }
+
+    /// How the on-screen keyboard capitalizes typed text (`UITextAutocapitalizationType`).
+    pub fn set_autocapitalization(&self, capitalization: Autocapitalization) {
+        // SAFETY: `setAutocapitalizationType:` is a `UITextInputTraits` setter on
+        // `UITextField` — see `send_trait_setter`.
+        unsafe {
+            send_trait_setter(
+                self,
+                sel!(setAutocapitalizationType:),
+                capitalization.native(),
+            );
+        }
+    }
+
+    /// Whether the on-screen keyboard autocorrects typed text (`UITextAutocorrectionType`).
+    pub fn set_autocorrection(&self, autocorrection: Autocorrection) {
+        // SAFETY: `setAutocorrectionType:` is a `UITextInputTraits` setter on
+        // `UITextField` — see `send_trait_setter`.
+        unsafe {
+            send_trait_setter(self, sel!(setAutocorrectionType:), autocorrection.native());
+        }
+    }
+
+    /// The label and action shown on the software keyboard's Return key (`UIReturnKeyType`).
+    pub fn set_return_key(&self, return_key: ReturnKey) {
+        // SAFETY: `setReturnKeyType:` is a `UITextInputTraits` setter on
+        // `UITextField` — see `send_trait_setter`.
+        unsafe {
+            send_trait_setter(self, sel!(setReturnKeyType:), return_key.native());
         }
     }
 

@@ -5,7 +5,46 @@ use crate::text::{TextLayout as _, TextPosition, TextSelection};
 use crate::theme::MenuLayout;
 use cherenkov_record::Draw as _;
 use unicode_segmentation::UnicodeSegmentation;
+use waterui_controls::input::{Capitalization, ContentType, KeyboardType, SubmitLabel};
 use waterui_core::contract_violation;
+
+/// Resolved software-keyboard and input-method options carried from a text
+/// field into platform editing sessions (`UIKit` `UITextInputTraits`, Android
+/// `EditorInfo`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextInputOptions {
+    pub(crate) keyboard: KeyboardType,
+    pub(crate) content_type: Option<ContentType>,
+    pub(crate) autocapitalization: Capitalization,
+    pub(crate) autocorrect: bool,
+    pub(crate) submit_label: SubmitLabel,
+}
+
+impl Default for TextInputOptions {
+    fn default() -> Self {
+        Self {
+            keyboard: KeyboardType::Text,
+            content_type: None,
+            autocapitalization: Capitalization::Sentences,
+            autocorrect: true,
+            submit_label: SubmitLabel::Return,
+        }
+    }
+}
+
+impl TextInputOptions {
+    /// Resolved input options for a password secure field.
+    #[cfg(feature = "secure-field")]
+    pub(crate) const fn password_default() -> Self {
+        Self {
+            keyboard: KeyboardType::Text,
+            content_type: Some(ContentType::Password),
+            autocapitalization: Capitalization::None,
+            autocorrect: false,
+            submit_label: SubmitLabel::Return,
+        }
+    }
+}
 
 /// The paints a field's look gives the caret and the selection, evaluated
 /// each frame the overlay draws so a token they follow shows in place.
@@ -47,6 +86,8 @@ pub enum TextInputModel {
         /// `TextField::on_submit` — run on Return in a line-limited field; a
         /// field without one leaves the key unconsumed so it bubbles.
         on_submit: Option<SharedAction>,
+        /// Resolved keyboard, capitalization, autocorrection, submit-key, and autofill options.
+        input: TextInputOptions,
     },
     #[cfg(feature = "secure-field")]
     SecureField { value: nami::Binding<FormSecure> },
@@ -272,6 +313,8 @@ pub struct FocusedEditorSnapshot<E: crate::text::TextEngine> {
     /// Whether the field declares `on_submit` — the editor action an IME's
     /// Done key fires.
     pub(crate) has_submit: bool,
+    /// Resolved keyboard, capitalization, autocorrection, submit-key, and autofill options.
+    pub(crate) input: TextInputOptions,
     /// The field's hit bounds in window logical coordinates — the editor
     /// bounds an IME sizes candidate windows against.
     pub(crate) bounds: kurbo::Rect,
@@ -493,6 +536,15 @@ impl TextInputModel {
             Self::TextField { .. } => false,
             #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => true,
+        }
+    }
+
+    pub(crate) const fn input_options(&self) -> TextInputOptions {
+        match self {
+            #[cfg(feature = "text-field")]
+            Self::TextField { input, .. } => *input,
+            #[cfg(feature = "secure-field")]
+            Self::SecureField { .. } => TextInputOptions::password_default(),
         }
     }
 
@@ -1553,6 +1605,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             password: target.model.is_secure(),
             line_limit: target.model.line_limit(),
             has_submit: target.model.submit_action().is_some(),
+            input: target.model.input_options(),
             bounds: target.bounds,
             cursor_area: target.cursor_area,
             text_bounds: target.text_bounds,
@@ -2441,6 +2494,7 @@ mod tests {
             line_limit,
             on_submit: None,
             selection_menu: empty_selection_menu(),
+            input: TextInputOptions::default(),
         }
     }
 

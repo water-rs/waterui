@@ -15,12 +15,17 @@ use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 
+use cocoa_ui::ContentType as KitContentType;
 use cocoa_ui::geometry::Rect;
 use cocoa_ui::uikit::text_input::{
     Autocapitalization, Autocorrection, KeyboardType, ReturnKey, TextInputClient,
     TextInputNotifier, TextInputTraits,
 };
 use kurbo::Point;
+use waterui_controls::input::{
+    Capitalization as WaterCapitalization, ContentType as WaterContentType,
+    KeyboardType as WaterKeyboardType, SubmitLabel as WaterSubmitLabel,
+};
 
 use crate::renderer::{FocusedEditorSnapshot, SemanticCore};
 use crate::runner::editing::{EditingSession, utf16_len, utf16_to_byte};
@@ -137,27 +142,73 @@ impl ImeShared {
 }
 
 /// The keyboard a focused editor asks for.
-fn traits_of(snapshot: &FocusedEditorSnapshot<ParleyEngine>) -> TextInputTraits {
-    let single_line = snapshot.line_limit == Some(1);
+const fn traits_of(snapshot: &FocusedEditorSnapshot<ParleyEngine>) -> TextInputTraits {
+    let input = snapshot.input;
+    let keyboard_type = match input.keyboard {
+        WaterKeyboardType::Text => KeyboardType::Default,
+        WaterKeyboardType::Email => KeyboardType::EmailAddress,
+        WaterKeyboardType::URL => KeyboardType::Url,
+        WaterKeyboardType::Number => KeyboardType::NumberPad,
+        WaterKeyboardType::Decimal => KeyboardType::DecimalPad,
+        WaterKeyboardType::PhoneNumber => KeyboardType::PhonePad,
+        _ => KeyboardType::Default,
+    };
+    let return_key = match input.submit_label {
+        WaterSubmitLabel::Return => {
+            if snapshot.has_submit {
+                ReturnKey::Done
+            } else {
+                ReturnKey::Default
+            }
+        }
+        WaterSubmitLabel::Done => ReturnKey::Done,
+        WaterSubmitLabel::Go => ReturnKey::Go,
+        WaterSubmitLabel::Next => ReturnKey::Next,
+        WaterSubmitLabel::Search => ReturnKey::Search,
+        WaterSubmitLabel::Send => ReturnKey::Send,
+        WaterSubmitLabel::Join => ReturnKey::Join,
+        WaterSubmitLabel::Continue => ReturnKey::Continue,
+        _ => ReturnKey::Default,
+    };
+    let autocorrection = if snapshot.password || !input.autocorrect {
+        Autocorrection::Disabled
+    } else {
+        Autocorrection::Enabled
+    };
+    let autocapitalization = if snapshot.password {
+        Autocapitalization::None
+    } else {
+        match input.autocapitalization {
+            WaterCapitalization::None => Autocapitalization::None,
+            WaterCapitalization::Words => Autocapitalization::Words,
+            WaterCapitalization::Sentences => Autocapitalization::Sentences,
+            WaterCapitalization::Characters => Autocapitalization::AllCharacters,
+            _ => Autocapitalization::Sentences,
+        }
+    };
+    let content_type = if let Some(kind) = input.content_type {
+        Some(match kind {
+            WaterContentType::Username => KitContentType::Username,
+            WaterContentType::Password => KitContentType::Password,
+            WaterContentType::NewPassword => KitContentType::NewPassword,
+            WaterContentType::EmailAddress => KitContentType::EmailAddress,
+            WaterContentType::PhoneNumber => KitContentType::PhoneNumber,
+            WaterContentType::OneTimeCode => KitContentType::OneTimeCode,
+            WaterContentType::PersonName => KitContentType::PersonName,
+            WaterContentType::PostalAddress => KitContentType::PostalAddress,
+            WaterContentType::PostalCode => KitContentType::PostalCode,
+            WaterContentType::CreditCardNumber => KitContentType::CreditCardNumber,
+        })
+    } else {
+        None
+    };
     TextInputTraits {
-        keyboard_type: KeyboardType::Default,
-        return_key: if snapshot.has_submit {
-            ReturnKey::Done
-        } else {
-            ReturnKey::Default
-        },
+        keyboard_type,
+        return_key,
         secure: snapshot.password,
-        autocorrection: if snapshot.password {
-            Autocorrection::Disabled
-        } else {
-            Autocorrection::Default
-        },
-        autocapitalization: if snapshot.password || !single_line {
-            Autocapitalization::None
-        } else {
-            Autocapitalization::Sentences
-        },
-        content_type: None,
+        autocorrection,
+        autocapitalization,
+        content_type,
     }
 }
 

@@ -75,6 +75,7 @@ pub use field_editor::{ImeBridge, editing_state_json};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 mod field_editor {
     use serde::Serialize;
+    use waterui_controls::input::{Capitalization, KeyboardType, SubmitLabel};
 
     use crate::platform::PlatformWindow;
     use crate::runner::editing::{AnchorInfo, EditingSession, EditingState, EditorContextAction};
@@ -141,6 +142,46 @@ mod field_editor {
         password: bool,
         single_line: bool,
         has_submit: bool,
+        keyboard: &'static str,
+        capitalization: &'static str,
+        autocorrect: bool,
+        submit_label: &'static str,
+    }
+
+    const fn wire_keyboard(keyboard: KeyboardType) -> &'static str {
+        match keyboard {
+            KeyboardType::Text => "text",
+            KeyboardType::Email => "email",
+            KeyboardType::URL => "url",
+            KeyboardType::Number => "number",
+            KeyboardType::Decimal => "decimal",
+            KeyboardType::PhoneNumber => "phoneNumber",
+            _ => "text",
+        }
+    }
+
+    const fn wire_capitalization(capitalization: Capitalization) -> &'static str {
+        match capitalization {
+            Capitalization::None => "none",
+            Capitalization::Words => "words",
+            Capitalization::Sentences => "sentences",
+            Capitalization::Characters => "characters",
+            _ => "sentences",
+        }
+    }
+
+    const fn wire_submit_label(label: SubmitLabel) -> &'static str {
+        match label {
+            SubmitLabel::Return => "return",
+            SubmitLabel::Done => "done",
+            SubmitLabel::Go => "go",
+            SubmitLabel::Next => "next",
+            SubmitLabel::Search => "search",
+            SubmitLabel::Send => "send",
+            SubmitLabel::Join => "join",
+            SubmitLabel::Continue => "continue",
+            _ => "return",
+        }
     }
 
     /// The editing state as the JSON the connection's `Editable` mirror reads.
@@ -160,6 +201,10 @@ mod field_editor {
             password: state.password,
             single_line: state.single_line,
             has_submit: state.has_submit,
+            keyboard: wire_keyboard(state.input.keyboard),
+            capitalization: wire_capitalization(state.input.autocapitalization),
+            autocorrect: state.input.autocorrect,
+            submit_label: wire_submit_label(state.input.submit_label),
         })
     }
 

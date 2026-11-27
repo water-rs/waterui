@@ -477,14 +477,23 @@ pub fn components_block_14() {
         // multi-line: Return inserts a line break
         TextField::new("Notes", &notes).line_limit(None::<NonZeroUsize>)
     };
-    use waterui::component::text_field::{ContentType, KeyboardType}; // NOT in the prelude
+    use waterui::component::text_field::{Capitalization, ContentType, KeyboardType, SubmitLabel}; // NOT in the prelude
     let _ = {
         // .content_type declares what the field means, for autofill — it is
-        // what makes Apple offer the received SMS code; pair with .keyboard(..)
+        // what makes Apple offer the received SMS code, and implies keyboard,
+        // capitalization and autocorrection defaults unless overridden
         TextField::new("Verification code", &code)
             .keyboard(KeyboardType::Number)
             .content_type(ContentType::OneTimeCode)
     };
+    let price = Binding::new(Str::from(""));
+    let _ = {
+        field("Name", &name)
+            .autocapitalization(Capitalization::Words)
+            .autocorrect(false)
+            .submit_label(SubmitLabel::Next)
+    };
+    let _ = { field("Price", &price).keyboard(KeyboardType::Decimal) };
     let _ = {
         // .selection_menu adds commands to the selected-text menu; a command
         // takes the field's live selection as a handler parameter
