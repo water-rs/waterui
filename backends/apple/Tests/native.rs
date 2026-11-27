@@ -398,6 +398,7 @@ fn trials() -> Vec<Trial> {
     tests.extend(transition::trials());
     tests.extend(owner_lifetimes::trials());
     tests.extend(scroll::trials());
+    tests.extend(report_size::trials());
     tests.extend(list_scroll::trials());
     tests.extend(apple_content::trials());
     #[cfg(target_os = "macos")]
@@ -19426,6 +19427,189 @@ mod code {
             copied.load(Ordering::SeqCst),
             1,
             "activating native Copy button must invoke OnCopied"
+        );
+    }
+}
+
+/// `ViewExt::report_size` (water-rs/waterui#4298): committed placed sizes write
+/// into the bound `Binding<Size>` after commit, stay silent on unchanged
+/// relayouts, and drive adaptive `when(size.map(...), ...)` across resize
+/// without triggering a synchronous layout cycle.
+mod report_size {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::{PlatformView, Rect as KitRect, view};
+    use libtest_mimic::Trial;
+    use waterui::Color;
+    use waterui::graphics::color::Srgb;
+    use waterui::layout::Size;
+    use waterui::prelude::{
+        Binding, Signal as _, SignalExt as _, ViewExt as _, binding, text, when,
+    };
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
+
+    use super::{Label, leaf, mtm, resolve};
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "report_size::initial_placement_and_dedup_on_unchanged_relayout",
+                || {
+                    initial_placement_and_dedup_on_unchanged_relayout();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "report_size::resize_updates_binding_and_drives_adaptive_when",
+                || {
+                    resize_updates_binding_and_drives_adaptive_when();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn counting_size() -> (Binding<Size>, Rc<Cell<usize>>) {
+        let writes = Rc::new(Cell::new(0usize));
+        let counted = binding(Size::zero()).filter({
+            let writes = Rc::clone(&writes);
+            move |_| {
+                writes.set(writes.get() + 1);
+                true
+            }
+        });
+        (counted, writes)
+    }
+
+    fn layout_and_wait_commit(view: &PlatformView) {
+        view::invalidate_layout(view);
+        #[cfg(target_os = "macos")]
+        view.layoutSubtreeIfNeeded();
+        #[cfg(target_os = "ios")]
+        view.layoutIfNeeded();
+
+        let committed = Rc::new(Cell::new(false));
+        cocoa_ui::core_animation::on_commit(mtm(), {
+            let committed = Rc::clone(&committed);
+            move || committed.set(true)
+        });
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || committed.get()),
+            "on_commit turn must run to deliver post-commit size reports"
+        );
+    }
+
+    fn collect_label_texts(root: &PlatformView, out: &mut Vec<String>) {
+        if let Some(label) = root.downcast_ref::<Label>()
+            && let Some(attributed) = label.source_text()
+        {
+            out.push(attributed.string().to_string());
+        }
+        for child in view::subviews(root) {
+            collect_label_texts(&child, out);
+        }
+    }
+
+    fn initial_placement_and_dedup_on_unchanged_relayout() {
+        let (size, writes) = counting_size();
+        let rendered = resolve::render(
+            Color::new(Srgb::new(0.2, 0.4, 0.7))
+                .size(120.0, 80.0)
+                .report_size(&size),
+        );
+        let _window = leaf::attach(mtm(), rendered.view());
+        layout_and_wait_commit(rendered.view());
+
+        assert_eq!(
+            size.snapshot(),
+            Size::new(120.0, 80.0),
+            "initial placement must report the view's committed response size"
+        );
+        assert_eq!(
+            writes.get(),
+            1,
+            "initial placement must write the binding exactly once"
+        );
+
+        // Relayout with identical frame must not re-write or re-notify watchers.
+        layout_and_wait_commit(rendered.view());
+        assert_eq!(
+            writes.get(),
+            1,
+            "unchanged relayout must not re-notify size watchers"
+        );
+    }
+
+    fn resize_updates_binding_and_drives_adaptive_when() {
+        // 1. Direct frame resize on a stretching view updates the reported size.
+        let stretch_size = binding(Size::zero());
+        let stretched =
+            resolve::render(Color::new(Srgb::new(0.1, 0.6, 0.3)).report_size(&stretch_size));
+        let _stretch_window = leaf::attach(mtm(), stretched.view());
+        layout_and_wait_commit(stretched.view());
+        let initial_bounds = view::bounds(stretched.view());
+        assert!(
+            (f64::from(stretch_size.snapshot().width) - initial_bounds.size.width).abs() < 0.5
+                && (f64::from(stretch_size.snapshot().height) - initial_bounds.size.height).abs()
+                    < 0.5,
+            "stretching view must report its initial placed bounds ({initial_bounds:?}), got {:?}",
+            stretch_size.snapshot()
+        );
+
+        view::set_frame(stretched.view(), KitRect::new(0.0, 0.0, 720.0, 360.0));
+        layout_and_wait_commit(stretched.view());
+        assert_eq!(
+            stretch_size.snapshot(),
+            Size::new(720.0, 360.0),
+            "resizing the view frame must update the reported size"
+        );
+
+        // 2. Container width resize drives `when(size.map(...), ...)` cleanly.
+        let pane_width = binding(320.0_f32);
+        let (reported, writes) = counting_size();
+        let adaptive = resolve::render(
+            when(reported.map(|s| s.width > 500.0), || text("two-column"))
+                .otherwise(|| text("one-column"))
+                .max_width(f32::INFINITY)
+                .report_size(&reported)
+                .width(pane_width.clone()),
+        );
+        let _adaptive_window = leaf::attach(mtm(), adaptive.view());
+        layout_and_wait_commit(adaptive.view());
+
+        assert!(
+            (reported.snapshot().width - 320.0).abs() < 0.5,
+            "initial adaptive width must report 320, got {:?}",
+            reported.snapshot()
+        );
+        let mut labels = Vec::new();
+        collect_label_texts(adaptive.view(), &mut labels);
+        assert!(
+            labels.iter().any(|text| text == "one-column"),
+            "narrow width must display one-column, got {labels:?}"
+        );
+
+        pane_width.set(580.0);
+        layout_and_wait_commit(adaptive.view());
+        layout_and_wait_commit(adaptive.view());
+        assert!(
+            (reported.snapshot().width - 580.0).abs() < 0.5,
+            "resized adaptive width must report 580, got {:?}",
+            reported.snapshot()
+        );
+        labels.clear();
+        collect_label_texts(adaptive.view(), &mut labels);
+        assert!(
+            labels.iter().any(|text| text == "two-column"),
+            "widening past 500 pt must adapt to two-column, got {labels:?}"
+        );
+        let writes_settled = writes.get();
+        layout_and_wait_commit(adaptive.view());
+        assert_eq!(
+            writes.get(),
+            writes_settled,
+            "settled adapted layout must not re-write or cycle"
         );
     }
 }

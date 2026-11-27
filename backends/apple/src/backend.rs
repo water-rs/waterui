@@ -771,6 +771,17 @@ impl NativeBackend for AppleBackend {
         )
     }
 
+    fn report_size<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui_layout::report_size::ReportSize, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("report_size");
+        let metadata = metadata.map_content(C::into_child);
+        crate::components::report_size::realize_report_size_metadata(metadata, &self.entry(env))
+    }
+
     fn lifecycle_hook<C: ChildView<Self>>(
         &mut self,
         metadata: Metadata<waterui_interaction::event::LifeCycleHook, C>,

@@ -99,6 +99,7 @@ pub mod picture;
 #[cfg(feature = "plain")]
 pub mod plain;
 pub mod progress;
+pub mod report_size;
 pub mod resolved_color;
 pub mod resolved_gradient;
 pub mod resolved_shape;

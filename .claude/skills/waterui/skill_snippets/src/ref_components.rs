@@ -171,6 +171,20 @@ pub fn components_block_06() {
     let _ = {
         view.layout_priority(1) // a stack compresses its lowest-priority children first
     };
+
+    // components.md § "## Layout containers" — report_size adaptive layout snippet.
+    fn two_column() -> impl View {
+        hstack((text("Left"), text("Right")))
+    }
+    fn one_column() -> impl View {
+        vstack((text("Top"), text("Bottom")))
+    }
+    let size = binding(Size::zero());
+    let adaptive = when(size.map(|s| s.width > 600.0), two_column)
+        .otherwise(one_column)
+        .max_width(f32::INFINITY)
+        .report_size(&size);
+    let _ = adaptive;
 }
 
 // ---------------------------------------------------------------------------
