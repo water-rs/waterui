@@ -408,6 +408,8 @@ fn trials() -> Vec<Trial> {
     #[cfg(feature = "link")]
     tests.extend(link::trials());
     tests.extend(markdown_a11y::trials());
+    #[cfg(feature = "highlight")]
+    tests.extend(code::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
@@ -19112,5 +19114,112 @@ mod markdown_a11y {
                 "expected decorative empty-alt image to be hidden from accessibility"
             );
         }
+    }
+}
+
+#[cfg(feature = "highlight")]
+mod code {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use cocoa_ui::objc2::Message;
+    use cocoa_ui::view::subviews;
+    use cocoa_ui::{PlatformView, Retained};
+    use libtest_mimic::Trial;
+    use waterui::reactive::{SignalExt as _, binding};
+    use waterui::text::font::{Body, FontWeight, ResolvedFont};
+    use waterui::theme::install_font_signal;
+    use waterui::widget::code::code;
+    use waterui_core::layout::{ProposalSize, StretchAxis};
+
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::appkit::Button as PlatformButton;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::uikit::button::CocoaUiButton as PlatformButton;
+
+    use super::resolve;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test("code::body_scales_with_installed_body_font_slot", || {
+                body_scales_with_installed_body_font_slot();
+                Ok(())
+            }),
+            Trial::test("code::native_copy_button_invokes_on_copied", || {
+                native_copy_button_invokes_on_copied();
+                Ok(())
+            }),
+        ]
+    }
+
+    fn find_button(root: &PlatformView) -> Option<Retained<PlatformButton>> {
+        for sub in subviews(root) {
+            if let Some(button) = sub.downcast_ref::<PlatformButton>() {
+                return Some(Message::retain(button));
+            }
+            if let Some(found) = find_button(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn install_code_tokens(env: &mut waterui_backend_core::Environment) {
+        use waterui::graphics::color::WorkingColor;
+        waterui::theme::install_color_signal::<waterui::theme::color::Border>(
+            env,
+            binding(WorkingColor::BLACK).computed(),
+        );
+    }
+
+    fn measure_code_height(body_size: f32) -> f32 {
+        const SAMPLE: &str = "fn main() {\n    let value = 42;\n    let doubled = value * 2;\n}";
+        let font = ResolvedFont::new(body_size, FontWeight::Normal);
+        let leaf = resolve::render_with(code("rust", SAMPLE), |env| {
+            install_code_tokens(env);
+            install_font_signal::<Body>(env, binding(font).computed());
+        });
+        assert_eq!(leaf.layout().stretch_axis(), StretchAxis::Horizontal);
+        leaf.layout()
+            .measure(ProposalSize::new(Some(500.0), None))
+            .size
+            .height
+    }
+
+    fn body_scales_with_installed_body_font_slot() {
+        let compact = measure_code_height(14.0);
+        let large = measure_code_height(28.0);
+        assert!(
+            large > compact * 1.4,
+            "Apple code block must scale with Body font slot: compact={compact}, large={large}"
+        );
+    }
+
+    fn native_copy_button_invokes_on_copied() {
+        let copied = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&copied);
+        let leaf = resolve::render_with(
+            code("rust", "let x = 1;").on_copied(move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }),
+            install_code_tokens,
+        );
+        let button = find_button(leaf.view()).expect("code block must mount a native Copy button");
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2_app_kit::NSControl;
+            // SAFETY: `performClick:` runs the button's target-action on the main thread.
+            unsafe { NSControl::performClick(&button, None) };
+        }
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::UIControlEvents;
+            button.sendActionsForControlEvents(UIControlEvents::TouchUpInside);
+        }
+        assert_eq!(
+            copied.load(Ordering::SeqCst),
+            1,
+            "activating native Copy button must invoke OnCopied"
+        );
     }
 }

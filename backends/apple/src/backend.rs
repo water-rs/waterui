@@ -111,6 +111,17 @@ impl NativeBackend for AppleBackend {
         crate::components::text::realize_text_config(native, &self.entry(env))
     }
 
+    #[cfg(waterui_feature = "highlight")]
+    fn code(
+        &mut self,
+        native: waterui::text::code::CodeConfig,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("code");
+        crate::components::code::realize_code_config(native, &self.entry(env))
+    }
+
     fn label(&mut self, native: waterui_core::Str, env: &Environment, (): ()) -> NativeLeaf {
         mark_reached!("label");
         #[cfg(feature = "plain")]

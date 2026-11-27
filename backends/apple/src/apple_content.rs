@@ -572,6 +572,8 @@ mod tests {
         stub_natives! {
             empty: (),
             text: waterui::text::TextConfig,
+            #[cfg(waterui_feature = "highlight")]
+            code: waterui::text::code::CodeConfig,
             label: waterui_core::Str,
             color: waterui::Color,
             spacer: waterui::layout::Spacer,

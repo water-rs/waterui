@@ -12,8 +12,6 @@ categories = ["gui", "text-processing"]
 
 [dependencies]
 waterui-core.workspace = true
-waterui-accessibility = { workspace = true, optional = true }
-waterui-interaction = { workspace = true, optional = true }
 waterui-macros.workspace = true
 waterui-color.workspace = true
 suiteki.workspace = true
@@ -31,12 +29,9 @@ smallvec.workspace = true
 # an embedded renderer installs; a build that also enables `parley/std` gets
 # std's implementations regardless.
 parley = { workspace = true, optional = true, features = ["libm"] }
-# `Code`, the fenced-code widget, composes its block out of the layout
-# primitives and reports clipboard failures through `tracing`, which also
-# carries the font collection's note when a face's source cannot be loaded.
-# The widget's deps sit behind `highlight`, the feature the widget itself is
-# behind; `tracing` is also enabled by `font-collection`.
-waterui-layout = { workspace = true, optional = true }
+# `CodeConfig::copy_to_clipboard` reports clipboard failures through `tracing`,
+# which also carries the font collection's note when a face's source cannot be
+# loaded.
 tracing = { workspace = true, optional = true }
 
 # The workspace clipboard (waterkit-clipboard). Unlike the per-call
@@ -56,18 +51,15 @@ waterkit-clipboard = { workspace = true, optional = true }
 # the facade's feature off.
 default = []
 # `DefaultHighlighter`, the bundled syntect/two-face syntax highlighter, and
-# with it the syntax and theme definitions those two crates carry, plus `Code`,
-# the fenced-code widget built on it, with the layout primitives it composes
-# and the platform clipboard its copy button writes to. `Language`, the
-# `Highlighter` trait and `HighlightChunk` stay unconditional, so an
-# application that installs its own highlighter — or renders code plain — can
-# drop the bundled one without losing the vocabulary the rest of the API speaks.
+# with it the syntax and theme definitions those two crates carry, plus `Code`
+# and `CodeConfig`, the fenced-code payload backends realize, and the platform
+# clipboard its copy action writes to. `Language`, the `Highlighter` trait and
+# `HighlightChunk` stay unconditional, so an application that installs its own
+# highlighter — or renders code plain — can drop the bundled one without losing
+# the vocabulary the rest of the API speaks.
 highlight = [
     "dep:syntect",
     "dep:two-face",
-    "dep:waterui-accessibility",
-    "dep:waterui-interaction",
-    "dep:waterui-layout",
     "dep:tracing",
     "dep:waterkit-clipboard",
 ]

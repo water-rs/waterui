@@ -153,6 +153,16 @@ impl_widget_behavior!(
     ; a11y: crate::widgets::layout::card::emit_card_accessibility
     ; label: contributed_label
 );
+#[cfg(waterui_feature = "highlight")]
+impl_widget_behavior!(
+    crate::widgets::layout::code::CodeRenderState<E>,
+    crate::widgets::layout::code::render_code_node,
+    crate::widgets::layout::code::measure_code_node
+    ; prepare: prepare
+    ; dirty: take_layout_dirty
+    ; a11y: crate::widgets::layout::code::emit_code_accessibility
+    ; label: contributed_label
+);
 
 #[cfg(hydrolysis_android_system_webview)]
 impl_widget_behavior!(
@@ -509,6 +519,20 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         });
         let state = Rc::new(RefCell::new(state));
         Self::build_widget_with_core(state, stretch, env, core)
+    }
+
+    /// Build a persistent code block node styled from `WidgetTheme::code`
+    /// during prepare and tracking the installed `Body` font slot.
+    #[cfg(waterui_feature = "highlight")]
+    pub(super) fn build_code(
+        config: waterui::text::code::CodeConfig,
+        env: &Environment,
+        renderer: &SemanticCore<E>,
+    ) -> Self {
+        use crate::widgets::layout::code::CodeRenderState;
+        let state = CodeRenderState::from_config(config);
+        let stretch = state.stretch_axis();
+        Self::build_widget(renderer, Rc::new(RefCell::new(state)), stretch, env)
     }
 
     /// Build a persistent card node: its body content is pre-built eagerly so
