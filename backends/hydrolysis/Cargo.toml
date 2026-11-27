@@ -23,6 +23,7 @@ nami.workspace = true
 waterui-shape.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
+waterui-icon = { workspace = true, optional = true }
 waterui-capture = { workspace = true, optional = true }
 waterui-form = { workspace = true, optional = true }
 waterkit-clipboard = { workspace = true, optional = true }
@@ -168,7 +169,6 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
 # `default-features = false`.
 [target.'cfg(target_vendor = "apple")'.dependencies]
 waterui-backend-core = { workspace = true, default-features = false }
-waterui-icon = { workspace = true, optional = true }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["CFCGTypes"], optional = true }
 objc2-core-graphics = { version = "0.3", default-features = false, features = [
     "CGBitmapContext",
@@ -556,7 +556,7 @@ validation = ["text-field", "hydrolysis-style/validation", "waterui-backend-core
 list = ["hydrolysis-style/list", "waterui-backend-core/list"]
 link = ["waterui-backend-core/link", "dep:waterkit-deeplink"]
 table = ["list", "hydrolysis-style/table", "waterui-backend-core/table"]
-navigation = ["text-field", "hydrolysis-style/navigation", "waterui-backend-core/navigation"]
+navigation = ["text-field", "hydrolysis-style/navigation", "waterui-backend-core/navigation", "dep:waterui-icon"]
 all-controls = ["menu", "calendar", "color-picker", "date-picker", "file-picker", "multi-date-picker", "picker", "secure-field", "slider", "stepper", "text-field", "toggle", "validation", "list", "link", "table", "navigation"]
 default = ["gpu", "all-controls"]
 accessibility = ["dep:accesskit", "dep:accesskit_ios", "dep:serde_json"]

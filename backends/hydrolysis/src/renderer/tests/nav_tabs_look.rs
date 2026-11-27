@@ -992,3 +992,283 @@ fn tabs_label_font_applies_to_measured_and_drawn_tab_labels() {
         compact_dims.width
     );
 }
+
+#[derive(Clone)]
+struct ReactiveSizedIcon {
+    builds: Rc<std::cell::Cell<usize>>,
+}
+
+impl View for ReactiveSizedIcon {
+    fn body(self, env: &Environment) -> impl View {
+        use waterui::Color;
+        use waterui::color::Srgb;
+        use waterui_layout::frame::Frame;
+
+        self.builds.set(self.builds.get() + 1);
+        let size = env
+            .get::<waterui_icon::IconSize>()
+            .expect("Tabs must install IconSize in the tab icon environment")
+            .size()
+            .clone();
+        Frame::new(Color::from(Srgb::from_hex("#00FF00")))
+            .width(size.clone())
+            .height(size)
+    }
+}
+
+#[derive(Default)]
+struct GreenRectSizes(Vec<(f64, f64)>);
+
+impl<E: TextEngine> LayerVisitor<E> for GreenRectSizes {
+    fn run(&mut self, _world: Affine, recording: &Recording) {
+        for rect in recording.solid_rects() {
+            let (shape, color) = rect.current();
+            let c = color.components;
+            if c[1] > 0.5 && c[0] < 0.25 && c[2] < 0.2 {
+                self.0.push((shape.width(), shape.height()));
+            }
+        }
+    }
+}
+
+fn rendered_green_icon_sizes(runtime: &HeadlessRuntime) -> Vec<(f64, f64)> {
+    let mut sizes = GreenRectSizes::default();
+    visit(&runtime.renderer().mount_roots(), &mut sizes);
+    sizes.0
+}
+
+fn mount_reactive_icon_tabs(look: TabsLook, width: u32) -> (Rig, Rc<std::cell::Cell<usize>>) {
+    use waterui_controls::label::label;
+    use waterui_core::Binding;
+
+    let builds = Rc::new(std::cell::Cell::new(0usize));
+    let builds_for_view = Rc::clone(&builds);
+    let selection = Binding::new(0usize);
+    let builder = AnyViewBuilder::<AnyView>::new(move || {
+        let items: Vec<_> = ["Home", "Work"]
+            .into_iter()
+            .map(|title| {
+                let icon = ReactiveSizedIcon {
+                    builds: Rc::clone(&builds_for_view),
+                };
+                Tab::new(label(title).icon(icon), move || {
+                    NavigationView::new(title, text::text("pane"))
+                })
+            })
+            .collect();
+        AnyView::new(Tabs::new(&selection, items))
+    });
+    let rig = Rig {
+        runtime: HeadlessRuntime::new_for_tests(
+            test_environment(),
+            builder,
+            width,
+            WINDOW_HEIGHT,
+            MinimalTestTheme {
+                tabs_look: Some(look),
+                ..Default::default()
+            },
+        ),
+        now: Instant::now(),
+    };
+    (rig, builds)
+}
+
+#[test]
+fn tabs_icon_size_switches_across_horizontal_breakpoint_without_rebuilds() {
+    use super::invisible_chrome;
+    use crate::theme::{Custom, TabsMetrics};
+
+    let vertical_metrics = TabsMetrics {
+        bar_height: 64.0,
+        button_min_width: 64.0,
+        button_horizontal_inset: 12.0,
+        icon_label_spacing: 4.0,
+        icon_size: 28.0,
+    };
+    let horizontal_metrics = TabsMetrics {
+        bar_height: 48.0,
+        button_min_width: 64.0,
+        button_horizontal_inset: 12.0,
+        icon_label_spacing: 8.0,
+        icon_size: 16.0,
+    };
+    let look = TabsLook::new(
+        vertical_metrics,
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        plain_tabs_motion(),
+        |_item, _selected| invisible_chrome(),
+    )
+    .horizontal(600.0, horizontal_metrics);
+
+    let (mut rig, builds) = mount_reactive_icon_tabs(look, WINDOW_WIDTH);
+    rig.settle();
+
+    // Narrow (400 < 600): vertical layout uses 28.0 pt icons.
+    let vertical_sizes = rendered_green_icon_sizes(&rig.runtime);
+    assert_eq!(vertical_sizes.len(), 2, "expected two rendered tab icons");
+    for (w, h) in &vertical_sizes {
+        approx::assert_relative_eq!(*w, 28.0, epsilon = 1e-3);
+        approx::assert_relative_eq!(*h, 28.0, epsilon = 1e-3);
+    }
+    assert_eq!(builds.get(), 2, "each tab icon builds exactly once");
+
+    // Cross horizontal breakpoint (700 >= 600): icons shrink to 16.0 pt with zero rebuilds.
+    rig.runtime.push_input_event(InputEvent::Resize {
+        width: 700,
+        height: WINDOW_HEIGHT,
+    });
+    rig.settle();
+    let horizontal_sizes = rendered_green_icon_sizes(&rig.runtime);
+    assert_eq!(horizontal_sizes.len(), 2, "expected two rendered tab icons");
+    for (w, h) in &horizontal_sizes {
+        approx::assert_relative_eq!(*w, 16.0, epsilon = 1e-3);
+        approx::assert_relative_eq!(*h, 16.0, epsilon = 1e-3);
+    }
+    assert_eq!(
+        builds.get(),
+        2,
+        "crossing to horizontal layout must not rebuild tab icon sub-views"
+    );
+
+    // Cross back to narrow (400 < 600): icons return to 28.0 pt with zero rebuilds.
+    rig.runtime.push_input_event(InputEvent::Resize {
+        width: WINDOW_WIDTH,
+        height: WINDOW_HEIGHT,
+    });
+    rig.settle();
+    let back_to_vertical = rendered_green_icon_sizes(&rig.runtime);
+    assert_eq!(back_to_vertical.len(), 2);
+    for (w, h) in &back_to_vertical {
+        approx::assert_relative_eq!(*w, 28.0, epsilon = 1e-3);
+        approx::assert_relative_eq!(*h, 28.0, epsilon = 1e-3);
+    }
+    assert_eq!(
+        builds.get(),
+        2,
+        "crossing back to vertical layout must not rebuild tab icon sub-views"
+    );
+}
+
+#[test]
+fn tabs_icon_size_scales_measured_compact_bar_width() {
+    use super::{invisible_chrome, test_renderer_with_theme};
+    use crate::renderer::RetainedSubview;
+    use crate::theme::{Custom, TabBarWidth, TabsMetrics};
+    use std::cell::Cell;
+    use waterui_controls::label::label;
+    use waterui_core::Binding;
+    use waterui_core::layout::ProposalSize;
+
+    let env = test_environment();
+    let measure_with_icon_size = |icon_size: f32| {
+        let metrics = TabsMetrics {
+            bar_height: 64.0,
+            button_min_width: 20.0,
+            button_horizontal_inset: 4.0,
+            icon_label_spacing: 2.0,
+            icon_size,
+        };
+        let compact_look = TabsLook::new(
+            metrics,
+            Custom::new((), |_recorder, _frame, ()| {}),
+            Custom::new((), |_recorder, _frame, ()| {}),
+            plain_tabs_motion(),
+            |_item, _selected| invisible_chrome(),
+        )
+        .bar_width(TabBarWidth::Compact {
+            item_min_width: 20.0,
+            max_width: None,
+            horizontal_padding: 8.0,
+        });
+        let mut renderer = test_renderer_with_theme(MinimalTestTheme {
+            tabs_look: Some(compact_look),
+            ..Default::default()
+        });
+        let count = Rc::new(Cell::new(0usize));
+        let tabs = Tabs::new(
+            &Binding::new(0usize),
+            ["A", "B"]
+                .into_iter()
+                .map(|title| {
+                    Tab::new(
+                        label(title).icon(ReactiveSizedIcon {
+                            builds: Rc::clone(&count),
+                        }),
+                        || NavigationView::new("x", text::text("x")),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        RetainedSubview::new(tabs).measure(&mut renderer, &env, ProposalSize::UNSPECIFIED)
+    };
+    let small_dims = measure_with_icon_size(14.0);
+    let large_dims = measure_with_icon_size(40.0);
+    assert!(
+        large_dims.width > small_dims.width + 20.0,
+        "measured tabs width must scale with TabsMetrics::icon_size (small={}, large={})",
+        small_dims.width,
+        large_dims.width
+    );
+}
+
+#[test]
+fn tabs_compact_pill_switches_icon_size_across_horizontal_breakpoint() {
+    use super::invisible_chrome;
+    use crate::theme::{Custom, TabBarWidth, TabsMetrics};
+
+    let vertical_metrics = TabsMetrics {
+        bar_height: 64.0,
+        button_min_width: 64.0,
+        button_horizontal_inset: 12.0,
+        icon_label_spacing: 4.0,
+        icon_size: 28.0,
+    };
+    let horizontal_metrics = TabsMetrics {
+        bar_height: 48.0,
+        button_min_width: 64.0,
+        button_horizontal_inset: 12.0,
+        icon_label_spacing: 8.0,
+        icon_size: 16.0,
+    };
+    let compact_look = TabsLook::new(
+        vertical_metrics,
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        plain_tabs_motion(),
+        |_item, _selected| invisible_chrome(),
+    )
+    .horizontal(300.0, horizontal_metrics)
+    .bar_width(TabBarWidth::Compact {
+        item_min_width: 160.0,
+        max_width: None,
+        horizontal_padding: 8.0,
+    });
+
+    let (mut compact_rig, compact_builds) = mount_reactive_icon_tabs(compact_look, 240);
+    compact_rig.settle();
+    let vertical_sizes = rendered_green_icon_sizes(&compact_rig.runtime);
+    assert_eq!(vertical_sizes.len(), 2);
+    for (w, h) in vertical_sizes {
+        approx::assert_relative_eq!(w, 28.0, epsilon = 1e-3);
+        approx::assert_relative_eq!(h, 28.0, epsilon = 1e-3);
+    }
+
+    compact_rig.runtime.push_input_event(InputEvent::Resize {
+        width: 500,
+        height: WINDOW_HEIGHT,
+    });
+    compact_rig.settle();
+    let horizontal_sizes = rendered_green_icon_sizes(&compact_rig.runtime);
+    assert_eq!(horizontal_sizes.len(), 2);
+    for (w, h) in horizontal_sizes {
+        approx::assert_relative_eq!(w, 16.0, epsilon = 1e-3);
+        approx::assert_relative_eq!(h, 16.0, epsilon = 1e-3);
+    }
+    assert_eq!(
+        compact_builds.get(),
+        2,
+        "compact pill breakpoint transition must not rebuild tab icon sub-views"
+    );
+}

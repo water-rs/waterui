@@ -112,6 +112,9 @@ pub struct TabsMetrics {
     /// Gap between a tab item's icon and its label: vertical space when the
     /// icon sits above the label, horizontal space when it sits beside it.
     pub icon_label_spacing: f32,
+    /// Logical point size for tab item icons, installed into each item's
+    /// icon environment via `IconSize`.
+    pub icon_size: f32,
 }
 
 impl TabsMetrics {
@@ -128,6 +131,9 @@ impl TabsMetrics {
             button_min_width,
             button_horizontal_inset,
             icon_label_spacing,
+            // Matches `waterui_icon::DEFAULT_ICON_SIZE` while downstream style
+            // packages migrate to explicit `icon_size`.
+            icon_size: 24.0,
         }
     }
 }
@@ -691,7 +697,13 @@ mod tests {
             Surface, TabsLook, TabsMetrics,
         };
 
-        let metrics = TabsMetrics::new(48.0, 64.0, 12.0, 4.0);
+        let metrics = TabsMetrics {
+            bar_height: 48.0,
+            button_min_width: 64.0,
+            button_horizontal_inset: 12.0,
+            icon_label_spacing: 4.0,
+            icon_size: 24.0,
+        };
         let motion = Motion::uniform(waterui_core::animation::Animation::linear(
             Duration::from_millis(10),
         ));
@@ -727,5 +739,63 @@ mod tests {
             .snapshot();
         assert_relative_eq!(resolved.size(), 10.0, epsilon = 1e-6);
         assert_eq!(resolved.weight(), FontWeight::Medium);
+    }
+
+    #[test]
+    fn tabs_metrics_icon_size_defaults_and_varies_across_layouts() {
+        use std::time::Duration;
+        use waterui_graphics::color::Srgb;
+
+        use super::super::{
+            Chrome, CornerShape, Custom, FocusIndicator, Motion, PressFeedback, StateLayer,
+            Surface, TabsLook, TabsMetrics,
+        };
+
+        let legacy = TabsMetrics::new(48.0, 64.0, 12.0, 4.0);
+        assert_relative_eq!(legacy.icon_size, 24.0, epsilon = 1e-6);
+
+        let vertical = TabsMetrics {
+            bar_height: 62.0,
+            button_min_width: 64.0,
+            button_horizontal_inset: 12.0,
+            icon_label_spacing: 1.5,
+            icon_size: 23.0,
+        };
+        let horizontal = TabsMetrics {
+            bar_height: 48.0,
+            button_min_width: 64.0,
+            button_horizontal_inset: 16.0,
+            icon_label_spacing: 8.0,
+            icon_size: 18.0,
+        };
+        let motion = Motion::uniform(waterui_core::animation::Animation::linear(
+            Duration::from_millis(10),
+        ));
+        let chrome = Chrome::new(
+            Surface::clear(CornerShape::radius(0.0)),
+            StateLayer::new(Srgb::WHITE),
+            PressFeedback::new(),
+            FocusIndicator::Tint,
+            motion.clone(),
+        );
+        let look = TabsLook::new(
+            vertical,
+            Custom::new((), |_recorder, _frame, ()| {}),
+            Custom::new((), |_recorder, _frame, ()| {}),
+            motion,
+            move |_item, _selected| chrome.clone(),
+        )
+        .horizontal(600.0, horizontal);
+
+        assert_relative_eq!(
+            look.metrics(TabItemLayout::Vertical).icon_size,
+            23.0,
+            epsilon = 1e-6
+        );
+        assert_relative_eq!(
+            look.metrics(TabItemLayout::Horizontal).icon_size,
+            18.0,
+            epsilon = 1e-6
+        );
     }
 }
