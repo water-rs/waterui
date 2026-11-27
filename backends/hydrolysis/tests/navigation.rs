@@ -372,6 +372,124 @@ fn a_trailing_bar_action_with_an_icon_label_is_icon_only() {
     );
 }
 
+const fn rect_center(rect: accesskit::Rect) -> (f32, f32) {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "test viewport coordinates fit f32"
+    )]
+    (
+        f64::midpoint(rect.x0, rect.x1) as f32,
+        f64::midpoint(rect.y0, rect.y1) as f32,
+    )
+}
+
+fn find_button<'a>(tree: &'a accesskit::TreeUpdate, label: &str) -> Option<&'a accesskit::Node> {
+    tree.nodes
+        .iter()
+        .find(|(_, node)| node.role() == accesskit::Role::Button && node.label() == Some(label))
+        .map(|(_, node)| node)
+}
+
+/// water-rs/waterui#4448: a semantic toolbar action can be disabled or hidden
+/// reactively while preserving its icon-only presentation, disabling
+/// interaction/a11y when disabled, and excluding hidden items from layout,
+/// hit-testing, and accessibility.
+#[test]
+fn semantic_toolbar_action_respects_reactive_disabled_and_visible_states() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    const TITLE: &str = "Send complete draft message now";
+    let disabled = waterui::Binding::new(true);
+    let visible = waterui::Binding::new(true);
+    let taps = Rc::new(Cell::new(0usize));
+
+    let mounted_disabled = disabled.clone();
+    let mounted_visible = visible.clone();
+    let mounted_taps = Rc::clone(&taps);
+    let mut app = mount_rendered(
+        Environment::new(),
+        move || {
+            let taps = Rc::clone(&mounted_taps);
+            NavigationView::new("Compose", text("draft body")).navigation_toolbar(
+                waterui::navigation::NavigationToolbar::default()
+                    .item(waterui::navigation::NavigationToolbarItem::action(
+                        waterui::navigation::NavigationToolbarPlacement::SecondaryAction,
+                        "More",
+                        || {},
+                    ))
+                    .item(
+                        waterui::navigation::NavigationToolbarItem::action(
+                            waterui::navigation::NavigationToolbarPlacement::Confirmation,
+                            label(TITLE).icon(text("x")),
+                            move || taps.set(taps.get() + 1),
+                        )
+                        .disabled(mounted_disabled.clone())
+                        .visible(mounted_visible.clone()),
+                    ),
+            )
+        },
+        360,
+        240,
+    );
+    app.settle();
+
+    assert!(
+        find_button(app.tree(), TITLE)
+            .expect("visible semantic action must emit a Button node")
+            .is_disabled(),
+        "disabled semantic toolbar item must mark its accessibility node disabled"
+    );
+    let send_bounds = node_bounds_with_role(app.tree(), accesskit::Role::Button, TITLE);
+    let more_bounds_with_send = node_bounds_with_role(app.tree(), accesskit::Role::Button, "More");
+    let (cx, cy) = rect_center(send_bounds);
+
+    // Disabled item ignores taps.
+    app.tap_at(cx, cy);
+    assert_eq!(taps.get(), 0, "disabled toolbar action must ignore taps");
+
+    // Re-enabling makes the item interactive and clears a11y disabled state.
+    disabled.set(false);
+    app.settle();
+    assert!(
+        !find_button(app.tree(), TITLE)
+            .expect("enabled semantic action must remain present")
+            .is_disabled(),
+        "re-enabled semantic toolbar item must clear accessibility disabled state"
+    );
+    app.tap_at(cx, cy);
+    assert_eq!(taps.get(), 1, "re-enabled toolbar action must handle taps");
+
+    // Hiding removes the item from accessibility, layout, and hit-testing.
+    visible.set(false);
+    app.settle();
+    assert!(
+        find_button(app.tree(), TITLE).is_none(),
+        "hidden toolbar item must not emit an accessibility node"
+    );
+    let more_bounds_without_send =
+        node_bounds_with_role(app.tree(), accesskit::Role::Button, "More");
+    assert!(
+        more_bounds_without_send.x0 > more_bounds_with_send.x0
+            || (more_bounds_without_send.x1 - more_bounds_with_send.x1).abs() > 1.0,
+        "hiding a sibling in the trailing group must reclaim its layout width: \
+         with={more_bounds_with_send:?}, without={more_bounds_without_send:?}"
+    );
+    app.tap_at(cx, cy);
+    assert_eq!(taps.get(), 1, "hidden toolbar action must not accept taps");
+
+    // Showing restores the item cleanly.
+    visible.set(true);
+    app.settle();
+    let (rx, ry) = rect_center(node_bounds_with_role(
+        app.tree(),
+        accesskit::Role::Button,
+        TITLE,
+    ));
+    app.tap_at(rx, ry);
+    assert_eq!(taps.get(), 2, "restored toolbar action must handle taps");
+}
+
 // ---------------------------------------------------------------------------
 // Reactive-collection `Tabs` — water-rs/waterui#1194
 //

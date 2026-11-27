@@ -457,7 +457,7 @@ mod platform {
             let state = Rc::new(RefCell::new(view.take_state()));
             let transition = page_transition(view.transition(), &self.transition);
             let mut keep = KeepAlive::default();
-            let mut page = self.nav_page(&bar, root, &mut keep, &state);
+            let mut page = self.nav_page(&bar, root, &controller, &mut keep, &state);
             if let Some(search) = bar.search.as_ref() {
                 page.search = Some(attach_search(
                     search,
@@ -525,37 +525,43 @@ mod platform {
         }
 
         /// Assembles the `NavPage` record from a page's bar state —
-        /// title, principal, item buttons and large-title mode — plus
+        /// title, principal, item buttons and large-title mode — watches each
+        /// item's reactive visibility to refresh `controller`, and attaches
         /// the back affordance a non-root page carries.
         fn nav_page(
             &self,
             bar: &BarState,
             root: bool,
+            controller: &Retained<NavContentController>,
             keep: &mut KeepAlive,
             state: &Rc<RefCell<NavigationDestinationState>>,
         ) -> NavPage {
+            let built_items = Rc::new(crate::components::navigation::BuiltBarItems::build(
+                bar,
+                keep,
+                |item, keep| self.button(item, keep),
+            ));
             let mut page = NavPage {
                 title: bar.title.text.clone().unwrap_or_default(),
+                title_view: built_items.visible_title_view(),
                 subtitle: bar.subtitle.text.clone(),
+                leading: built_items.visible_leading(),
+                trailing: built_items.visible_trailing(),
+                bottom: built_items.visible_bottom(),
                 ..NavPage::default()
             };
-            if let Some(principal) = bar.principal() {
-                page.title_view = Some(cocoa_ui::view::retain_base(principal.leaf.view()));
-            } else if bar.title.text.is_none() {
-                page.title_view = Some(cocoa_ui::view::retain_base(bar.title.leaf.view()));
-            }
-            page.leading = bar
-                .leading_items()
-                .map(|item| self.button(item, keep))
-                .collect();
-            page.trailing = bar
-                .trailing_items()
-                .map(|item| self.button(item, keep))
-                .collect();
-            page.bottom = bar
-                .bottom_items()
-                .map(|item| self.button(item, keep))
-                .collect();
+            built_items.watch_visibility(keep, {
+                let controller = controller.clone();
+                let built_items = Rc::clone(&built_items);
+                move || {
+                    let title_view = built_items.visible_title_view();
+                    let leading = built_items.visible_leading();
+                    let trailing = built_items.visible_trailing();
+                    let bottom = built_items.visible_bottom();
+                    controller.set_items(title_view.as_deref(), &leading, &trailing, &bottom);
+                }
+            });
+            keep.keep(built_items);
             page.large_title = match bar.display_mode {
                 NavigationTitleDisplayMode::Automatic => LargeTitle::Automatic,
                 NavigationTitleDisplayMode::Inline => LargeTitle::Inline,
@@ -1136,6 +1142,32 @@ mod platform {
                         driver.publish();
                     }
                 });
+                for item in &bar.items {
+                    if let Some(visible) = &item.visible {
+                        let driver = self
+                            .self_weak
+                            .get()
+                            .expect("the stack is built before any callback that reads it")
+                            .clone();
+                        keep.watch(visible, move |_| {
+                            if let Some(driver) = driver.upgrade() {
+                                driver.publish();
+                            }
+                        });
+                    }
+                    if let Some(disabled) = &item.disabled {
+                        let driver = self
+                            .self_weak
+                            .get()
+                            .expect("the stack is built before any callback that reads it")
+                            .clone();
+                        keep.watch(disabled, move |_| {
+                            if let Some(driver) = driver.upgrade() {
+                                driver.publish();
+                            }
+                        });
+                    }
+                }
             }
             Entry {
                 view: host.into_super(),
@@ -1353,6 +1385,7 @@ mod platform {
             // The item's action comes from the button inside it, the way
             // `firstButton` informed `actionItem`.
             let button = first_button(item.leaf.view());
+            let enabled = !item.is_disabled() && button.as_ref().is_none_or(|b| b.isEnabled());
             let action = button.as_ref().map(|button| {
                 let button = button.clone();
                 Rc::new(move || {
@@ -1376,6 +1409,7 @@ mod platform {
                     ),
                     label,
                     action,
+                    enabled,
                 },
                 Some(BarItemIcon::View(icon)) => {
                     let size = measure(icon);
@@ -1391,6 +1425,7 @@ mod platform {
                         icon: Self::view_icon(self, entry, item, icon),
                         label,
                         action,
+                        enabled,
                     }
                 }
                 None => ToolbarChild {
@@ -1401,6 +1436,7 @@ mod platform {
                     icon: None,
                     label,
                     action,
+                    enabled,
                 },
             }
         }

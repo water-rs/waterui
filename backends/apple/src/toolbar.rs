@@ -100,6 +100,7 @@ fn toolbar_child(view: &Retained<NSView>, index: usize, jobs: &Rc<IconJobs>) -> 
             icon: None,
             label: String::new(),
             action: None,
+            enabled: true,
         };
     };
     // The button's label view is its sibling: the button leaf mounts the
@@ -127,6 +128,7 @@ fn toolbar_child(view: &Retained<NSView>, index: usize, jobs: &Rc<IconJobs>) -> 
     // SAFETY: `accessibilityLabel` is a plain getter on the main thread.
     let text: Option<Retained<NSString>> = unsafe { msg_send![&button, accessibilityLabel] };
     let label = text.map_or_else(String::new, |label| label.to_string());
+    let enabled = button.isEnabled();
     // The label's own button carries the handler, so the toolbar item runs
     // the same action the view would have.
     let action = Rc::new(move || {
@@ -138,6 +140,7 @@ fn toolbar_child(view: &Retained<NSView>, index: usize, jobs: &Rc<IconJobs>) -> 
         icon,
         label,
         action: Some(action),
+        enabled,
     }
 }
 
