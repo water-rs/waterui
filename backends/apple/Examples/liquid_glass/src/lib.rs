@@ -20,7 +20,7 @@ use waterui::reactive::binding;
 use waterui::shape::{Circle, CornerRadius, RoundedRectangle, ShapeExt};
 use waterui::theme::color::Accent;
 use waterui::views::ForEach;
-use waterui_apple::SfSymbol;
+use waterui_backend_core::SfSymbol;
 
 /// Tab identity. `Tabs` is generic over it, so no `Id` reaches app code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

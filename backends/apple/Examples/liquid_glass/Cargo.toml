@@ -16,4 +16,4 @@ workspace = true
 
 [dependencies]
 waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "navigation"] }
-waterui-apple = { path = "../.." }
+waterui-backend-core = { workspace = true, default-features = false }

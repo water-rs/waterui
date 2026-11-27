@@ -437,6 +437,18 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         }
     }
 
+    /// Display scale factor (physical pixels per logical point) of the active window transform.
+    #[cfg(all(target_vendor = "apple", hydrolysis_cherenkov))]
+    pub(crate) fn display_scale(&self) -> f64 {
+        let [a, b, c, d, ..] = self.window_display_transform.as_coeffs();
+        let scale = a.hypot(b).max(c.hypot(d));
+        if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        }
+    }
+
     /// The material scope a backdrop material recorded here belongs to:
     /// the flush's material-scope stack's top — the node's enclosing
     /// `.material_group()` — or `SOLO` outside every group.

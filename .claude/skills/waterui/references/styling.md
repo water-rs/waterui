@@ -349,7 +349,7 @@ Icons come from packaged icon-set crates. **Pick one set per app** and depend on
 | `waterui-icons-material-icon` | Material Design Icons (Pictogrammers), SVG default / webfont optional |
 | `waterui-icons-lucide` | Lucide, SVG |
 | `waterui-icons-fontawesome7` | Font Awesome 7 Free (webfont default / SVG optional) |
-| `waterui-apple` (`SfSymbol`) | Type-safe Apple SF Symbols (`SfSymbol::HOUSE`, gated by deployment target) — **Apple platforms only** |
+| `waterui-backend-core` (`SfSymbol`, re-exported by `waterui-apple` and `hydrolysis` on Apple) | Type-safe Apple SF Symbols (`SfSymbol::HOUSE`, gated by deployment target) — **Apple platforms only** |
 
 ```rust
 use waterui_icons_material_icon as mdi;
@@ -371,22 +371,25 @@ channel (`.icon_size(..)`, defaulting to `24.0` points). Font Awesome's default
 
 Match the set to the design language: a Material 3 app uses Material icons, not Lucide.
 
-`waterui_apple::SfSymbol` exists only in the Apple backend (`waterui-apple`) and exposes
-Apple's catalog as typed constants gated by the build's deployment target (symbols newer
-than the deployment target fail to compile). There is deliberately no cross-platform
-"system icon" fallback: Apple ships SF Symbols and Android has no OS-supplied icon catalog.
-Using `SfSymbol` in portable code takes a *pair* of gates that must agree — a target-scoped
-dependency and a `cfg` on every use site — plus `cfg`-selected sibling functions rather
-than a `cfg` inside a tuple (stack tuple arity cannot vary by `cfg`):
+`SfSymbol` lives in `waterui-backend-core` strictly behind `#[cfg(target_vendor = "apple")]`
+(re-exported by both `waterui-apple` and `hydrolysis` on Apple targets, and compile-time
+absent on non-Apple targets). It exposes Apple's catalog as typed constants gated by the
+build's deployment target (symbols newer than the deployment target fail to compile), realized
+natively by `waterui-apple` and through the OS symbol catalog by `hydrolysis` on macOS and iOS.
+There is deliberately no cross-platform "system icon" fallback: Apple ships SF Symbols and
+Android has no OS-supplied icon catalog. Using `SfSymbol` in portable code takes a *pair* of
+gates that must agree — a target-scoped dependency and a `cfg` on every use site — plus
+`cfg`-selected sibling functions rather than a `cfg` inside a tuple (stack tuple arity cannot
+vary by `cfg`):
 
 ```toml
 [target.'cfg(target_vendor = "apple")'.dependencies]
-waterui-apple = "…"
+waterui-backend-core = { version = "…", default-features = false }
 ```
 
 ```rust
 #[cfg(target_vendor = "apple")]
-use waterui_apple::SfSymbol;
+use waterui_backend_core::SfSymbol; // or waterui_apple::SfSymbol / hydrolysis::SfSymbol
 ```
 
 ## Material 3 with the Hydrolysis renderer

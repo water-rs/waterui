@@ -137,6 +137,8 @@ pub use android_content::{
 #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
 pub use hosted::{HostedContent, HostedObject, HostedOcclusion, HostedView};
 use std::time::Duration;
+#[cfg(target_vendor = "apple")]
+pub use waterui_backend_core::SfSymbol;
 
 /// The frame interval Hydrolysis budgets for: 120 Hz.
 ///

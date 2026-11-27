@@ -127,8 +127,26 @@ impl_widget_behavior!(
     crate::renderer::views::measure_str_node
     ; a11y: crate::renderer::views::emit_str_accessibility
 );
+#[cfg(all(target_vendor = "apple", hydrolysis_cherenkov))]
+impl_widget_behavior!(
+    waterui_backend_core::SfSymbol,
+    crate::widgets::visual::sf_symbol::render_sf_symbol_node,
+    crate::widgets::visual::sf_symbol::measure_sf_symbol_node
+    ; a11y: crate::widgets::visual::sf_symbol::emit_sf_symbol_accessibility
+);
 
 impl<E: crate::text::TextEngine> RenderNode<E> {
+    /// Builds a retained Apple SF Symbol leaf backed by the host symbol catalog.
+    #[cfg(all(target_vendor = "apple", hydrolysis_cherenkov))]
+    pub(super) fn build_sf_symbol(
+        symbol: waterui_backend_core::SfSymbol,
+        env: &Environment,
+        renderer: &SemanticCore<E>,
+    ) -> Self {
+        let stretch = waterui_core::NativeView::stretch_axis(&symbol);
+        Self::build_widget(renderer, Rc::new(RefCell::new(symbol)), stretch, env)
+    }
+
     /// Build a persistent list node: retain the config (its `contents` collection,
     /// `editing` signal, and `on_delete`/`on_move` handlers stay owned by the cell).
     /// Each flush re-resolves the visible row window from the enclosing scroll's

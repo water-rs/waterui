@@ -224,6 +224,10 @@ NOTO_CJK_UNICODES = {
 # Expected SHA-256 of every file this script writes — the byte-exact contract
 # the test fonts live under.
 EXPECTED = {
+    "Inter-Regular.ttf": "64f8be6e55c37e32ef03da99714bf3aa58b8f2099bfe4f759a7578e3b8291123",
+    "Inter-Medium.ttf": "1bda81124d6ae26ed16a7201e2bd93766af5a3b14faf79eea14d191ebbd41146",
+    "Inter-SemiBold.ttf": "0dc98e8aa59585394880f25ab89e6d915ad5134522e961b046ca51fad3a18255",
+    "Inter-Bold.ttf": "0cb1bc1335372d9e3a0cf6f5311c7cce87af90d2a777fdeec18be605a2a70bc1",
     "NotoSans-Regular.ttf": "f5f552c8c5edb61fe6efb824baf4d4de47b1a8689ab4925ff43f7bd6a4ebece5",
     "Roboto-Regular.ttf": "797e35f7f5d6020a5c6ea13b42ecd668bcfb3bbc4baa0e74773527e5b6cb3174",
     "Roboto-Medium.ttf": "7984aafeaf437899ce89b251d2875fc5048cb7d290152eac070239cca7ff726c",
@@ -589,6 +593,16 @@ def generate() -> None:
 
         registry_path = OUT_DIR.parents[2] / "cli/src/project_model/assets/fonts.toml"
         registry = tomllib.loads(registry_path.read_text())
+        inter_origin = next(font for font in registry["font"] if font["name"] == "Inter")
+        inter_zip = fetch(inter_origin["url"], inter_origin["sha256"])
+        for name in (
+            "Inter-Regular.ttf",
+            "Inter-Medium.ttf",
+            "Inter-SemiBold.ttf",
+            "Inter-Bold.ttf",
+        ):
+            write_verified(name, zip_member(inter_zip, f"extras/ttf/{name}"))
+
         noto_origin = next(font for font in registry["font"] if font["name"] == "Noto Sans")
         noto_sans_zip = fetch(noto_origin["url"], noto_origin["sha256"])
         write_verified(
