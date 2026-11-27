@@ -153,6 +153,13 @@ impl<C: View> AspectRatio<C> {
             content,
         }
     }
+
+    /// Sets how `content` fills the ratio-constrained box.
+    #[must_use]
+    pub const fn content_mode(mut self, mode: ContentMode) -> Self {
+        self.layout.mode = mode;
+        self
+    }
 }
 
 impl<C: View> View for AspectRatio<C> {
@@ -270,5 +277,29 @@ mod tests {
             "got {:?}",
             placements[0].frame
         );
+    }
+
+    #[test]
+    fn content_mode_builder_defaults_to_fit_and_switches_to_fill() {
+        let child = Content(Size::new(10.0, 10.0));
+
+        let fit = aspect_ratio((), 2.0);
+        assert_eq!(fit.layout.mode, ContentMode::Fit);
+        let fit_size = fit
+            .layout
+            .size_that_fits(ProposalSize::new(300.0, 100.0), &[&child]);
+        assert!((fit_size.width - 200.0).abs() < 0.01, "got {fit_size:?}");
+        assert!((fit_size.height - 100.0).abs() < 0.01, "got {fit_size:?}");
+
+        let fill = aspect_ratio((), 2.0).content_mode(ContentMode::Fill);
+        assert_eq!(fill.layout.mode, ContentMode::Fill);
+        let fill_size = fill
+            .layout
+            .size_that_fits(ProposalSize::new(300.0, 100.0), &[&child]);
+        assert!((fill_size.width - 300.0).abs() < 0.01, "got {fill_size:?}");
+        assert!((fill_size.height - 150.0).abs() < 0.01, "got {fill_size:?}");
+
+        let back_to_fit = fill.content_mode(ContentMode::Fit);
+        assert_eq!(back_to_fit.layout.mode, ContentMode::Fit);
     }
 }

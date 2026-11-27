@@ -162,7 +162,11 @@ pub fn components_block_05() {
 pub fn components_block_06() {
     let view = Divider;
     let _ = {
-        view.aspect_ratio(16.0 / 9.0) // width : height; shrinks to fit inside the offer
+        view.aspect_ratio(16.0 / 9.0) // width : height; defaults to ContentMode::Fit
+    };
+    let view = Divider;
+    let _ = {
+        view.aspect_ratio(1.0).content_mode(ContentMode::Fill) // returns AspectRatio; Fill covers the offer
     };
     let view = Divider;
     let _ = {

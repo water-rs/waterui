@@ -148,13 +148,15 @@ pub trait ViewExt: View + Sized {
 
     /// Constrains this view to a width-to-height ratio.
     ///
-    /// The view shrinks to fit inside whatever it is offered, leaving slack on
-    /// the longer axis — `SwiftUI`'s `.aspectRatio(_, contentMode: .fit)`. Use
-    /// [`AspectRatio::new`] for the filling mode.
+    /// Defaults to [`ContentMode::Fit`], shrinking to fit inside whatever it is
+    /// offered and leaving slack on the longer axis — `SwiftUI`'s
+    /// `.aspectRatio(_, contentMode: .fit)`. Chain
+    /// [`.content_mode(ContentMode::Fill)`](AspectRatio::content_mode) to cover
+    /// the offered box instead.
     ///
     /// # Arguments
     /// * `ratio` - Width divided by height. Must be positive and finite.
-    fn aspect_ratio(self, ratio: impl IntoSignalF32 + 'static) -> impl View {
+    fn aspect_ratio(self, ratio: impl IntoSignalF32 + 'static) -> AspectRatio<Self> {
         AspectRatio::new(self, ratio, ContentMode::Fit)
     }
 
@@ -2053,5 +2055,34 @@ mod tests {
         let updated_ideal = ideal_layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
         assert!((updated_ideal.width - 160.0).abs() < f32::EPSILON);
         assert!((updated_ideal.height - 80.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn aspect_ratio_modifier_defaults_to_fit_and_allows_content_mode_fill() {
+        use alloc::vec::Vec;
+        use waterui_core::{Environment, Native};
+        use waterui_layout::{ContentMode, ProposalSize, Size, container::FixedContainer};
+
+        let env = Environment::new();
+        let proposal = ProposalSize::new(300.0, 100.0);
+
+        let fit_view = ().aspect_ratio(2.0).body(&env).body(&env);
+        let fit_native = AnyView::new(fit_view)
+            .downcast::<Native<FixedContainer<Vec<AnyView>>>>()
+            .expect("AspectRatio expands to Native<FixedContainer>");
+        let fit_container = fit_native.into_inner();
+        let (fit_layout, _) = fit_container.as_parts();
+        let fit_size = fit_layout.size_that_fits(proposal, &[]);
+        assert!((fit_size.width - 200.0).abs() < 0.01, "got {fit_size:?}");
+        assert!((fit_size.height - 100.0).abs() < 0.01, "got {fit_size:?}");
+
+        let fill_view = ().aspect_ratio(2.0).content_mode(ContentMode::Fill).body(&env).body(&env);
+        let fill_native = AnyView::new(fill_view)
+            .downcast::<Native<FixedContainer<Vec<AnyView>>>>()
+            .expect("AspectRatio expands to Native<FixedContainer>");
+        let fill_container = fill_native.into_inner();
+        let (fill_layout, _) = fill_container.as_parts();
+        let fill_size = fill_layout.size_that_fits(proposal, &[]);
+        assert_eq!(fill_size, Size::new(300.0, 150.0));
     }
 }
