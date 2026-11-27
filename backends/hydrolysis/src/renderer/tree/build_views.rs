@@ -279,11 +279,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         use waterui_core::NativeView as _;
         let stretch = tabs.stretch_axis();
         let mut state = TabsRenderState::from_tabs(tabs, renderer);
-        // Tab labels and icons depend on `TabsLook` foreground overrides, so
-        // `prepare_tabs` builds them once `HydrolysisRenderer` supplies the
-        // theme (or `emit_tabs_accessibility` builds them in semantic-only
-        // mode). Prebuild each tab's content here under the widget's record
-        // reader; content does not read `TabsLook`.
+        // Tab labels and icons depend on `TabsLook` foreground and font
+        // overrides, so `prepare_tabs` builds them once `HydrolysisRenderer`
+        // supplies the theme (or `emit_tabs_accessibility` builds them in
+        // semantic-only mode). Prebuild each tab's content here under the
+        // widget's record reader; content does not read `TabsLook`.
         let core = renderer.new_core();
         renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
             state.prebuild_contents(renderer, env);

@@ -251,7 +251,7 @@ fn unset_metrics_keep_the_theme_row_geometry() {
 
 /// A label long enough to wrap onto several lines at any window these tests
 /// open (water-rs/waterui#3939).
-const LONG_LABEL: &str = "This is a deliberately long list row label that must wrap onto several lines at the row width of the window";
+const LONG_LABEL: &str = "This is a deliberately long list row label that must wrap onto several lines at the row width of the window, even with a compact system UI typeface";
 
 /// The height `LONG_LABEL` answers when proposed `width`, measured straight
 /// through the view path — what a row of that content width must hold.

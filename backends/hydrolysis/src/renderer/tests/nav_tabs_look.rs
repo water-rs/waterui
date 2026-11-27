@@ -752,3 +752,243 @@ fn tabs_foreground_overrides_paint_selected_and_unselected_items_on_selection() 
 
     assert_tab_bar_paint(&rig.runtime, false);
 }
+
+#[derive(Default)]
+struct PaintOrderLog {
+    events: Vec<&'static str>,
+}
+
+impl<E: TextEngine> LayerVisitor<E> for PaintOrderLog {
+    fn run(&mut self, world: Affine, recording: &Recording) {
+        for rect in recording.solid_rects() {
+            let c = rect.current().1.components;
+            if c[0] > 0.7 && c[1] < 0.1 && c[2] < 0.1 {
+                self.events.push("content-fill");
+            }
+        }
+        for (transform, _) in recording.glyph_runs() {
+            let y = (world * transform).translation().y;
+            if y >= 250.0 {
+                self.events.push("tab-label");
+            }
+        }
+    }
+
+    fn live_layer(&mut self, _world: Affine) {
+        self.events.push("live-layer");
+    }
+}
+
+#[test]
+fn tabs_content_records_before_bar_chrome_and_buttons_receive_taps() {
+    use super::invisible_chrome;
+    use crate::theme::Custom;
+    use cherenkov_record::{Draw as _, Paint, WorkingColor};
+    use waterui::color::Srgb;
+    use waterui::{Color, ViewExt as _};
+    use waterui_core::Binding;
+
+    let look = TabsLook::new(
+        plain_tabs_metrics(),
+        Custom::new((), |recorder, frame, ()| {
+            recorder.fill(frame, Paint::Solid(WorkingColor::new([0.0, 0.0, 1.0, 1.0])));
+        }),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        plain_tabs_motion(),
+        |_item, _selected| invisible_chrome(),
+    )
+    .selection_indicator_over_labels(Custom::new((), |recorder, frame, ()| {
+        recorder.fill(frame, Paint::Solid(WorkingColor::new([0.0, 1.0, 1.0, 0.5])));
+    }));
+
+    let selection = Binding::new(0usize);
+    let builder = AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(Tabs::new(
+            &selection,
+            ["Home", "Work"]
+                .into_iter()
+                .map(|title| {
+                    Tab::new(title, move || {
+                        NavigationView::new(
+                            title,
+                            Color::from(Srgb::from_hex("#FF0000")).size(120.0, 80.0),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>(),
+        ))
+    });
+    let mut rig = Rig {
+        runtime: HeadlessRuntime::new_for_tests(
+            test_environment(),
+            builder,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+            MinimalTestTheme {
+                tabs_look: Some(look),
+                ..Default::default()
+            },
+        ),
+        now: Instant::now(),
+    };
+    rig.settle();
+
+    let mut log = PaintOrderLog::default();
+    visit(&rig.runtime.renderer().mount_roots(), &mut log);
+    let content_pos = log
+        .events
+        .iter()
+        .position(|e| *e == "content-fill")
+        .expect("tab content fill must be recorded");
+    let first_label_pos = log
+        .events
+        .iter()
+        .position(|e| *e == "tab-label")
+        .expect("tab bar label glyphs must be recorded");
+    let last_label_pos = log
+        .events
+        .iter()
+        .rposition(|e| *e == "tab-label")
+        .expect("tab bar label glyphs must be recorded");
+    assert!(
+        content_pos < first_label_pos,
+        "tab content ({content_pos}) must record before tab labels ({first_label_pos}), log={:?}",
+        log.events
+    );
+    assert!(
+        log.events[content_pos + 1..first_label_pos].contains(&"live-layer"),
+        "tab bar chrome live layer must record after content ({content_pos}) and before tab labels ({first_label_pos}), log={:?}",
+        log.events
+    );
+    assert!(
+        log.events[last_label_pos + 1..].contains(&"live-layer"),
+        "over-labels indicator live layer must record after tab labels ({last_label_pos}), log={:?}",
+        log.events
+    );
+
+    assert_eq!(rig.tabs().selected(), Some(0));
+    rig.move_to(300.0, 276.0);
+    rig.down(300.0, 276.0);
+    rig.up(300.0, 276.0);
+    rig.settle();
+    assert_eq!(
+        rig.tabs().selected(),
+        Some(1),
+        "tapping the second tab button must select it after reordering content before chrome"
+    );
+}
+
+fn tabs_look_with_label_font(font: Option<waterui_text::font::Font>) -> TabsLook {
+    use super::invisible_chrome;
+    use crate::theme::Custom;
+
+    let look = TabsLook::new(
+        plain_tabs_metrics(),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        plain_tabs_motion(),
+        |_item, _selected| invisible_chrome(),
+    );
+    match font {
+        Some(font) => look.label_font(font),
+        None => look,
+    }
+}
+
+fn max_tab_bar_label_span(font: Option<waterui_text::font::Font>, with_icon: bool) -> f64 {
+    use waterui_controls::label::label;
+    use waterui_core::Binding;
+
+    let look = tabs_look_with_label_font(font);
+    let builder = AnyViewBuilder::<AnyView>::new(move || {
+        let selection = Binding::new(0usize);
+        if with_icon {
+            let items: Vec<_> = ["Dashboard", "Settings"]
+                .into_iter()
+                .map(|title| {
+                    Tab::new(label(title).icon(FixedForegroundIcon), move || {
+                        NavigationView::new(title, text::text("pane"))
+                    })
+                })
+                .collect();
+            AnyView::new(Tabs::new(&selection, items))
+        } else {
+            let items: Vec<_> = ["Dashboard", "Settings"]
+                .into_iter()
+                .map(|title| {
+                    Tab::new(title, move || {
+                        NavigationView::new(title, text::text("pane"))
+                    })
+                })
+                .collect();
+            AnyView::new(Tabs::new(&selection, items))
+        }
+    });
+    let mut rig = Rig {
+        runtime: HeadlessRuntime::new_for_tests(
+            test_environment(),
+            builder,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+            MinimalTestTheme {
+                tabs_look: Some(look),
+                ..Default::default()
+            },
+        ),
+        now: Instant::now(),
+    };
+    rig.settle();
+    let mut spans = GlyphSpans::default();
+    visit(&rig.runtime.renderer().mount_roots(), &mut spans);
+    spans
+        .0
+        .into_iter()
+        .filter(|(y, _)| *y >= 250.0)
+        .map(|(_, span)| span)
+        .fold(0.0, f64::max)
+}
+
+#[test]
+fn tabs_label_font_applies_to_measured_and_drawn_tab_labels() {
+    use super::test_renderer_with_theme;
+    use crate::renderer::RetainedSubview;
+    use waterui_core::Binding;
+    use waterui_core::layout::ProposalSize;
+    use waterui_text::font::{Body, Font, FontWeight};
+
+    let compact_font = Font::from(Body).font_size(10.0).weight(FontWeight::Medium);
+
+    for with_icon in [false, true] {
+        let default_span = max_tab_bar_label_span(None, with_icon);
+        let compact_span = max_tab_bar_label_span(Some(compact_font.clone()), with_icon);
+        assert!(
+            compact_span > 0.0 && compact_span < default_span * 0.75,
+            "label_font must scale tab bar label glyphs (with_icon={with_icon}, default={default_span}, compact={compact_span})"
+        );
+    }
+
+    // Intrinsic measurement also reflects the label_font override.
+    let env = test_environment();
+    let measure_tabs = |font: Option<Font>| {
+        let mut renderer = test_renderer_with_theme(MinimalTestTheme {
+            tabs_look: Some(tabs_look_with_label_font(font)),
+            ..Default::default()
+        });
+        let tabs = Tabs::new(
+            &Binding::new(0usize),
+            ["Dashboard Overview", "Account Settings"]
+                .into_iter()
+                .map(|title| Tab::new(title, || NavigationView::new("x", text::text("x"))))
+                .collect::<Vec<_>>(),
+        );
+        RetainedSubview::new(tabs).measure(&mut renderer, &env, ProposalSize::UNSPECIFIED)
+    };
+    let default_dims = measure_tabs(None);
+    let compact_dims = measure_tabs(Some(compact_font));
+    assert!(
+        compact_dims.width < default_dims.width,
+        "measured tabs width must reflect label_font (default={}, compact={})",
+        default_dims.width,
+        compact_dims.width
+    );
+}

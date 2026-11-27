@@ -15,6 +15,7 @@ use kurbo::{Rect, Vec2};
 use nami::Computed;
 use waterui_graphics::color::Color;
 use waterui_navigation::tab::TabStyle;
+use waterui_text::font::Font;
 
 use super::Chrome;
 use super::look::{Custom, CustomPart, DrivenSet, Motion};
@@ -292,11 +293,12 @@ type ItemHighlight = dyn Fn(&TabItem) -> Rc<dyn CustomPart<TabItem>>;
 /// its surface and divider, its items' chrome, an optional bar-level
 /// selection indicator, and optional per-item highlights.
 ///
-/// The parts record in this order: the surface, the divider, the bar-level
-/// selection indicator (when set with [`Self::selection_indicator`]), then
-/// for each item its highlight and its chrome's layers, then the items'
-/// icons and labels, and finally any bar-level indicator set with
-/// [`Self::selection_indicator_over_labels`].
+/// The selected tab's content records before the bar so a translucent bar
+/// surface captures the content behind it. The bar's own parts record in this
+/// order: the surface, the divider, the bar-level selection indicator (when
+/// set with [`Self::selection_indicator`]), then for each item its highlight
+/// and its chrome's layers, then the items' icons and labels, and finally any
+/// bar-level indicator set with [`Self::selection_indicator_over_labels`].
 ///
 /// An item's chrome and highlight are evaluated once per item while the
 /// items lie where they do; the highlight is a [`Custom`] part over the
@@ -320,6 +322,7 @@ pub struct TabsLook {
     floating_margin: f32,
     selected_foreground: Option<Color>,
     unselected_foreground: Option<Color>,
+    label_font: Option<Font>,
 }
 
 impl core::fmt::Debug for TabsLook {
@@ -342,6 +345,7 @@ impl core::fmt::Debug for TabsLook {
                 "unselected_foreground",
                 &self.unselected_foreground.is_some(),
             )
+            .field("label_font", &self.label_font)
             .finish_non_exhaustive()
     }
 }
@@ -381,6 +385,7 @@ impl TabsLook {
             floating_margin: 0.0,
             selected_foreground: None,
             unselected_foreground: None,
+            label_font: None,
         }
     }
 
@@ -485,6 +490,14 @@ impl TabsLook {
         self
     }
 
+    /// Overrides the typography used for tab item labels (`Body` slot),
+    /// leaving labels that explicitly specify their own slot untouched.
+    #[must_use]
+    pub fn label_font(mut self, font: impl Into<Font>) -> Self {
+        self.label_font = Some(font.into());
+        self
+    }
+
     /// How a bar `extent` wide lays its items out.
     #[must_use]
     pub fn item_layout(&self, extent: f32) -> TabItemLayout {
@@ -537,6 +550,12 @@ impl TabsLook {
     #[must_use]
     pub const fn get_unselected_foreground(&self) -> Option<&Color> {
         self.unselected_foreground.as_ref()
+    }
+
+    /// Tab item label font override, if configured.
+    #[must_use]
+    pub const fn get_label_font(&self) -> Option<&Font> {
+        self.label_font.as_ref()
     }
 
     /// The chrome of `item`, given its live selected flag.
@@ -657,5 +676,56 @@ mod tests {
             item(Rect::new(0.0, 60.0, 80.0, 120.0), TabStyle::Sidebar),
         ];
         assert_relative_eq!(drag.position(0, Some(Vec2::new(0.0, 30.0)), &sidebar), 0.5);
+    }
+
+    #[test]
+    fn tabs_look_label_font_defaults_to_none_and_stores_override() {
+        use nami::Signal;
+        use std::time::Duration;
+        use waterui_core::Environment;
+        use waterui_graphics::color::Srgb;
+        use waterui_text::font::{Body, Font, FontWeight};
+
+        use super::super::{
+            Chrome, CornerShape, Custom, FocusIndicator, Motion, PressFeedback, StateLayer,
+            Surface, TabsLook, TabsMetrics,
+        };
+
+        let metrics = TabsMetrics::new(48.0, 64.0, 12.0, 4.0);
+        let motion = Motion::uniform(waterui_core::animation::Animation::linear(
+            Duration::from_millis(10),
+        ));
+        let chrome = Chrome::new(
+            Surface::clear(CornerShape::radius(0.0)),
+            StateLayer::new(Srgb::WHITE),
+            PressFeedback::new(),
+            FocusIndicator::Tint,
+            motion.clone(),
+        );
+        let base = TabsLook::new(
+            metrics,
+            Custom::new((), |_recorder, _frame, ()| {}),
+            Custom::new((), |_recorder, _frame, ()| {}),
+            motion,
+            move |_item, _selected| chrome.clone(),
+        );
+        assert!(base.get_label_font().is_none());
+
+        let with_font =
+            base.label_font(Font::from(Body).font_size(10.0).weight(FontWeight::Medium));
+        let env = Environment::new()
+            .store::<Body, nami::Computed<waterui_text::font::ResolvedFont>>(
+                nami::Computed::constant(waterui_text::font::ResolvedFont::new(
+                    17.0,
+                    FontWeight::Normal,
+                )),
+            );
+        let resolved = with_font
+            .get_label_font()
+            .expect("label_font override must be present")
+            .resolve(&env)
+            .snapshot();
+        assert_relative_eq!(resolved.size(), 10.0, epsilon = 1e-6);
+        assert_eq!(resolved.weight(), FontWeight::Medium);
     }
 }
