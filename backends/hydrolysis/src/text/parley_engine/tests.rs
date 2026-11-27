@@ -333,3 +333,164 @@ fn glyph_bounds_fast_path_agrees_with_drawn_outline() {
         }
     }
 }
+
+fn first_run_metrics(layout: &ParleyLayout) -> (parley::FontData, Vec<i16>, f32) {
+    let line = layout.0.layout.get(0).expect("shaped line");
+    let run = line.runs().next().expect("shaped run");
+    let font = run.font().clone();
+    let coords: Vec<i16> = run
+        .normalized_coords()
+        .iter()
+        .map(|coord| coord.to_bits())
+        .collect();
+    let advance = line.metrics().advance;
+    (font, coords, advance)
+}
+
+fn shape_styled_system_text(
+    engine: &ParleyEngine,
+    env: &Environment,
+    content: &'static str,
+    size: f32,
+    weight: waterui_text::font::FontWeight,
+) -> ParleyLayout {
+    use waterui_text::font::Font;
+    use waterui_text::styled::Style;
+
+    let mut styled = StyledStr::empty();
+    styled.push(
+        content,
+        Style::default().font(Font::default().font_size(size).weight(weight)),
+    );
+    let input = resolve_text_layout_input(&styled, HorizontalAlignment::Leading, env);
+    engine.shape(&input, None)
+}
+
+#[test]
+fn optical_size_variation_tracks_font_size() {
+    use skrifa::raw::types::Tag as SkrifaTag;
+    use skrifa::{FontRef, MetadataProvider as _};
+    use waterui_text::font::FontWeight;
+
+    let env = test_environment();
+    let engine = ParleyEngine::system(FontFamilyResolution::Strict);
+
+    let regular_17 = shape_styled_system_text(&engine, &env, "Continue", 17.0, FontWeight::Normal);
+    let regular_28 = shape_styled_system_text(&engine, &env, "Continue", 28.0, FontWeight::Normal);
+    let regular_48 = shape_styled_system_text(&engine, &env, "Continue", 48.0, FontWeight::Normal);
+    let mut default_input = test_input(&env, "Continue");
+    default_input.default_font.size = 17.0;
+    default_input.spans.clear();
+    let default_17 = engine.shape(&default_input, None);
+
+    let (font_17, coords_17, advance_17) = first_run_metrics(&regular_17);
+    let (font_28, coords_28, _) = first_run_metrics(&regular_28);
+    let (font_48, coords_48, _) = first_run_metrics(&regular_48);
+    let (_, coords_default_17, advance_default_17) = first_run_metrics(&default_17);
+
+    let parsed_17 =
+        FontRef::from_index(font_17.data.as_ref(), font_17.index).expect("system font parses");
+    if let Some((opsz_index, _)) = parsed_17
+        .axes()
+        .iter()
+        .enumerate()
+        .find(|(_, axis)| axis.tag() == SkrifaTag::new(b"opsz"))
+    {
+        let expected_opsz = |font: &parley::FontData, size: f32| {
+            let parsed =
+                FontRef::from_index(font.data.as_ref(), font.index).expect("system font parses");
+            parsed
+                .axes()
+                .location([(SkrifaTag::new(b"opsz"), size)])
+                .coords()[opsz_index]
+                .to_bits()
+        };
+        let expected_17 = expected_opsz(&font_17, 17.0);
+        let expected_28 = expected_opsz(&font_28, 28.0);
+        let expected_48 = expected_opsz(&font_48, 48.0);
+        // Parley omits normalized coordinates when every axis sits at its default (0).
+        assert_eq!(
+            coords_17.get(opsz_index).copied().unwrap_or(0),
+            expected_17,
+            "17 pt run must set opsz variation coordinate to 17.0"
+        );
+        assert_eq!(
+            coords_default_17.get(opsz_index).copied().unwrap_or(0),
+            expected_17,
+            "17 pt default-font run must set opsz variation coordinate to 17.0"
+        );
+        assert_eq!(
+            coords_28.get(opsz_index).copied().unwrap_or(0),
+            expected_28,
+            "28 pt span must set opsz variation coordinate to 28.0"
+        );
+        assert_eq!(
+            coords_48.get(opsz_index).copied().unwrap_or(0),
+            expected_48,
+            "48 pt span must set opsz variation coordinate to 48.0"
+        );
+        assert_ne!(
+            expected_17, expected_28,
+            "variable opsz axis must distinguish 17 pt and 28 pt optical sizes"
+        );
+        assert_ne!(
+            expected_28, expected_48,
+            "variable opsz axis must distinguish 28 pt and 48 pt optical sizes"
+        );
+    }
+
+    // On macOS, `.SF NS` defines opsz 17..96 (default 28); shaping 17 pt
+    // Regular "Continue" at opsz=17 yields ~137.21 px at 2x (vs ~122.86 px
+    // when opsz falls back to the 28 pt display master).
+    #[cfg(target_os = "macos")]
+    {
+        let scaled_advance = advance_17 * 2.0;
+        assert!(
+            (scaled_advance - 137.21).abs() < 1.5,
+            "17 pt SystemUi \"Continue\" advance at 2x should match native optical size (~137.21 px), got {scaled_advance}"
+        );
+        assert!(
+            (advance_default_17 - advance_17).abs() < 1e-3,
+            "default-font and span-styled 17 pt runs should share identical optical-size advance ({advance_default_17} vs {advance_17})"
+        );
+    }
+    let _ = (advance_17, advance_default_17);
+}
+
+#[test]
+fn optical_size_variation_preserves_font_weight() {
+    use skrifa::raw::types::Tag as SkrifaTag;
+    use skrifa::{FontRef, MetadataProvider as _};
+    use waterui_text::font::FontWeight;
+
+    let env = test_environment();
+    let engine = ParleyEngine::system(FontFamilyResolution::Strict);
+
+    let semibold_17 = shape_styled_system_text(&engine, &env, "Root", 17.0, FontWeight::SemiBold);
+    let regular_17 = shape_styled_system_text(&engine, &env, "Root", 17.0, FontWeight::Normal);
+
+    let (font_semi, coords_semi, _) = first_run_metrics(&semibold_17);
+    let (font_reg, coords_reg, _) = first_run_metrics(&regular_17);
+
+    let parsed_semi = FontRef::from_index(font_semi.data.as_ref(), font_semi.index)
+        .expect("semibold system font parses");
+    if font_semi.data.as_ref() == font_reg.data.as_ref()
+        && font_semi.index == font_reg.index
+        && let Some((wght_index, _)) = parsed_semi
+            .axes()
+            .iter()
+            .enumerate()
+            .find(|(_, axis)| axis.tag() == SkrifaTag::new(b"wght"))
+    {
+        assert_ne!(
+            coords_semi.get(wght_index),
+            coords_reg.get(wght_index),
+            "setting opsz FontVariations must preserve distinct FontWeight wght coordinates"
+        );
+    } else {
+        assert!(
+            font_semi.data.as_ref() != font_reg.data.as_ref() || font_semi.index != font_reg.index,
+            "Semibold must select a distinct face or wght coordinate from Normal"
+        );
+    }
+}

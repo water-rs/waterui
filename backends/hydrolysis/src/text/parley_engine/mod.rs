@@ -536,6 +536,12 @@ fn truncate_spans(
     truncated
 }
 
+const OPTICAL_SIZE_AXIS: parley::setting::Tag = parley::setting::Tag::new(b"opsz");
+
+const fn optical_size_variation(size: f32) -> [parley::setting::FontVariation; 1] {
+    [parley::setting::FontVariation::new(OPTICAL_SIZE_AXIS, size)]
+}
+
 fn build_parley_layout(
     scratch: &mut TextShapingScratch,
     input: &ResolvedTextLayoutInput,
@@ -556,7 +562,11 @@ fn build_parley_layout(
     builder.push_default(parley::StyleProperty::Brush(RunBrush::paragraph(
         input.default_brush,
     )));
+    let default_variations = optical_size_variation(input.default_font.size);
     builder.push_default(parley::StyleProperty::FontSize(input.default_font.size));
+    builder.push_default(parley::StyleProperty::FontVariations(
+        parley::FontVariations::from(&default_variations),
+    ));
     builder.push_default(parley::StyleProperty::FontWeight(parley_font_weight(
         input.default_font.weight,
     )));
@@ -618,8 +628,13 @@ fn push_text_style(
     style: &ResolvedTextStyleSpec,
     range: Range<usize>,
 ) {
+    let variations = optical_size_variation(style.font.size);
     builder.push(
         parley::StyleProperty::FontSize(style.font.size),
+        range.clone(),
+    );
+    builder.push(
+        parley::StyleProperty::FontVariations(parley::FontVariations::from(&variations)),
         range.clone(),
     );
     builder.push(
