@@ -2127,3 +2127,113 @@ fn provided_semantics_node_supports_and_dispatches_on_activate() {
     assert!(act(&mut runtime, Action::Click, node_id));
     assert_eq!(activated.get(), 1);
 }
+
+#[test]
+fn async_button_is_single_flight_and_reports_busy_and_disabled_in_a11y_tree() {
+    use core::cell::{Cell, RefCell};
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll, Waker};
+    use std::rc::Rc;
+
+    struct Gate {
+        ready: Cell<bool>,
+        waker: RefCell<Option<Waker>>,
+    }
+    impl Gate {
+        fn new() -> Rc<Self> {
+            Rc::new(Self {
+                ready: Cell::new(false),
+                waker: RefCell::new(None),
+            })
+        }
+        fn complete(&self) {
+            self.ready.set(true);
+            if let Some(waker) = self.waker.borrow_mut().take() {
+                waker.wake();
+            }
+        }
+    }
+    struct Wait(Rc<Gate>);
+    impl Future for Wait {
+        type Output = ();
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.0.ready.get() {
+                Poll::Ready(())
+            } else {
+                *self.0.waker.borrow_mut() = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+    }
+
+    for pending_first in [false, true] {
+        let saving = Binding::new(false);
+        let calls = Rc::new(Cell::new(0u32));
+        let gate = Rc::new(RefCell::new(Gate::new()));
+
+        let saving_view = saving.clone();
+        let calls_view = Rc::clone(&calls);
+        let gate_view = Rc::clone(&gate);
+        let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
+            let calls_inner = Rc::clone(&calls_view);
+            let gate_inner = Rc::clone(&gate_view);
+            let handler = move || {
+                calls_inner.set(calls_inner.get() + 1);
+                let g = Rc::clone(&gate_inner.borrow());
+                async move {
+                    Wait(g).await;
+                }
+            };
+            if pending_first {
+                AnyView::new(button("Save").pending(&saving_view).action_async(handler))
+            } else {
+                AnyView::new(button("Save").action_async(handler).pending(&saving_view))
+            }
+        }));
+
+        let update = pumped(&mut runtime);
+        let (node_id, node) =
+            find_by_label(&update, Role::Button, "Save").expect("Save button must exist");
+        assert!(!node.is_busy());
+        assert!(!node.is_disabled());
+        assert!(node.supports_action(Action::Click));
+
+        // Activate via accessibility Click -> enters pending/busy/disabled immediately.
+        assert!(act(&mut runtime, Action::Click, node_id));
+        assert_eq!(calls.get(), 1);
+        assert!(saving.snapshot());
+
+        let update = pumped(&mut runtime);
+        let (busy_id, busy_node) =
+            find_by_label(&update, Role::Button, "Save").expect("Save button stays in tree");
+        assert!(
+            busy_node.is_busy(),
+            "async button must report busy in accessibility tree while in flight"
+        );
+        assert!(
+            busy_node.is_disabled(),
+            "async button must report disabled in accessibility tree while in flight"
+        );
+        assert!(
+            !busy_node.supports_action(Action::Click),
+            "busy async button must not advertise Click action"
+        );
+        assert!(
+            !act(&mut runtime, Action::Click, busy_id),
+            "clicking busy async button must be ignored"
+        );
+        assert_eq!(calls.get(), 1);
+
+        // Complete the gate and pump so the runtime's local executor finishes
+        // the future and updates the accessibility tree.
+        gate.borrow().complete();
+        let update = pumped(&mut runtime);
+        assert!(!saving.snapshot());
+        let (_, ready_node) =
+            find_by_label(&update, Role::Button, "Save").expect("Save button still exists");
+        assert!(!ready_node.is_busy());
+        assert!(!ready_node.is_disabled());
+        assert!(ready_node.supports_action(Action::Click));
+    }
+}

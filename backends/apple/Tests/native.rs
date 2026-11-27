@@ -407,6 +407,7 @@ fn trials() -> Vec<Trial> {
     tests.extend(avatar::trials());
     #[cfg(feature = "link")]
     tests.extend(link::trials());
+    tests.extend(async_button_pending::trials());
     tests.extend(markdown_a11y::trials());
     tests.extend(icon_a11y::trials());
     #[cfg(feature = "highlight")]
@@ -18929,6 +18930,191 @@ mod link {
         assert!(!disabled_button.is_enabled());
         #[cfg(target_os = "ios")]
         assert!(!disabled_button.isEnabled());
+    }
+}
+
+mod async_button_pending {
+    use core::cell::{Cell, RefCell};
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll, Waker};
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::Message;
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::objc2_app_kit::NSAccessibility as _;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+    use cocoa_ui::view::subviews;
+    use cocoa_ui::{PlatformView, Retained};
+    use libtest_mimic::Trial;
+    use nami::{Signal as _, binding};
+    use waterui::component::button::button;
+
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::appkit::Button as PlatformButton;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::uikit::button::CocoaUiButton as PlatformButton;
+
+    use super::{mtm, resolve};
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "async_button_pending::disables_button_and_reports_busy_while_in_flight",
+            || {
+                disables_button_and_reports_busy_while_in_flight();
+                Ok(())
+            },
+        )]
+    }
+
+    fn find_button(root: &PlatformView) -> Option<Retained<PlatformButton>> {
+        for sub in subviews(root) {
+            if let Some(button) = sub.downcast_ref::<PlatformButton>() {
+                return Some(Message::retain(button));
+            }
+            if let Some(found) = find_button(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    struct Gate {
+        ready: Cell<bool>,
+        waker: RefCell<Option<Waker>>,
+    }
+
+    impl Gate {
+        fn new() -> Rc<Self> {
+            Rc::new(Self {
+                ready: Cell::new(false),
+                waker: RefCell::new(None),
+            })
+        }
+
+        fn complete(&self) {
+            self.ready.set(true);
+            if let Some(waker) = self.waker.borrow_mut().take() {
+                waker.wake();
+            }
+        }
+    }
+
+    struct Wait(Rc<Gate>);
+
+    impl Future for Wait {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.0.ready.get() {
+                Poll::Ready(())
+            } else {
+                *self.0.waker.borrow_mut() = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+    }
+
+    fn disables_button_and_reports_busy_while_in_flight() {
+        let saving = binding(false);
+        let calls = Rc::new(Cell::new(0u32));
+        let gate = Gate::new();
+
+        let calls_action = Rc::clone(&calls);
+        let gate_action = Rc::clone(&gate);
+        let leaf = resolve::render(
+            button("Save")
+                .action_async(move || {
+                    calls_action.set(calls_action.get() + 1);
+                    let g = Rc::clone(&gate_action);
+                    async move {
+                        Wait(g).await;
+                    }
+                })
+                .pending(&saving),
+        );
+        let native_button =
+            find_button(leaf.view()).expect("button leaf must mount a native button");
+
+        #[cfg(target_os = "macos")]
+        {
+            assert!(native_button.is_enabled());
+            assert_eq!(native_button.accessibilityHelp(), None);
+        }
+        #[cfg(target_os = "ios")]
+        {
+            let mtm = mtm();
+            assert!(native_button.isEnabled());
+            assert_eq!(native_button.accessibilityHint(mtm), None);
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2_app_kit::NSControl;
+            // SAFETY: `performClick:` runs the button's target-action on the main thread.
+            unsafe {
+                NSControl::performClick(&native_button, None);
+                NSControl::performClick(&native_button, None);
+            }
+        }
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::UIControlEvents;
+            native_button.sendActionsForControlEvents(UIControlEvents::TouchUpInside);
+            native_button.sendActionsForControlEvents(UIControlEvents::TouchUpInside);
+        }
+        assert!(
+            waterui_apple::native_test_support::drain_main_queue(mtm()),
+            "main queue must drain pending state watchers"
+        );
+        assert_eq!(calls.get(), 1, "rapid double-tap must run once");
+        assert!(saving.snapshot());
+
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                !native_button.is_enabled(),
+                "AppKit button must disable while async action is pending"
+            );
+            assert_eq!(
+                native_button.accessibilityHelp().map(|s| s.to_string()),
+                Some(String::from("Busy")),
+                "AppKit button must report Busy help while pending"
+            );
+        }
+        #[cfg(target_os = "ios")]
+        {
+            let mtm = mtm();
+            assert!(
+                !native_button.isEnabled(),
+                "UIKit button must disable while async action is pending"
+            );
+            assert_eq!(
+                native_button.accessibilityHint(mtm).map(|s| s.to_string()),
+                Some(String::from("Busy")),
+                "UIKit button must report Busy hint while pending"
+            );
+        }
+
+        gate.complete();
+        assert!(
+            waterui_apple::native_test_support::drain_main_queue(mtm()),
+            "main queue must drain completion and watcher updates"
+        );
+        assert!(!saving.snapshot());
+
+        #[cfg(target_os = "macos")]
+        {
+            assert!(native_button.is_enabled());
+            assert_eq!(native_button.accessibilityHelp(), None);
+        }
+        #[cfg(target_os = "ios")]
+        {
+            let mtm = mtm();
+            assert!(native_button.isEnabled());
+            assert_eq!(native_button.accessibilityHint(mtm), None);
+        }
     }
 }
 

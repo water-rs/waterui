@@ -116,7 +116,13 @@
 //!
 //! ## Async Actions
 //!
-//! All patterns support async variants with `action_async`:
+//! All patterns support async variants with `action_async`. An async button
+//! action is single-flight: while its spawned future runs, further presses are
+//! ignored, the button's interaction state reports disabled, and accessibility
+//! reports busy until the future completes or is dropped. Chain
+//! [`.pending(&binding)`](Button::pending) in either order with
+//! [`.action_async(...)`](Button::action_async) to mirror the in-flight state
+//! into your own `Binding<bool>`:
 //!
 //! ```rust
 //! use waterui::prelude::*;
@@ -127,11 +133,13 @@
 //! # }
 //! # fn asynchronous() {
 //! # let result_binding: Binding<Str> = binding(Str::from(""));
+//! # let fetching: Binding<bool> = binding(false);
 //! button("Fetch Data")
 //!     .action_async(|State(result): State<Binding<Str>>| async move {
 //!         let data = fetch_from_server().await;
 //!         result.set(data);
 //!     })
+//!     .pending(&fetching)
 //!     .state(&result_binding);
 //! # }
 //! ```
@@ -175,7 +183,10 @@ use alloc::boxed::Box;
 use alloc::rc::Rc;
 use executor_core::spawn_local;
 use nami::{Binding, Computed, Signal as _, SignalExt as _, binding, zip::zip};
-use waterui_accessibility::{AccessibilityLabel, AccessibilityRole, default_role};
+use waterui_accessibility::{
+    AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
+    default_role,
+};
 use waterui_core::backend::{
     Backend, ChildSlot, HookSlot, HookableParent, MapSlots, ParentHookScope, offer_hookable_parent,
 };
@@ -438,6 +449,7 @@ impl<L> ButtonStyleConfiguration<L> {
 pub struct ButtonTrigger {
     action: Rc<RefCell<BoxedAction<()>>>,
     env: Environment,
+    pending: Option<Computed<bool>>,
 }
 
 impl fmt::Debug for ButtonTrigger {
@@ -447,19 +459,25 @@ impl fmt::Debug for ButtonTrigger {
 }
 
 impl ButtonTrigger {
-    /// Triggers the button's action unless the button is currently disabled.
+    fn is_pending(&self) -> bool {
+        self.pending.as_ref().is_some_and(Computed::snapshot)
+    }
+
+    /// Triggers the button's action unless the button is currently disabled
+    /// or its async action is in flight.
     pub fn trigger(&self) {
-        if Disabled::resolve(&self.env, false).snapshot() {
+        if Disabled::resolve(&self.env, false).snapshot() || self.is_pending() {
             return;
         }
         (self.action.borrow_mut())(&self.env).report_extraction();
     }
 
     /// Triggers the button's action with `runtime_env` layered over the
-    /// captured button environment, unless the button is currently disabled.
+    /// captured button environment, unless the button is currently disabled
+    /// or its async action is in flight.
     pub fn trigger_with(&self, runtime_env: &Environment) {
         let action_env = self.env.layered_on(runtime_env);
-        if Disabled::resolve(&action_env, false).snapshot() {
+        if Disabled::resolve(&action_env, false).snapshot() || self.is_pending() {
             return;
         }
         (self.action.borrow_mut())(&action_env).report_extraction();
@@ -691,10 +709,107 @@ pub trait SealedButtonStyle: sealed::Sealed + Sized + 'static {
     ) -> Result<impl View, ButtonStyleTarget>;
 }
 
-pub(crate) fn interaction_signals(
+/// Shared in-flight state for a single-flight async button action, plus an
+/// optional caller-supplied `Binding<bool>` mirror that can be attached before
+/// or after [`Button::action_async`].
+#[derive(Clone)]
+struct PendingState {
+    in_flight: Binding<bool>,
+    mirror: Rc<RefCell<Option<Binding<bool>>>>,
+}
+
+impl PendingState {
+    fn new() -> Self {
+        Self {
+            in_flight: binding(false),
+            mirror: Rc::new(RefCell::new(None)),
+        }
+    }
+
+    fn with_mirror(mirror: Binding<bool>) -> Self {
+        Self {
+            in_flight: binding(false),
+            mirror: Rc::new(RefCell::new(Some(mirror))),
+        }
+    }
+
+    fn attach_mirror(&self, mirror: &Binding<bool>) {
+        let is_pending = self.in_flight.snapshot();
+        *self.mirror.borrow_mut() = Some(mirror.clone());
+        if is_pending {
+            mirror.set(true);
+        }
+    }
+
+    fn is_pending(&self) -> bool {
+        self.in_flight.snapshot()
+    }
+
+    fn signal(&self) -> Computed<bool> {
+        self.in_flight.clone().computed()
+    }
+
+    fn set(&self, pending: bool) {
+        self.in_flight.set(pending);
+        let mirror = self.mirror.borrow().clone();
+        if let Some(mirror) = mirror {
+            mirror.set(pending);
+        }
+    }
+
+    fn begin(&self) -> PendingGuard {
+        self.set(true);
+        PendingGuard {
+            state: self.clone(),
+        }
+    }
+}
+
+/// Drop-safe RAII guard that clears [`PendingState`] when an async action
+/// finishes, unwinds, or is cancelled by dropping its future.
+struct PendingGuard {
+    state: PendingState,
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        self.state.set(false);
+    }
+}
+
+/// Pending-state storage carried by a [`Button`]: either a live tracker owned
+/// by `.pending(..)` / `.action_async(..)`, or a read-only signal preserved
+/// across a [`ButtonConfig`] / [`ButtonStyleTarget`] round-trip.
+#[derive(Clone)]
+enum ButtonPending {
+    Live(PendingState),
+    Signal(Computed<bool>),
+}
+
+impl ButtonPending {
+    fn signal(&self) -> Computed<bool> {
+        match self {
+            Self::Live(state) => state.signal(),
+            Self::Signal(signal) => signal.clone(),
+        }
+    }
+}
+
+fn effective_disabled(env: &Environment, pending: Option<&Computed<bool>>) -> Computed<bool> {
+    let env_disabled = Disabled::resolve(env, false);
+    match pending {
+        Some(pending) => zip(env_disabled, pending.clone())
+            .map(|(disabled, is_pending)| disabled || is_pending)
+            .computed(),
+        None => env_disabled,
+    }
+}
+
+fn button_interaction_signals(
     env: &Environment,
+    pending: Option<&Computed<bool>>,
 ) -> (Binding<InteractionState>, Computed<InteractionState>) {
-    let disabled = Disabled::resolve(env, false);
+    let disabled = effective_disabled(env, pending);
     let initial = if disabled.snapshot() {
         InteractionState::DISABLED
     } else {
@@ -713,6 +828,36 @@ pub(crate) fn interaction_signals(
     (report, interaction)
 }
 
+#[cfg(feature = "toggle")]
+pub(crate) fn interaction_signals(
+    env: &Environment,
+) -> (Binding<InteractionState>, Computed<InteractionState>) {
+    button_interaction_signals(env, None)
+}
+
+fn wrap_pending_accessibility_state<V: View>(
+    env: &Environment,
+    view: V,
+    pending: Option<Computed<bool>>,
+) -> OneOf2<V, Metadata<AccessibilityStateSignal, V>> {
+    match pending {
+        Some(pending) => {
+            let state = AccessibilityStateSignal::resolve(
+                env,
+                pending.map(|busy| {
+                    if busy {
+                        AccessibilityState::new().busy(true).disabled(true)
+                    } else {
+                        AccessibilityState::new()
+                    }
+                }),
+            );
+            OneOf2::B(Metadata::new(view, state))
+        }
+        None => OneOf2::A(view),
+    }
+}
+
 pub(crate) fn wrap_default_accessibility_label<V: View>(
     env: &Environment,
     view: V,
@@ -728,6 +873,10 @@ pub(crate) fn wrap_default_accessibility_label<V: View>(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "composes one custom-styled button from its semantic fields, action, pending signal, and env"
+)]
 fn compose_custom_button<L: View, S: CustomButtonStyle>(
     style: &S,
     label: L,
@@ -735,27 +884,35 @@ fn compose_custom_button<L: View, S: CustomButtonStyle>(
     action: Rc<RefCell<BoxedAction<()>>>,
     role: Option<ButtonRole>,
     size: ControlSize,
+    pending: Option<Computed<bool>>,
     env: &Environment,
 ) -> impl View + use<L, S> {
-    let (report, interaction) = interaction_signals(env);
+    let (report, interaction) = button_interaction_signals(env, pending.as_ref());
     let body = style.make_body(ButtonStyleConfiguration {
         label,
         role,
         size,
         interaction,
     });
+    let tap_pending = pending.clone();
     let gesture =
         GestureObserver::without_event(TapGesture::new(), move |action_env: Environment| {
-            if !Disabled::resolve(&action_env, false).snapshot() {
+            let is_pending = tap_pending.as_ref().is_some_and(Computed::snapshot);
+            if !Disabled::resolve(&action_env, false).snapshot() && !is_pending {
                 (action.borrow_mut())(&action_env).report_extraction();
             }
         });
     let with_gesture = Metadata::new(body, gesture);
-    let with_label = wrap_default_accessibility_label(env, with_gesture, accessibility_label);
+    let with_state = wrap_pending_accessibility_state(env, with_gesture, pending);
+    let with_label = wrap_default_accessibility_label(env, with_state, accessibility_label);
     let with_role = default_role(env, with_label, AccessibilityRole::Button);
     Installed::new(with_role, InteractionReport(report))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "composes one primitive-styled button from its semantic fields, action, pending signal, and env"
+)]
 fn compose_primitive_button<L: View, S: PrimitiveButtonStyle>(
     style: &S,
     label: L,
@@ -763,12 +920,14 @@ fn compose_primitive_button<L: View, S: PrimitiveButtonStyle>(
     action: Rc<RefCell<BoxedAction<()>>>,
     role: Option<ButtonRole>,
     size: ControlSize,
+    pending: Option<Computed<bool>>,
     env: &Environment,
 ) -> impl View + use<L, S> {
-    let (report, interaction) = interaction_signals(env);
+    let (report, interaction) = button_interaction_signals(env, pending.as_ref());
     let trigger = ButtonTrigger {
         action,
         env: env.clone(),
+        pending: pending.clone(),
     };
     let body = style.make_body(PrimitiveButtonStyleConfiguration {
         label,
@@ -777,7 +936,8 @@ fn compose_primitive_button<L: View, S: PrimitiveButtonStyle>(
         size,
         interaction,
     });
-    let with_label = wrap_default_accessibility_label(env, body, accessibility_label);
+    let with_state = wrap_pending_accessibility_state(env, body, pending);
+    let with_label = wrap_default_accessibility_label(env, with_state, accessibility_label);
     let with_role = default_role(env, with_label, AccessibilityRole::Button);
     Installed::new(with_role, InteractionReport(report))
 }
@@ -831,6 +991,7 @@ impl SealedButtonStyle for ButtonStyle {
             explicit_style: true,
             role: data.role,
             size: data.size,
+            pending: data.pending.map(ButtonPending::Signal),
         })
     }
 }
@@ -850,6 +1011,7 @@ impl<S: CustomButtonStyle> SealedButtonStyle for CustomButton<S> {
             action,
             button.role,
             button.size,
+            button.pending.as_ref().map(ButtonPending::signal),
             env,
         )
     }
@@ -874,6 +1036,7 @@ impl<S: CustomButtonStyle> SealedButtonStyle for CustomButton<S> {
             action,
             button.role,
             button.size,
+            button.pending.as_ref().map(ButtonPending::signal),
             env,
         )
         .dispatch(backend, env, cx)
@@ -894,6 +1057,7 @@ impl<S: CustomButtonStyle> SealedButtonStyle for CustomButton<S> {
             data.action,
             data.role,
             data.size,
+            data.pending,
             env,
         ))
     }
@@ -914,6 +1078,7 @@ impl<S: PrimitiveButtonStyle> SealedButtonStyle for PrimitiveButton<S> {
             action,
             button.role,
             button.size,
+            button.pending.as_ref().map(ButtonPending::signal),
             env,
         )
     }
@@ -938,6 +1103,7 @@ impl<S: PrimitiveButtonStyle> SealedButtonStyle for PrimitiveButton<S> {
             action,
             button.role,
             button.size,
+            button.pending.as_ref().map(ButtonPending::signal),
             env,
         )
         .dispatch(backend, env, cx)
@@ -958,6 +1124,7 @@ impl<S: PrimitiveButtonStyle> SealedButtonStyle for PrimitiveButton<S> {
             data.action,
             data.role,
             data.size,
+            data.pending,
             env,
         ))
     }
@@ -968,6 +1135,7 @@ struct ButtonStyleTargetData {
     action: Rc<RefCell<BoxedAction<()>>>,
     role: Option<ButtonRole>,
     size: ControlSize,
+    pending: Option<Computed<bool>>,
 }
 
 /// Internal hook target representing a [`Button`] eligible for subtree
@@ -1024,6 +1192,7 @@ pub struct ButtonStylePending<S> {
     explicit_style: bool,
     role: Option<ButtonRole>,
     size: ControlSize,
+    pending: Option<Computed<bool>>,
 }
 
 impl<S> fmt::Debug for ButtonStylePending<S> {
@@ -1049,6 +1218,7 @@ impl<S: 'static> ButtonStylePending<S> {
             explicit_style: self.explicit_style,
             role: self.role,
             size: self.size,
+            pending: self.pending,
         }
     }
 }
@@ -1085,6 +1255,8 @@ pub struct ButtonConfig<S> {
     role: Option<ButtonRole>,
     /// How large the button is drawn.
     size: ControlSize,
+    /// Reactive in-flight flag for an async button action.
+    pending: Option<Computed<bool>>,
 }
 
 impl<S> ButtonConfig<S> {
@@ -1128,6 +1300,13 @@ impl<S> ButtonConfig<S> {
         self.size
     }
 
+    /// Reactive signal reporting whether this button's asynchronous action is
+    /// currently in flight, if the button carries an async action.
+    #[must_use]
+    pub const fn pending(&self) -> Option<&Computed<bool>> {
+        self.pending.as_ref()
+    }
+
     /// Whether the button chose its style explicitly.
     #[doc(hidden)]
     #[must_use]
@@ -1155,6 +1334,7 @@ impl<S: 'static> HookableParent<S> for ButtonConfig<S> {
             action: Rc::clone(&action),
             role: self.role,
             size: self.size,
+            pending: self.pending.clone(),
         }));
         let pending = ButtonStylePending {
             label: self.label,
@@ -1163,6 +1343,7 @@ impl<S: 'static> HookableParent<S> for ButtonConfig<S> {
             explicit_style: self.explicit_style,
             role: self.role,
             size: self.size,
+            pending: self.pending,
         };
         (target, pending)
     }
@@ -1191,6 +1372,7 @@ impl<S: 'static> MapSlots<S> for ButtonConfig<S> {
             explicit_style: self.explicit_style,
             role: self.role,
             size: self.size,
+            pending: self.pending,
         }
     }
 
@@ -1240,6 +1422,7 @@ where
         explicit_style: button.explicit_style,
         role: button.role,
         size: button.size,
+        pending: button.pending.as_ref().map(ButtonPending::signal),
     }
 }
 
@@ -1282,6 +1465,7 @@ impl<S: View> From<ButtonConfig<S>> for Button<ControlLabel<S>, BoxedAction<()>>
             explicit_style: value.explicit_style,
             role: value.role,
             size: value.size,
+            pending: value.pending.map(ButtonPending::Signal),
         }
     }
 }
@@ -1301,6 +1485,7 @@ where
             explicit_style: self.explicit_style,
             role: self.role,
             size: self.size,
+            pending: self.pending.as_ref().map(ButtonPending::signal),
         }
     }
 }
@@ -1326,6 +1511,7 @@ pub struct Button<L, Action, Style = ButtonStyle> {
     explicit_style: bool,
     role: Option<ButtonRole>,
     size: ControlSize,
+    pending: Option<ButtonPending>,
 }
 
 impl<L, Action, Style> Button<L, Action, Style> {
@@ -1405,6 +1591,7 @@ impl<L: Clone, Action: Clone, Style: Clone> Clone for Button<L, Action, Style> {
             explicit_style: self.explicit_style,
             role: self.role,
             size: self.size,
+            pending: self.pending.clone(),
         }
     }
 }
@@ -1453,6 +1640,7 @@ impl<L> Button<L, NoAction, ButtonStyle> {
             explicit_style: false,
             role: None,
             size: ControlSize::Small,
+            pending: None,
         }
     }
 }
@@ -1490,6 +1678,7 @@ impl<L, Action, Style> Button<L, Action, Style> {
             explicit_style: true,
             role: self.role,
             size: self.size,
+            pending: self.pending,
         }
     }
 
@@ -1521,6 +1710,27 @@ impl<L, Action, Style> Button<L, Action, Style> {
     #[must_use]
     pub const fn hide_label(self) -> Self {
         self.label_style(LabelDisplayMode::Hidden)
+    }
+
+    /// Mirrors whether this button's asynchronous action is currently in flight
+    /// into `pending`.
+    ///
+    /// Composes in either order with [`action_async`](Self::action_async):
+    /// `button("Save").action_async(..).pending(&saving)` and
+    /// `button("Save").pending(&saving).action_async(..)` behave identically.
+    /// `pending` becomes `true` while the spawned future runs and is cleared to
+    /// `false` when it completes or is dropped.
+    #[must_use]
+    pub fn pending(mut self, pending: &Binding<bool>) -> Self {
+        match &self.pending {
+            Some(ButtonPending::Live(state)) => state.attach_mirror(pending),
+            Some(ButtonPending::Signal(_)) | None => {
+                self.pending = Some(ButtonPending::Live(PendingState::with_mirror(
+                    pending.clone(),
+                )));
+            }
+        }
+        self
     }
 
     /// Sets the action to be performed when the button is clicked.
@@ -1562,13 +1772,18 @@ impl<L, Action, Style> Button<L, Action, Style> {
             explicit_style: self.explicit_style,
             role: self.role,
             size: self.size,
+            pending: self.pending,
         }
     }
 
-    /// Sets an asynchronous action to be performed when the button is clicked.
+    /// Sets a single-flight asynchronous action to be performed when the button
+    /// is clicked.
     ///
-    /// The future is spawned on the local executor and detached. Use this
-    /// for actions that need to perform async operations like network requests.
+    /// The future is spawned on the local executor and detached. While it runs,
+    /// further presses are ignored, the button's interaction state reports
+    /// disabled, accessibility reports busy, and any binding attached with
+    /// [`pending`](Self::pending) mirrors `true` until the future completes or
+    /// is dropped.
     ///
     /// # Arguments
     ///
@@ -1601,18 +1816,35 @@ impl<L, Action, Style> Button<L, Action, Style> {
         Fut: Future<Output = ()> + 'static,
     {
         let mut action = action;
+        let pending = match self.pending {
+            Some(ButtonPending::Live(state)) => state,
+            Some(ButtonPending::Signal(_)) | None => PendingState::new(),
+        };
+        let action_pending = pending.clone();
         Button {
             label: self.label,
+            // Single-flight: ignore presses while a spawned future is in flight.
             // A failed extraction means the action does not run: no future is
-            // spawned, and the failure travels to the button's dispatcher.
+            // spawned, pending stays false, and the failure travels to the
+            // button's dispatcher.
             action: move |env: &Environment| {
-                spawn_local(action.call(env)?).detach();
+                if action_pending.is_pending() {
+                    return Ok(());
+                }
+                let future = action.call(env)?;
+                let guard = action_pending.begin();
+                spawn_local(async move {
+                    let _guard = guard;
+                    future.await;
+                })
+                .detach();
                 Ok(())
             },
             style: self.style,
             explicit_style: self.explicit_style,
             role: self.role,
             size: self.size,
+            pending: Some(ButtonPending::Live(pending)),
         }
     }
 }
@@ -1630,13 +1862,18 @@ where
             explicit_style: _,
             role,
             size: _,
+            pending,
         } = value;
         let command =
             Self::from_semantic_label(label.into_semantic()).action(move |env: Environment| {
                 action(&env).report_extraction();
             });
-        match role {
+        let command = match role {
             Some(role) => command.role(role),
+            None => command,
+        };
+        match pending {
+            Some(pending) => command.disabled(pending.signal()),
             None => command,
         }
     }
@@ -2040,5 +2277,424 @@ mod custom_style_tests {
         assert!(is_disabled.snapshot());
         trigger.trigger();
         assert_eq!(tapped.get(), 1, "disabled button trigger must not fire");
+    }
+
+    struct ManualGate {
+        ready: Cell<bool>,
+        waker: RefCell<Option<core::task::Waker>>,
+    }
+
+    impl ManualGate {
+        fn new() -> Rc<Self> {
+            Rc::new(Self {
+                ready: Cell::new(false),
+                waker: RefCell::new(None),
+            })
+        }
+
+        fn complete(&self) {
+            self.ready.set(true);
+            if let Some(waker) = self.waker.borrow_mut().take() {
+                waker.wake();
+            }
+        }
+
+        fn wait(self: Rc<Self>) -> GateFuture {
+            GateFuture(self)
+        }
+    }
+
+    struct GateFuture(Rc<ManualGate>);
+
+    impl core::future::Future for GateFuture {
+        type Output = ();
+
+        fn poll(
+            self: core::pin::Pin<&mut Self>,
+            cx: &mut core::task::Context<'_>,
+        ) -> core::task::Poll<()> {
+            if self.0.ready.get() {
+                core::task::Poll::Ready(())
+            } else {
+                *self.0.waker.borrow_mut() = Some(cx.waker().clone());
+                core::task::Poll::Pending
+            }
+        }
+    }
+
+    #[test]
+    fn action_async_is_single_flight_and_mirrors_pending_in_both_orders() {
+        crate::init_test_executor();
+        let env = Environment::new();
+
+        for pending_first in [false, true] {
+            let saving = binding(false);
+            let calls = Rc::new(Cell::new(0u32));
+            let gate_slot = Rc::new(RefCell::new(ManualGate::new()));
+            let handler = {
+                let calls = Rc::clone(&calls);
+                let gate = Rc::clone(&gate_slot);
+                move || {
+                    calls.set(calls.get() + 1);
+                    let current = Rc::clone(&gate.borrow());
+                    async move {
+                        current.wait().await;
+                    }
+                }
+            };
+
+            let mut cfg = if pending_first {
+                button("Save")
+                    .pending(&saving)
+                    .action_async(handler)
+                    .config()
+            } else {
+                button("Save")
+                    .action_async(handler)
+                    .pending(&saving)
+                    .config()
+            };
+            let pending_signal = cfg
+                .pending()
+                .expect("async button config carries pending signal")
+                .clone();
+
+            assert!(!saving.snapshot());
+            assert!(!pending_signal.snapshot());
+
+            // First press starts the future; rapid double-tap is ignored.
+            (cfg.action_mut())(&env).expect("first press succeeds");
+            assert_eq!(calls.get(), 1);
+            assert!(saving.snapshot());
+            assert!(pending_signal.snapshot());
+
+            (cfg.action_mut())(&env).expect("second press while pending is a no-op");
+            assert_eq!(
+                calls.get(),
+                1,
+                "rapid double-tap must not spawn a second future (pending_first={pending_first})"
+            );
+
+            // Poll once so the future registers its waker and stays suspended.
+            let _ = waterui_testing::drain_parked_local_work();
+            assert!(saving.snapshot());
+            assert!(pending_signal.snapshot());
+
+            // Another tap while suspended mid-await is still ignored.
+            (cfg.action_mut())(&env).expect("press while suspended is a no-op");
+            assert_eq!(calls.get(), 1);
+
+            // Completing the future clears pending and re-arms the button.
+            gate_slot.borrow().complete();
+            let _ = waterui_testing::drain_parked_local_work();
+            assert!(!saving.snapshot());
+            assert!(!pending_signal.snapshot());
+
+            // A fresh press after completion runs again.
+            *gate_slot.borrow_mut() = ManualGate::new();
+            (cfg.action_mut())(&env).expect("press after completion succeeds");
+            assert_eq!(calls.get(), 2);
+            assert!(saving.snapshot());
+            assert!(pending_signal.snapshot());
+            gate_slot.borrow().complete();
+            let _ = waterui_testing::drain_parked_local_work();
+            assert!(!saving.snapshot());
+            assert!(!pending_signal.snapshot());
+        }
+    }
+
+    #[test]
+    fn action_async_resets_pending_when_future_is_dropped_or_cancelled() {
+        use core::future::Future;
+        use executor_core::LocalExecutor;
+        use executor_core::async_task::{self, AsyncTask, Runnable};
+
+        extern crate std;
+        use std::collections::VecDeque;
+
+        // Dedicated thread with a local executor whose queue we can explicitly
+        // drop/cancel mid-flight to prove the RAII guard resets `pending` even
+        // when the spawned future never runs to completion.
+        let handle = std::thread::spawn(|| {
+            std::thread_local! {
+                static QUEUE: RefCell<VecDeque<Runnable>> = const { RefCell::new(VecDeque::new()) };
+            }
+
+            #[derive(Debug, Clone, Copy)]
+            struct CancellableExecutor;
+
+            impl LocalExecutor for CancellableExecutor {
+                type Task<T: 'static> = AsyncTask<T>;
+
+                fn spawn_local<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
+                where
+                    Fut: Future + 'static,
+                {
+                    let (runnable, task) = async_task::spawn_local(fut, |runnable: Runnable| {
+                        QUEUE.with(|q| q.borrow_mut().push_back(runnable));
+                    });
+                    runnable.schedule();
+                    task
+                }
+            }
+
+            executor_core::try_init_local_executor(CancellableExecutor)
+                .expect("fresh thread has no local executor");
+
+            let env = Environment::new();
+            let saving = binding(false);
+            let gate = ManualGate::new();
+            let gate_for_action = Rc::clone(&gate);
+
+            let mut cfg = button("Save")
+                .action_async(move || {
+                    let g = Rc::clone(&gate_for_action);
+                    async move {
+                        g.wait().await;
+                    }
+                })
+                .pending(&saving)
+                .config();
+            let pending_signal = cfg.pending().expect("pending signal present").clone();
+
+            // Case 1: drop the spawned runnable before it is ever polled.
+            (cfg.action_mut())(&env).expect("press succeeds");
+            assert!(saving.snapshot());
+            assert!(pending_signal.snapshot());
+            QUEUE.with(|q| q.borrow_mut().clear());
+            assert!(
+                !saving.snapshot() && !pending_signal.snapshot(),
+                "dropping an unpolled future must reset pending"
+            );
+
+            // Case 2: poll until suspended on `gate.wait()`, wake it, and then
+            // drop the scheduled runnable before its second poll (simulating
+            // executor shutdown/cancellation mid-flight).
+            (cfg.action_mut())(&env).expect("second press after drop succeeds");
+            assert!(saving.snapshot());
+            assert!(pending_signal.snapshot());
+            let runnable = QUEUE
+                .with(|q| q.borrow_mut().pop_front())
+                .expect("runnable queued");
+            runnable.run();
+            assert!(saving.snapshot(), "still pending while suspended at await");
+            if let Some(waker) = gate.waker.borrow_mut().take() {
+                waker.wake();
+            }
+            QUEUE.with(|q| q.borrow_mut().clear());
+            assert!(
+                !saving.snapshot() && !pending_signal.snapshot(),
+                "dropping a suspended future must reset pending"
+            );
+
+            // Case 3: a future that panics while running still resets pending
+            // via `PendingGuard::drop` during unwind.
+            let mut panic_cfg = button("Explode")
+                .action_async(|| async {
+                    panic!("simulated async action panic");
+                })
+                .pending(&saving)
+                .config();
+            let panic_pending = panic_cfg.pending().expect("pending signal present").clone();
+            (panic_cfg.action_mut())(&env).expect("press succeeds");
+            assert!(saving.snapshot());
+            assert!(panic_pending.snapshot());
+            let runnable = QUEUE
+                .with(|q| q.borrow_mut().pop_front())
+                .expect("panic runnable queued");
+            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                runnable.run();
+            }));
+            assert!(panicked.is_err(), "test future must panic");
+            assert!(
+                !saving.snapshot() && !panic_pending.snapshot(),
+                "panicking future must reset pending via drop guard"
+            );
+        });
+        handle.join().expect("cancellation test thread panicked");
+    }
+
+    #[test]
+    fn action_async_failed_extraction_does_not_mark_pending() {
+        crate::init_test_executor();
+        let env = Environment::new();
+        let saving = binding(false);
+        let mut cfg = button("Save")
+            .action_async(
+                |waterui_core::extract::State(_missing): waterui_core::extract::State<
+                    nami::Binding<i32>,
+                >| async {},
+            )
+            .pending(&saving)
+            .config();
+        let pending_signal = cfg.pending().expect("pending signal present").clone();
+
+        let err = (cfg.action_mut())(&env);
+        assert!(err.is_err(), "missing state must fail extraction");
+        assert!(!saving.snapshot());
+        assert!(!pending_signal.snapshot());
+    }
+
+    #[test]
+    fn custom_style_reflects_async_pending_in_interaction_and_a11y() {
+        use waterui_accessibility::AccessibilityStateSignal;
+
+        crate::init_test_executor();
+        let env = Environment::new();
+
+        let recorded = Rc::new(RefCell::new(None));
+        let gate = ManualGate::new();
+        let gate_for_custom = Rc::clone(&gate);
+        let saving = binding(false);
+        let calls = Rc::new(Cell::new(0u32));
+        let calls_for_custom = Rc::clone(&calls);
+
+        let view = button("Save")
+            .action_async(move || {
+                calls_for_custom.set(calls_for_custom.get() + 1);
+                let g = Rc::clone(&gate_for_custom);
+                async move {
+                    g.wait().await;
+                }
+            })
+            .pending(&saving)
+            .style(RecordingCustomStyle {
+                recorded: Rc::clone(&recorded),
+            });
+
+        let body = View::body(view, &env);
+        let recorded_cfg = recorded.borrow_mut().take().expect("custom style ran");
+        let env_view = peel_metadata::<Environment>(AnyView::new(body), &env)
+            .expect("InteractionReport installed");
+        let inner_env = env_view.value;
+        let role_view =
+            peel_metadata::<AccessibilityRole>(env_view.content, &inner_env).expect("role");
+        let a11y_label =
+            peel_metadata::<AccessibilityLabel>(role_view.content, &env).expect("label");
+        let a11y_state = peel_metadata::<AccessibilityStateSignal>(a11y_label.content, &env)
+            .expect("async custom button publishes AccessibilityStateSignal");
+        let observer =
+            peel_metadata::<GestureObserver>(a11y_state.content, &env).expect("tap observer");
+        let (_, mut tap_action) = observer.value.into_parts();
+
+        assert!(!recorded_cfg.disabled.snapshot());
+        assert!(!a11y_state.value.state().snapshot().is_busy());
+
+        tap_action(&inner_env).expect("tap succeeds");
+        assert_eq!(calls.get(), 1);
+        assert!(saving.snapshot());
+        assert!(recorded_cfg.disabled.snapshot());
+        assert!(
+            recorded_cfg
+                .interaction
+                .snapshot()
+                .contains(InteractionState::DISABLED)
+        );
+        assert!(a11y_state.value.state().snapshot().is_busy());
+        assert!(a11y_state.value.state().snapshot().is_disabled());
+
+        // Second tap while pending is blocked.
+        tap_action(&inner_env).expect("blocked tap succeeds");
+        assert_eq!(calls.get(), 1);
+
+        let _ = waterui_testing::drain_parked_local_work();
+        gate.complete();
+        let _ = waterui_testing::drain_parked_local_work();
+
+        assert!(!saving.snapshot());
+        assert!(!recorded_cfg.disabled.snapshot());
+        assert!(!a11y_state.value.state().snapshot().is_busy());
+        assert!(!a11y_state.value.state().snapshot().is_disabled());
+    }
+
+    #[test]
+    fn primitive_style_reflects_async_pending_in_interaction_and_a11y() {
+        use waterui_accessibility::AccessibilityStateSignal;
+
+        crate::init_test_executor();
+        let env = Environment::new();
+        let saving = binding(false);
+        let prim_recorded = Rc::new(RefCell::new(None));
+        let trigger_slot = Rc::new(RefCell::new(None));
+        let prim_gate = ManualGate::new();
+        let prim_gate_for_action = Rc::clone(&prim_gate);
+        let prim_calls = Rc::new(Cell::new(0u32));
+        let prim_calls_for_action = Rc::clone(&prim_calls);
+
+        let prim_view = button("Send")
+            .pending(&saving)
+            .action_async(move || {
+                prim_calls_for_action.set(prim_calls_for_action.get() + 1);
+                let g = Rc::clone(&prim_gate_for_action);
+                async move {
+                    g.wait().await;
+                }
+            })
+            .style(RecordingPrimitiveStyle {
+                recorded: Rc::clone(&prim_recorded),
+                trigger_slot: Rc::clone(&trigger_slot),
+            });
+
+        let prim_body = View::body(prim_view, &env);
+        let prim_cfg = prim_recorded
+            .borrow_mut()
+            .take()
+            .expect("primitive style ran");
+        let prim_trigger = trigger_slot
+            .borrow_mut()
+            .take()
+            .expect("primitive style received trigger");
+        let prim_env_view = peel_metadata::<Environment>(AnyView::new(prim_body), &env)
+            .expect("InteractionReport installed");
+        let prim_role =
+            peel_metadata::<AccessibilityRole>(prim_env_view.content, &prim_env_view.value)
+                .expect("role");
+        let prim_label =
+            peel_metadata::<AccessibilityLabel>(prim_role.content, &env).expect("label");
+        let prim_state = peel_metadata::<AccessibilityStateSignal>(prim_label.content, &env)
+            .expect("async primitive button publishes AccessibilityStateSignal");
+
+        prim_trigger.trigger();
+        assert_eq!(prim_calls.get(), 1);
+        assert!(prim_cfg.disabled.snapshot());
+        assert!(prim_state.value.state().snapshot().is_busy());
+        prim_trigger.trigger();
+        assert_eq!(prim_calls.get(), 1);
+
+        let _ = waterui_testing::drain_parked_local_work();
+        prim_gate.complete();
+        let _ = waterui_testing::drain_parked_local_work();
+        assert!(!prim_cfg.disabled.snapshot());
+        assert!(!prim_state.value.state().snapshot().is_busy());
+    }
+
+    #[cfg(feature = "menu")]
+    #[test]
+    fn menu_command_conversion_disables_while_async_button_is_pending() {
+        crate::init_test_executor();
+        let saving = binding(false);
+        let gate = ManualGate::new();
+        let gate_for_action = Rc::clone(&gate);
+        let command: crate::menu::Command = button("Sync")
+            .action_async(move || {
+                let g = Rc::clone(&gate_for_action);
+                async move {
+                    g.wait().await;
+                }
+            })
+            .pending(&saving)
+            .into();
+
+        assert!(!command.is_disabled().snapshot());
+        let env = Environment::new();
+        command.action().run(&env);
+        assert!(saving.snapshot());
+        assert!(command.is_disabled().snapshot());
+
+        let _ = waterui_testing::drain_parked_local_work();
+        gate.complete();
+        let _ = waterui_testing::drain_parked_local_work();
+        assert!(!saving.snapshot());
+        assert!(!command.is_disabled().snapshot());
     }
 }

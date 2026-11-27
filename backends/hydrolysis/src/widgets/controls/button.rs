@@ -27,8 +27,8 @@ use accesskit::{
 };
 use kurbo::Rect;
 #[cfg(feature = "menu")]
-use nami::{Binding, Computed};
-use nami::{Signal, SignalExt};
+use nami::Binding;
+use nami::{Computed, Signal, SignalExt};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -459,12 +459,17 @@ pub(super) fn ensure_control_label_built<E: crate::text::TextEngine>(
 }
 
 #[cfg(feature = "accessibility")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shared button/link accessibility emission accepts state, label, role metadata, pending signal, env, and activation callback"
+)]
 pub(super) fn control_accessibility<E: crate::text::TextEngine, S, T: 'static>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
     state: &Rc<RefCell<T>>,
     label: &ControlLabel<S>,
     role_meta: (AccessibilityNodeRole, Option<&'static str>),
+    pending: Option<&Computed<bool>>,
     env: &Environment,
     activate: impl FnMut(&mut crate::renderer::SemanticCore<E>, &Environment) -> bool + 'static,
 ) {
@@ -488,9 +493,16 @@ pub(super) fn control_accessibility<E: crate::text::TextEngine, S, T: 'static>(
     if renderer.control_selected(env, &crate::renderer::InteractionKey::for_rc(state, 0)) {
         node.set_selected(true);
     }
-    // A disabled control stays in the tree (focusable, announced as
-    // disabled) but exposes no click action and no action target.
-    let disabled = renderer.read_signal(&widget_disabled(env));
+    // Subscribe to both the enclosing `Disabled` scope and any async `pending`
+    // signal without short-circuiting so changes to either schedule a refresh.
+    let env_disabled = renderer.read_signal(&widget_disabled(env));
+    let busy = pending.is_some_and(|signal| renderer.read_signal(signal));
+    if busy {
+        node.set_busy();
+    }
+    // A disabled or busy control stays in the tree (focusable, announced as
+    // disabled/busy) but exposes no click action and no action target.
+    let disabled = env_disabled || busy;
     let action_target = if disabled {
         node.set_disabled();
         None
@@ -528,7 +540,7 @@ pub fn button_accessibility<E: crate::text::TextEngine>(
 ) {
     #[cfg(feature = "accessibility")]
     {
-        let (label, default_role, description) = {
+        let (label, default_role, description, pending) = {
             let button = &state.borrow().config;
             let default_role = match button.style() {
                 ButtonStyle::Link => AccessibilityNodeRole::Link,
@@ -539,7 +551,12 @@ pub fn button_accessibility<E: crate::text::TextEngine>(
                 Some(ButtonRole::Cancel) => Some("cancel"),
                 _ => None,
             };
-            (button.label().clone(), default_role, description)
+            (
+                button.label().clone(),
+                default_role,
+                description,
+                button.pending().cloned(),
+            )
         };
         let activate_state = Rc::clone(state);
         let action_env = env.clone();
@@ -549,6 +566,7 @@ pub fn button_accessibility<E: crate::text::TextEngine>(
             state,
             &label,
             (default_role, description),
+            pending.as_ref(),
             env,
             move |_renderer, _env| {
                 (activate_state.borrow_mut().config.action_mut())(&action_env).report_extraction();
@@ -1272,7 +1290,11 @@ fn render_title<E: crate::text::TextEngine, S>(
 }
 
 /// Renders a button-like control's chrome and label, returning `(target, press_slot, keyboard_focusable)`
-/// when interactive (`None` when disabled).
+/// when interactive (`None` when disabled or pending).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shared button/link chrome and label render path takes chrome state, label, presentation, key, pending signal, and env"
+)]
 pub(super) fn render_control_parts<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     chrome: &mut ButtonChromeState,
@@ -1280,18 +1302,21 @@ pub(super) fn render_control_parts<E: crate::text::TextEngine>(
     label: &ControlLabel<HeldChild<E>>,
     presentation: ControlPresentation,
     key: crate::renderer::InteractionKey,
+    pending: Option<&Computed<bool>>,
     env: &Environment,
 ) -> Option<(Rect, crate::renderer::PressSlot, bool)> {
     // Subscribe to the (possibly reactive) title so a label change schedules a frame
     // and this persistent node re-renders the new text.
     watch_button_title(ctx.renderer_mut(), label, env);
-    // Reading the disabled signal watches it, so a change schedules a frame
-    // and this persistent node re-renders (and re-registers input) with the
+    // Reading both signals watches them without short-circuiting, so a change to
+    // either schedules a frame and re-renders (and re-registers input) with the
     // new state.
-    let disabled = {
+    let env_disabled = {
         let signal = widget_disabled(env);
         ctx.renderer_mut().read_signal(&signal)
     };
+    let is_pending = pending.is_some_and(|signal| ctx.renderer_mut().read_signal(signal));
+    let disabled = env_disabled || is_pending;
     let role_env = role_environment(presentation.role, env);
     let spec = button_spec(
         presentation.style,
@@ -1316,9 +1341,9 @@ pub(super) fn render_control_parts<E: crate::text::TextEngine>(
         }
     });
 
-    // A disabled control registers no tap target: the pointer neither presses
-    // it nor invokes its action. Targets are re-registered every flush, so
-    // re-enabling restores interactivity on the next frame.
+    // A disabled or pending control registers no tap target: the pointer neither
+    // presses it nor invokes its action. Targets are re-registered every flush,
+    // so re-enabling restores interactivity on the next frame.
     (!disabled).then(|| {
         (
             rendered.target,
@@ -1342,6 +1367,7 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
             size: state_mut.config.size(),
             role: state_mut.config.role(),
         };
+        let pending = state_mut.config.pending().cloned();
         render_control_parts(
             ctx,
             &mut state_mut.chrome,
@@ -1349,6 +1375,7 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
             state_mut.config.label(),
             presentation,
             key,
+            pending.as_ref(),
             env,
         )
     };
