@@ -1,13 +1,10 @@
 use crate::platform::TextInputPurpose;
-#[cfg(feature = "text-field")]
 use crate::renderer::TailMark;
 #[cfg(feature = "secure-field")]
 use crate::renderer::measure_secure_field_size_with_label_size;
 #[cfg(feature = "text-field")]
 use crate::renderer::measure_text_field_size_with_label_size;
-use crate::renderer::text_editing::CaretPaints;
-#[cfg(feature = "text-field")]
-use crate::renderer::text_editing::TextInputOptions;
+use crate::renderer::text_editing::{CaretPaints, TextInputOptions};
 use crate::renderer::{
     HeldChild, HydroState, HydrolysisRenderer, RetainedSubview, TextInputModel,
     TextInputTargetRegistration, TextSelectionSlot, WidgetRenderContext, clamp_to_char_boundary,
@@ -15,18 +12,20 @@ use crate::renderer::{
 };
 use crate::text::{TextLayout as _, TextPosition};
 use crate::theme::{ModalInteraction, TextFieldLook};
-#[cfg(feature = "text-field")]
-use crate::widgets::controls::field_look::placeholder_text;
-use crate::widgets::controls::field_look::{FieldChrome, FloatLabel, value_text};
+use crate::widgets::controls::field_look::{FieldChrome, FloatLabel, placeholder_text, value_text};
 #[cfg(feature = "text-field")]
 use core::num::NonZeroUsize;
 #[cfg(feature = "text-field")]
 use nami::Computed;
-use nami::{Signal as _, SignalExt as _};
+use nami::Signal as _;
+#[cfg(feature = "text-field")]
+use nami::SignalExt as _;
 use std::cell::RefCell;
 use std::rc::Rc;
 #[cfg(feature = "text-field")]
 use waterui_controls::NoopSlot;
+#[cfg(feature = "secure-field")]
+use waterui_controls::input::{Capitalization, KeyboardType};
 #[cfg(feature = "text-field")]
 use waterui_controls::menu::ResolvedMenuItem;
 #[cfg(feature = "text-field")]
@@ -651,13 +650,20 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
     let input_metrics = look.metrics();
     ctx.renderer_mut()
         .set_text_caret_motion(look.caret().blink());
-    // Read the retained label/value from the retained config each frame (the value
+    // Read the retained fields from the retained config each frame (the value
     // is a cloneable `Binding<Secure>`; it is read through `read_signal` below so a
     // binding change schedules a frame). The label is a retained node sub-view
     // flushed under the animated transform each frame.
-    let (label, value_binding) = {
+    let (label, value_binding, prompt_signal, content_type, submit_label, on_submit) = {
         let secure_field = &state.config;
-        (secure_field.label().clone(), secure_field.value().clone())
+        (
+            secure_field.label().clone(),
+            secure_field.value().clone(),
+            secure_field.prompt().content(),
+            secure_field.content_type(),
+            secure_field.submit_label(),
+            secure_field.on_submit().cloned(),
+        )
     };
     #[cfg(feature = "accessibility")]
     let default_accessibility_label = ctx
@@ -675,12 +681,19 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
     let label_height = material_input_label_height(label_size, input_metrics.label_height);
     #[cfg(feature = "accessibility")]
     {
+        let prompt = ctx
+            .renderer_mut()
+            .read_signal(&prompt_signal)
+            .to_plain()
+            .to_string();
         let secure_len = ctx
             .renderer_mut()
             .read_signal(&value_binding)
             .expose()
             .chars()
             .count();
+        let default_label =
+            default_accessibility_label.or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
         let local = ctx.bounds;
         let bounds = local;
         let mut node = AccessibilityNode::new(
@@ -691,9 +704,12 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
         );
         let label = ctx
             .renderer_mut()
-            .resolve_accessibility_label(env, default_accessibility_label);
+            .resolve_accessibility_label(env, default_label);
         if let Some(label) = label {
             node.set_label(label);
+        }
+        if !prompt.is_empty() {
+            node.set_placeholder(prompt);
         }
         if let Some(value) = ctx
             .renderer_mut()
@@ -716,6 +732,10 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
                 value: value_binding.clone(),
             }),
         ) {
+            if let Some(declared) = content_type {
+                ctx.renderer_mut()
+                    .register_accessibility_content_type(node_id, declared);
+            }
             ctx.renderer_mut()
                 .push_pending_text_input_accessibility_node(node_id);
         }
@@ -726,12 +746,20 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
         state
             .field
             .bind(ctx, &interaction_key, field_rect, env, disabled, is_focused);
-    let value_paint = state.field.value_paint();
     let selection_slot = Rc::clone(&state.selection_slot);
     let input_model = TextInputModel::SecureField {
         value: value_binding.clone(),
+        on_submit,
+        input: TextInputOptions {
+            keyboard: KeyboardType::Text,
+            content_type,
+            autocapitalization: Capitalization::None,
+            autocorrect: false,
+            submit_label,
+        },
     };
-    let (masked, plain_value) = {
+    let (prompt, masked, plain_value) = {
+        let prompt = ctx.renderer_mut().read_signal(&prompt_signal).to_plain();
         let plain_value = ctx
             .renderer_mut()
             .read_signal(&value_binding)
@@ -746,23 +774,48 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
             0
         };
         let count = plain_value.chars().count() + preedit_count;
-        ("*".repeat(count), plain_value)
+        (prompt, "*".repeat(count), plain_value)
     };
-    let has_label = label_height > 0.0;
+    let use_placeholder = masked.is_empty();
+    let prompt_as_label = label_height == 0.0 && !prompt.is_empty();
+    let prompt_label = prompt_as_label.then(|| {
+        let styled = placeholder_text(&look, prompt.clone(), field_rect, field_flags);
+        let size = HydrolysisRenderer::measure_text_dimensions(
+            ctx.state_mut(),
+            styled.clone(),
+            HorizontalAlignment::Leading,
+            env,
+            None,
+            Some(1),
+        )
+        .size;
+        (styled, size)
+    });
+    let prompt_label_height = prompt_label.as_ref().map_or(0.0, |(_, size)| {
+        material_input_label_height(*size, input_metrics.label_height)
+    });
+    let has_label = label_height > 0.0 || prompt_as_label;
     // The label floats while the field is focused or holds content; see
     // the text field.
     let float = state.field.float();
+    let (band_height, measured_height) = if label_height > 0.0 {
+        (label_height, f64::from(label_size.height))
+    } else {
+        prompt_label.as_ref().map_or((0.0, 0.0), |(_, size)| {
+            (prompt_label_height, f64::from(size.height))
+        })
+    };
+    let place = LabelPlace::new(field_rect, &look, band_height, measured_height, env);
     if has_label {
-        let place = LabelPlace::new(
-            field_rect,
-            &look,
-            label_height,
-            f64::from(label_size.height),
-            env,
-        );
-        float.place(is_focused, !plain_value.is_empty(), place.floated);
+        float.place(is_focused, !masked.is_empty(), place.floated);
+    }
+    if label_height > 0.0 {
         float_label(ctx, float, field_rect, |ctx| {
             place_label_view(ctx, env, &mut state.label_view, &place);
+        });
+    } else if let Some((prompt_styled, _)) = prompt_label {
+        float_label(ctx, float, field_rect, |ctx| {
+            place_prompt_label(ctx, env, prompt_styled, &place);
         });
     }
     let content_alpha = if has_label && !float.is_floated() {
@@ -771,38 +824,71 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
         1.0
     };
     let content_visible = !has_label || float.text_visible();
+    let effective_label_height = if prompt_as_label {
+        prompt_label_height
+    } else {
+        label_height
+    };
+    let value_paint = (!use_placeholder || prompt_as_label)
+        .then(|| state.field.value_paint())
+        .flatten();
+    let display_styled = if use_placeholder && !prompt_as_label {
+        placeholder_text(&look, prompt, field_rect, field_flags)
+    } else {
+        value_text(
+            &look,
+            StyledStr::plain(masked.clone()),
+            field_rect,
+            field_flags,
+        )
+    };
     let text_bounds = material_input_text_rect(
         field_rect,
         f64::from(input_metrics.horizontal_inset),
         f64::from(input_metrics.vertical_inset),
-        label_height,
-    );
-    let masked_display = value_text(
-        &look,
-        StyledStr::plain(masked.clone()),
-        field_rect,
-        field_flags,
+        effective_label_height,
     );
     let committed_layout = HydrolysisRenderer::build_text_layout(
         ctx.state_mut(),
-        masked_display.clone(),
+        value_text(
+            &look,
+            StyledStr::plain(masked.clone()),
+            field_rect,
+            field_flags,
+        ),
         HorizontalAlignment::Leading,
         env,
         Some(crate::num_cast::f64_as_f32(text_bounds.width())),
     );
+    let display_layout = HydrolysisRenderer::build_text_layout(
+        ctx.state_mut(),
+        display_styled.clone(),
+        HorizontalAlignment::Leading,
+        env,
+        Some(crate::num_cast::f64_as_f32(text_bounds.width())),
+    );
+    let display_layout_height = display_layout.height();
     // Secure fields are single-line; with no inside label the masked text
     // centres vertically in the container (#85).
-    let text_bounds = if label_height == 0.0 {
+    let text_bounds = if effective_label_height == 0.0 {
         material_input_centered_text_rect(
             field_rect,
             text_bounds,
-            f64::from(committed_layout.height().max(input_metrics.label_height)),
+            f64::from(
+                committed_layout
+                    .height()
+                    .max(display_layout_height)
+                    .max(input_metrics.label_height),
+            ),
         )
     } else {
         text_bounds
     };
-    let text_clip_bounds =
-        material_input_text_clip_rect(field_rect, text_bounds, committed_layout.height());
+    let text_clip_bounds = material_input_text_clip_rect(
+        field_rect,
+        text_bounds,
+        committed_layout.height().max(display_layout_height),
+    );
     let selection = {
         let mut slot = selection_slot.borrow_mut();
         if !slot.initialized {
@@ -826,7 +912,7 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
     if content_visible {
         let text = |ctx: &mut WidgetRenderContext<'_, E>| {
             ctx.render_styled_text_limited(
-                masked_display,
+                display_styled,
                 HorizontalAlignment::Leading,
                 env,
                 text_bounds,
@@ -1133,7 +1219,6 @@ fn place_label_view<E: crate::text::TextEngine>(
 /// Draws the prompt text at the inside label's resting place — centred in
 /// the container — used when the field has no label view so the prompt
 /// stands in as the label (#85).
-#[cfg(feature = "text-field")]
 fn place_prompt_label<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     env: &Environment,
@@ -1364,6 +1449,10 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
 /// for the semantic walk — the same node `render_secure_field_parts`
 /// registers, with no bounds.
 #[cfg(feature = "accessibility")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the emission walks every secure-field element in one ordered sequence; splitting it would obscure the node ordering"
+)]
 #[cfg(feature = "secure-field")]
 #[cfg(hydrolysis_cherenkov)]
 pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
@@ -1380,26 +1469,39 @@ pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
         renderer.read_signal(&signal)
     };
     let mut state = state.borrow_mut();
-    let (label, value_binding) = {
+    let (label, value_binding, prompt_signal, content_type, submit_label, on_submit) = {
         let secure_field = &state.config;
-        (secure_field.label().clone(), secure_field.value().clone())
+        (
+            secure_field.label().clone(),
+            secure_field.value().clone(),
+            secure_field.prompt().content(),
+            secure_field.content_type(),
+            secure_field.submit_label(),
+            secure_field.on_submit().cloned(),
+        )
     };
     let default_accessibility_label = renderer.accessibility_label_from_label(&label, env);
     {
+        let prompt = renderer.read_signal(&prompt_signal).to_plain().to_string();
         let secure_len = renderer
             .read_signal(&value_binding)
             .expose()
             .chars()
             .count();
+        let default_label =
+            default_accessibility_label.or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
         let mut node = AccessibilityNode::new(
             crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
                 AccessibilityNodeRole::PasswordInput,
             ),
         );
-        let label = renderer.resolve_accessibility_label(env, default_accessibility_label);
+        let label = renderer.resolve_accessibility_label(env, default_label);
         if let Some(label) = label {
             node.set_label(label);
+        }
+        if !prompt.is_empty() {
+            node.set_placeholder(prompt);
         }
         node.set_value("*".repeat(secure_len));
         if disabled {
@@ -1416,6 +1518,9 @@ pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
                 value: value_binding.clone(),
             }),
         ) {
+            if let Some(declared) = content_type {
+                renderer.register_accessibility_content_type(node_id, declared);
+            }
             renderer.push_pending_text_input_accessibility_node(node_id);
         }
         if !disabled {
@@ -1448,6 +1553,14 @@ pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
                 purpose: TextInputPurpose::Password,
                 model: TextInputModel::SecureField {
                     value: value_binding.clone(),
+                    on_submit,
+                    input: TextInputOptions {
+                        keyboard: KeyboardType::Text,
+                        content_type,
+                        autocapitalization: Capitalization::None,
+                        autocorrect: false,
+                        submit_label,
+                    },
                 },
                 selection: Rc::clone(&state.selection_slot),
                 env: env.clone(),

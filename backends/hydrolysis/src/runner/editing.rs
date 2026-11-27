@@ -1536,4 +1536,40 @@ mod tests {
         assert!(!name_state.input.autocorrect);
         assert_eq!(name_state.input.submit_label, SubmitLabel::Next);
     }
+
+    #[test]
+    fn secure_field_carries_content_type_submit_label_and_submits() {
+        use waterui_controls::input::{ContentType, SubmitLabel};
+
+        let secret = Binding::new(Secure::default());
+        let submitted = Binding::new(false);
+        let view = AnyView::new(
+            secure("Password", &secret)
+                .prompt("At least 12 characters")
+                .content_type(ContentType::NewPassword)
+                .submit_label(SubmitLabel::Done)
+                .on_submit({
+                    let submitted = submitted.clone();
+                    move || submitted.set(true)
+                })
+                .size(300.0, 60.0),
+        );
+        let mut runtime = runtime_with(view);
+        let start = Instant::now();
+        settled(&mut runtime, start);
+        press_text_input(&mut runtime, 0);
+        settled(&mut runtime, start + Duration::from_millis(100));
+
+        let mut session = EditingSession::new();
+        assert!(sync(&mut session, &runtime));
+        let state = session.state();
+        assert!(state.password);
+        assert!(state.has_submit);
+        assert_eq!(state.input.content_type, Some(ContentType::NewPassword));
+        assert_eq!(state.input.submit_label, SubmitLabel::Done);
+        assert!(!state.input.autocorrect);
+
+        assert!(session.perform_editor_action(session.editor_id(), 6, runtime.renderer_mut()));
+        assert!(submitted.snapshot());
+    }
 }

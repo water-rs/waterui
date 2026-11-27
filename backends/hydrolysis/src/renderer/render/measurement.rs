@@ -4,7 +4,7 @@ use crate::theme::ListMetrics;
 use crate::theme::TextFieldLook;
 #[cfg(feature = "navigation")]
 use crate::theme::{NavigationBarLook, NavigationMetrics, NavigationSpec};
-#[cfg(feature = "text-field")]
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::widgets::controls::field_look::placeholder_text;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::widgets::controls::field_look::value_text;
@@ -327,7 +327,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             .size
     }
 
-    #[cfg(feature = "text-field")]
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn measure_text_intrinsic_size_with_line_limit(
         state: &mut HydroState<E>,
         styled: StyledStr,
@@ -641,16 +641,31 @@ pub fn measure_secure_field_size_with_label_size<E: crate::text::TextEngine, S>(
         .expose()
         .chars()
         .count();
+    let prompt = placeholder_text(
+        look,
+        state
+            .measure_signal(&secure_field.prompt().content())
+            .to_plain(),
+        kurbo::Rect::ZERO,
+        InteractionState::empty(),
+    );
     let masked = value_text(
         look,
         StyledStr::plain("*".repeat(secure_len)),
         kurbo::Rect::ZERO,
         InteractionState::empty(),
     );
+    let prompt_size = HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(
+        state,
+        prompt,
+        env,
+        Some(1),
+    );
     let value_size = HydrolysisRenderer::measure_editable_text_size(state, &masked, env, None);
     let label_height = measured_input_label_height(label_size, metrics.label_height);
+    let text_height = prompt_size.height.max(value_size.height);
     let label_width = metrics.horizontal_inset.mul_add(2.0, label_size.width);
-    let field_height = measured_input_field_height(value_size.height, label_height, metrics);
+    let field_height = measured_input_field_height(text_height, label_height, metrics);
     let width = input_field_width(
         proposal.width,
         label_width.max(metrics.min_width),

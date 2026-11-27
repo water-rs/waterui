@@ -31,6 +31,7 @@ use waterui_interaction::interaction::Disabled;
 use waterui_text::StyledStr;
 use waterui_text::font::Body;
 
+use super::field_input;
 use super::font::platform_font;
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
@@ -184,6 +185,83 @@ impl SubView for SecureFieldSubView {
     }
 }
 
+/// Wires the secure field's two-way value binding.
+fn wire_secure_value(
+    leaf: &mut NativeLeaf,
+    field: &Retained<SecureField>,
+    value: &nami::Binding<Secure>,
+) {
+    // Binding → field: external writes land on the field; an equal
+    // value is skipped so a user's own edit cannot echo back and move
+    // the caret (the role `isSyncingFromBinding` played in Swift —
+    // nami notifies synchronously inside `binding.set`).
+    leaf.bind(value, {
+        let field = field.clone();
+        move |secure: Secure| {
+            let text = secure.expose();
+            if field.string() != text {
+                field.set_string(text);
+            }
+        }
+    });
+
+    // Field → binding: user edits write back; the `String` moves into
+    // `Secure` with no plaintext copy kept.
+    #[cfg(target_os = "ios")]
+    leaf.keep(field.install_change_handler({
+        let binding = value.clone();
+        move |field| binding.set(Secure::new(field.string()))
+    }));
+    #[cfg(target_os = "macos")]
+    field.on_change({
+        let binding = value.clone();
+        move |field| binding.set(Secure::new(field.string()))
+    });
+}
+
+/// Wires the secure field's input traits, submit handler, and styled prompt.
+fn wire_secure_prompt_and_submit(
+    leaf: &mut NativeLeaf,
+    ctx: &RenderContext<'_>,
+    field: &Retained<SecureField>,
+    prompt: &waterui_text::TextConfig,
+    content_type: Option<waterui_controls::input::ContentType>,
+    submit_label: waterui_controls::input::SubmitLabel,
+    on_submit: Option<waterui_core::handler::SharedAction>,
+) {
+    if let Some(declared) = content_type {
+        field.set_content_type(field_input::content_type(declared));
+    }
+    #[cfg(target_os = "ios")]
+    field.set_return_key(field_input::return_key(submit_label));
+    #[cfg(not(target_os = "ios"))]
+    let _ = submit_label;
+
+    // Return submits through the configured action.
+    if let Some(on_submit) = on_submit {
+        let env = ctx.env().clone();
+        #[cfg(target_os = "ios")]
+        leaf.keep(field.install_submit_handler(move |_| on_submit.run(&env)));
+        #[cfg(target_os = "macos")]
+        field.on_submit(move |_| on_submit.run(&env));
+    }
+
+    // The prompt renders into the placeholder under the placeholder color.
+    let placeholder_field = field.clone();
+    let alignment_field = field.clone();
+    field_input::wire_prompt(
+        ctx.mtm(),
+        leaf,
+        ctx,
+        prompt,
+        move |attributed| placeholder_field.set_placeholder(attributed),
+        move |alignment| {
+            let view: &PlatformView = &alignment_field;
+            alignment_field.set_text_alignment(field_input::resolve_alignment(view, alignment));
+        },
+    );
+}
+
 /// The `secure_field` realization:
 /// `Native<SecureFieldConfig>` maps to a container with the platform
 /// secure field and the mounted label child; the binding, the theme font,
@@ -196,13 +274,14 @@ pub fn realize_secure_field_config(
     let host = HostView::new(mtm, Rect::ZERO);
     let field = SecureField::new(mtm);
 
-    let field_view: &PlatformView = &field;
-    host.add_subview(field_view);
-
     // The label renders above the field; its semantic text names the
     // control while the visual label leaves the accessibility tree —
     // `WuiControlAccessibility`'s split.
-    let (label, value) = config.into_parts();
+    let (label, value, prompt, content_type, submit_label, on_submit) = config.into_parts();
+
+    let field_view: &PlatformView = &field;
+    host.add_subview(field_view);
+
     let accessibility_label = label.accessibility_label();
     let host_view: &PlatformView = &host;
     let mounted = ctx.realize(label.build()).mount(host_view);
@@ -225,32 +304,16 @@ pub fn realize_secure_field_config(
         },
     );
 
-    // Binding → field: external writes land on the field; an equal
-    // value is skipped so a user's own edit cannot echo back and move
-    // the caret (the role `isSyncingFromBinding` played in Swift —
-    // nami notifies synchronously inside `binding.set`).
-    leaf.bind(&value, {
-        let field = field.clone();
-        move |secure: Secure| {
-            let text = secure.expose();
-            if field.string() != text {
-                field.set_string(text);
-            }
-        }
-    });
-
-    // Field → binding: user edits write back; the `String` moves into
-    // `Secure` with no plaintext copy kept.
-    #[cfg(target_os = "ios")]
-    leaf.keep(field.install_change_handler({
-        let binding = value.clone();
-        move |field| binding.set(Secure::new(field.string()))
-    }));
-    #[cfg(target_os = "macos")]
-    field.on_change({
-        let binding = value.clone();
-        move |field| binding.set(Secure::new(field.string()))
-    });
+    wire_secure_value(&mut leaf, &field, &value);
+    wire_secure_prompt_and_submit(
+        &mut leaf,
+        ctx,
+        &field,
+        &prompt,
+        content_type,
+        submit_label,
+        on_submit,
+    );
 
     // The theme `Body` font drives the field's font —
     // `bodyFontObservation` in `WuiSecureField`.

@@ -639,6 +639,12 @@ impl SecureField {
         self.setPlaceholderAttributedString(Some(placeholder));
     }
 
+    /// The declared content type (`NSTextContentType`, e.g. password or new-password).
+    /// `NSSecureTextField` inherits `NSTextContent` conformance from `NSTextField`.
+    pub fn set_content_type(&self, content_type: crate::ContentType) {
+        self.setContentType(Some(content_type.native()));
+    }
+
     /// How the field aligns its text.
     pub fn set_text_alignment(&self, alignment: NSTextAlignment) {
         self.setAlignment(alignment);

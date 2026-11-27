@@ -41,6 +41,8 @@ pub mod drop_destination;
 pub mod dynamic;
 pub mod dynamic_range;
 pub mod empty;
+#[cfg(any(feature = "text_field", feature = "secure_field"))]
+mod field_input;
 #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
 pub mod filtered;
 pub mod fixed_container;
