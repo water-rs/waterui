@@ -14,7 +14,6 @@
 
 use core::future::ready;
 use core::time::Duration;
-use waterui::animation::Animation;
 use waterui::app::{App, Windows};
 use waterui::graphics::filter_view::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,

@@ -29,7 +29,6 @@ use mdi::image_album;
 use mdi::inbox;
 use mdi::pencil;
 use mdi::view_gallery;
-use waterui::Identifiable;
 use waterui::app::{App, Windows};
 use waterui::component::list::{
     List, ListContent, ListDelete, ListMove, Section, SectionScope, TaggedBy,
@@ -42,7 +41,7 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 use waterui::reactive::collection::SignalCollection;
-use waterui::shape::{Circle, CornerRadius, RoundedRectangle};
+use waterui::shape::CornerRadius;
 use waterui::theme::color::{Accent, Foreground, SurfaceVariant};
 use waterui_icons_material_icon as mdi;
 

@@ -6,7 +6,6 @@
 //! - Reactive cursor styles that change based on state
 //! - Lifecycle events with `on_appear` and `on_disappear`
 
-use waterui::animation::Animation;
 use waterui::app::{App, Windows};
 use waterui::cursor::CursorStyle;
 use waterui::graphics::color::Srgb;

@@ -14,7 +14,7 @@ use hydrolysis::testing::TestStyle;
 use hydrolysis::{FontFamilyResolution, HeadlessRuntime, SemanticRuntime};
 use waterui::form::picker::picker;
 use waterui::prelude::*;
-use waterui::shape::{CornerRadius, RoundedRectangle, ShapeExt as _};
+use waterui::shape::CornerRadius;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
 use waterui_layout::GridRow;

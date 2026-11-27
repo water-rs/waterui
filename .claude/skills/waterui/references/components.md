@@ -390,7 +390,6 @@ an outer custom style.
 ```rust
 use waterui::gesture::TapGesture;
 use waterui::theme::color::{Accent, Error, SurfaceVariant};
-use waterui::shape::Capsule;
 
 struct PillButtonStyle;
 
@@ -700,7 +699,6 @@ realization, swipe-to-delete, reordering, sections, selection).
 use waterui::component::list::{ListDelete, ListMove};   // NOT in the prelude
 use waterui::layout::scroll::scroll_horizontal;
 use waterui::views::ForEach;
-use waterui::Identifiable;                              // the trait the derive expands to is NOT in the prelude
 
 #[derive(Clone, Identifiable)]
 struct Record { #[id] id: u64, title: Str }
@@ -953,8 +951,6 @@ body can return `Result<impl View, ErrorView<_>>` or `Result<impl View, impl Vie
 ## Badges, avatars, tables, focus
 
 ```rust
-use waterui::shape::RoundedRectangle;
-
 text("Inbox").badge(3_u32)                      // 0 hides; BadgeValue::{Hidden, Dot, Count(u32), Text(Text)}; badge::Badge::new(v, view).color(..)
 avatar("Grace Hopper")                          // initials when there is no image; the name is always spoken
     .image(photo_url)                           // a signal of Url: the fallback shows until it decodes

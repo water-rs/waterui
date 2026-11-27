@@ -236,8 +236,6 @@ handler receives `press: KeyPress` as its first argument and returns `Handled` o
 set; Escape, Up/Down, PageUp/PageDown and a Return with no `on_submit` bubble out.
 
 ```rust
-use waterui::key::{Key, KeyHandling, KeyPress, NamedKey};
-
 search_panel()
     .on_key_press(|press: KeyPress, State(open): State<Binding<bool>>| {
         if *press.key() == Key::Named(NamedKey::Escape) {
@@ -252,10 +250,11 @@ search_panel()
 
 - Return `Ignored`, never a missing `Handled` — `Ignored` is what keeps the key bubbling.
 - `KeyPress` exposes accessors: `press.key()` is the layout-aware `&Key`,
-  `press.code()` the physical `Code` (layout-independent bindings match this),
-  `press.modifiers()` a `Modifiers` bitset (`Modifiers::SHIFT`, `CONTROL`, `ALT`,
-  `META`), `press.repeat()` marks auto-repeat. `Key`, `Code`, `Modifiers` and
-  `NamedKey` are all in `waterui::key`.
+  `press.code()` the physical `Code` (layout-independent bindings match this;
+  `Code` is in `waterui::key`), `press.modifiers()` a `Modifiers` bitset
+  (`Modifiers::SHIFT`, `CONTROL`, `ALT`, `META`), `press.repeat()` marks
+  auto-repeat. `Key`, `KeyHandling`, `KeyPress`, `Modifiers`, and `NamedKey`
+  are in the prelude (`waterui::key` also exports them alongside `Code`).
 - `field("Search", &query).on_submit(handler)` fires on Return in a line-limited
   field; with no line limit Return inserts a newline and never submits.
 
@@ -266,8 +265,6 @@ both looks and cross-fade with complementary opacity signals, with the animation
 on the signal:
 
 ```rust
-use waterui::animation::Animation;
-
 let scale = is_hovered
     .select(1.05, 1.0)
     .with(Animation::spring(400.0, 15.0));

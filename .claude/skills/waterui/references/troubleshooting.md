@@ -101,7 +101,6 @@ Use `app.pump_for(duration)`.
 | `mismatched types: expected Str, found &str` on `binding("..")` | `binding(v)` / `Binding::new(v)` take `T` directly for inference | pass an owned value: `binding(Str::from(".."))` or `Binding::new(String::from(".."))` |
 | `cannot find function 'when' in this scope` | not in the prelude | `use waterui::widget::condition::when;` |
 | `cannot find macro 's'` (or a lint suggesting `s!`) | `s!` is nami's macro, not in the prelude | `use waterui::reactive::s;` |
-| ``expected trait, found derive macro `Identifiable` `` on a manual `impl` | the prelude carries the derive, not the trait | `use waterui::Identifiable;` |
 | `E0525` / `E0507` pointing at `when(..)`, `.or(..)` or `.otherwise(..)` | payloads are `Fn` builders that run each time their branch becomes active, so the closure may not move a captured value out | clone captured values inside the body and build the view there: `when(c, move \|\| text("Saved").opacity(fade.clone()))` |
 | `cannot find type 'ListDelete' / 'ListMove'` | not in the prelude | `use waterui::component::list::{ListDelete, ListMove};` |
 | `cannot find type 'TapGesture' / 'CursorStyle'` | interaction types are not in the prelude | `use waterui::gesture::…;` / `use waterui::cursor::…;` |

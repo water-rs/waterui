@@ -281,7 +281,6 @@ pass the animated signal wherever the plain one would go.
 
 ```rust
 use core::time::Duration;
-use waterui::animation::Animation;   // not in the prelude
 
 let scale = Binding::new(1.0_f32);
 let animated = scale.with(Animation::spring(300.0, 15.0));
@@ -338,8 +337,7 @@ eagerly outside one (or when `.eager()` is called). They accept any `nami::colle
 (see components.md for per-row `.transition(PropertyTransition::opacity())` membership
 animation).
 
-Items must derive `Identifiable` (`use waterui::Identifiable;` — the derive is not in the
-prelude) with an `#[id]` field that is stable across updates of the same logical row.
+Items must derive `Identifiable` (in the prelude) with an `#[id]` field that is stable across updates of the same logical row.
 The mutators take `&mut self`; clones share one list, so a handler mutates its own clone.
 `replace` additionally needs `PartialEq` items: a surviving id whose item compares
 unequal is reported as an updated row.

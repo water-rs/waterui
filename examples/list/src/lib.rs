@@ -3,8 +3,6 @@
 //! This example exercises the behavior that distinguishes `List` from a
 //! regular stack: lazy row realization, indexed jumps, deletion, and moving.
 
-use waterui::Identifiable;
-use waterui::animation::Animation;
 use waterui::app::{App, Windows};
 use waterui::component::list::{List, ListDelete, ListMove};
 use waterui::prelude::*;

@@ -80,7 +80,6 @@ pub fn troubleshooting_when_fn_builder() -> impl View {
 // `Identifiable` import rows.
 // ---------------------------------------------------------------------------
 pub fn troubleshooting_imports() {
-    use waterui::Identifiable;
     use waterui::reactive::s;
 
     struct Tagged(i32);
