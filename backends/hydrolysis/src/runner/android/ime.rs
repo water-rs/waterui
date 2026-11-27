@@ -150,7 +150,6 @@ mod field_editor {
 
     const fn wire_keyboard(keyboard: KeyboardType) -> &'static str {
         match keyboard {
-            KeyboardType::Text => "text",
             KeyboardType::Email => "email",
             KeyboardType::URL => "url",
             KeyboardType::Number => "number",
@@ -164,7 +163,6 @@ mod field_editor {
         match capitalization {
             Capitalization::None => "none",
             Capitalization::Words => "words",
-            Capitalization::Sentences => "sentences",
             Capitalization::Characters => "characters",
             _ => "sentences",
         }
@@ -172,7 +170,6 @@ mod field_editor {
 
     const fn wire_submit_label(label: SubmitLabel) -> &'static str {
         match label {
-            SubmitLabel::Return => "return",
             SubmitLabel::Done => "done",
             SubmitLabel::Go => "go",
             SubmitLabel::Next => "next",

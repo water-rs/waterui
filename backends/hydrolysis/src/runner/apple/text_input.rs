@@ -145,7 +145,6 @@ impl ImeShared {
 const fn traits_of(snapshot: &FocusedEditorSnapshot<ParleyEngine>) -> TextInputTraits {
     let input = snapshot.input;
     let keyboard_type = match input.keyboard {
-        WaterKeyboardType::Text => KeyboardType::Default,
         WaterKeyboardType::Email => KeyboardType::EmailAddress,
         WaterKeyboardType::URL => KeyboardType::Url,
         WaterKeyboardType::Number => KeyboardType::NumberPad,
@@ -181,7 +180,6 @@ const fn traits_of(snapshot: &FocusedEditorSnapshot<ParleyEngine>) -> TextInputT
         match input.autocapitalization {
             WaterCapitalization::None => Autocapitalization::None,
             WaterCapitalization::Words => Autocapitalization::Words,
-            WaterCapitalization::Sentences => Autocapitalization::Sentences,
             WaterCapitalization::Characters => Autocapitalization::AllCharacters,
             _ => Autocapitalization::Sentences,
         }
