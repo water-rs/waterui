@@ -430,6 +430,17 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         })
     }
 
+    #[cfg(waterui_feature = "highlight")]
+    fn code(
+        &mut self,
+        native: waterui::text::code::CodeConfig,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        mark_reached!("code");
+        RenderNode::build_code(native, env, self.renderer)
+    }
+
     fn text(
         &mut self,
         native: waterui::text::TextConfig,

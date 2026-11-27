@@ -825,6 +825,9 @@ native_backend! {
         empty: (),
         /// A run of styled text.
         text: waterui_text::TextConfig,
+        #[cfg(waterui_feature = "highlight")]
+        /// A syntax-highlighted code block.
+        code: waterui_text::code::CodeConfig,
         /// A plain string label.
         label: waterui_core::Str,
         /// A solid color fill.

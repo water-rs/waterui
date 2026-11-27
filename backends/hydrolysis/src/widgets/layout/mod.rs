@@ -1,5 +1,7 @@
 pub mod badge;
 pub mod card;
+#[cfg(waterui_feature = "highlight")]
+pub mod code;
 pub mod container;
 pub mod divider;
 pub mod dynamic;

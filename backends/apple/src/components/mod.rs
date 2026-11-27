@@ -20,6 +20,8 @@ pub mod calendar;
 pub mod canvas;
 pub mod card;
 pub mod clip_shape;
+#[cfg(waterui_feature = "highlight")]
+pub mod code;
 #[cfg(feature = "color_picker")]
 pub mod color_picker;
 pub mod container;

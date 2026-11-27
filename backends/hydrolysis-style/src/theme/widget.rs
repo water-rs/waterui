@@ -730,4 +730,9 @@ pub trait WidgetTheme {
     fn avatar(&self, env: &Environment) -> super::AvatarLook {
         super::avatar::default_avatar_look(env)
     }
+
+    /// The look of a syntax-highlighted code block.
+    fn code(&self, env: &Environment) -> super::CodeLook {
+        super::code::default_code_look(env)
+    }
 }

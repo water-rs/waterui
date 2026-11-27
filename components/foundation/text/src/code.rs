@@ -15,25 +15,15 @@ use core::fmt;
 
 use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
 use suiteki::Str;
-use waterui_accessibility::AccessibilityRole;
-use waterui_color::{Color, CurrentColorScheme};
-use waterui_core::backend::Backend;
+use waterui_color::CurrentColorScheme;
+use waterui_core::layout::StretchAxis;
 use waterui_core::plugin::Plugin;
 use waterui_core::resolve::Resolvable;
-use waterui_core::view::hook::HookableView;
-use waterui_core::{Environment, Metadata, NativeView, View};
-use waterui_interaction::gesture::{GestureObserver, TapGesture};
-use waterui_layout::{
-    background::background,
-    padding::{EdgeInsets, Padding},
-    spacer,
-    stack::{HorizontalAlignment, VStack, hstack},
-};
+use waterui_core::{Environment, Native, NativeView, View};
 
 use crate::{
-    font::{Body, Font},
     highlight::{DefaultHighlighter, Language, highlight_text},
-    text,
+    styled::StyledStr,
 };
 
 /// Copies text to the system clipboard.
@@ -304,6 +294,38 @@ impl CodeConfig {
     pub const fn on_copied(&self) -> Option<&OnCopied> {
         self.on_copied.as_ref()
     }
+
+    /// The header caption naming this block's language or unrecognized fence token.
+    #[must_use]
+    pub fn header_label(&self) -> String {
+        header_label(&self.language, self.info.as_deref())
+    }
+
+    /// Reactive syntax-highlighted text following the installed color scheme.
+    #[must_use]
+    pub fn highlighted(&self, env: &Environment) -> Computed<StyledStr> {
+        let language = self.language.clone();
+        self.content
+            .zip(&CurrentColorScheme.resolve(env))
+            .map(move |(content, scheme)| {
+                highlight_text(
+                    language.clone(),
+                    &content,
+                    &mut DefaultHighlighter::new(scheme),
+                )
+            })
+            .computed()
+    }
+
+    /// Copies the block's current source text to the system clipboard and runs
+    /// any registered [`OnCopied`] callback.
+    pub fn copy_to_clipboard(&self, env: &Environment) {
+        let text = self.content.snapshot();
+        copy_to_clipboard(&text);
+        if let Some(on_copied) = &self.on_copied {
+            on_copied.call(env);
+        }
+    }
 }
 
 impl From<CodeConfig> for Code {
@@ -330,35 +352,18 @@ impl Code {
     }
 }
 
-impl NativeView for CodeConfig {}
-
-impl HookableView for CodeConfig {
-    fn compose(self, env: &Environment) -> impl View {
-        default_rendering(env, self)
+impl NativeView for CodeConfig {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Horizontal
     }
 }
 
 impl View for Code {
-    /// The ordinary code block, for code that expands views by hand.
-    fn body(self, env: &Environment) -> impl View {
-        default_rendering(env, self.config())
-    }
-
-    /// Offers the fence to the hooks in scope before drawing the ordinary
-    /// code block.
-    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
-        backend.hookable(self.config(), env, cx)
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self.config())
     }
 }
 
-/// What a fence looks like when nothing claims it: a header naming the
-/// language, a copy button, and the highlighted source.
-///
-/// Every colour is a theme token, so the block is a surface-variant inset on
-/// whatever the application's surface is. The highlighter's palette is the
-/// one exception a token cannot express — syntect ships a light and a dark
-/// set — so it follows the installed colour scheme and re-highlights when
-/// that flips, without the block itself being rebuilt.
 fn header_label(language: &Language, info: Option<&str>) -> String {
     match (language, info) {
         (Language::Plaintext, Some(token))
@@ -368,66 +373,6 @@ fn header_label(language: &Language, info: Option<&str>) -> String {
         }
         _ => language.to_string(),
     }
-}
-
-fn default_rendering(env: &Environment, config: CodeConfig) -> impl View {
-    let CodeConfig {
-        info,
-        language,
-        content,
-        on_copied,
-    } = config;
-    let lang_name = header_label(&language, info.as_deref());
-    let content_for_copy = content.clone();
-
-    let highlighted = content
-        .zip(&CurrentColorScheme.resolve(env))
-        .map(move |(content, scheme)| {
-            highlight_text(
-                language.clone(),
-                &content,
-                &mut DefaultHighlighter::new(scheme),
-            )
-        })
-        .computed();
-
-    let block = VStack::new(
-        HorizontalAlignment::Leading,
-        8.0,
-        (
-            hstack((
-                text(lang_name).bold(true).color(Color::muted_foreground()),
-                spacer(),
-                copy_button(content_for_copy, on_copied),
-            )),
-            text(highlighted).font(Font::from(Body).font_size(14.0).monospaced(true)),
-        ),
-    );
-    background(
-        Padding::new(EdgeInsets::all(14.0), block),
-        Color::surface_variant(),
-    )
-}
-
-fn copy_button(content: Computed<Str>, on_copied: Option<OnCopied>) -> impl View {
-    // `waterui-controls` depends on this crate, so the `Button` type is out of
-    // reach here; the semantics are attached directly. A tap observer that
-    // resolves with `AccessibilityRole` in its environment registers an
-    // accessibility node of that role — focusable, clickable, activatable —
-    // while the label renders exactly as before.
-    Metadata::new(
-        Metadata::new(
-            text("Copy").color(Color::accent()),
-            GestureObserver::without_event(TapGesture::new(), move |env: Environment| {
-                let text = content.snapshot();
-                copy_to_clipboard(&text);
-                if let Some(on_copied) = &on_copied {
-                    on_copied.call(&env);
-                }
-            }),
-        ),
-        AccessibilityRole::Button,
-    )
 }
 
 /// Convenience constructor for creating a [`Code`] view inline.

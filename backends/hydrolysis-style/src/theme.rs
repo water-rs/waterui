@@ -54,6 +54,7 @@ mod avatar;
 mod badge;
 mod card;
 mod chrome;
+mod code;
 mod dialog;
 mod disclosure;
 mod floating;
@@ -95,6 +96,7 @@ pub use chrome::{
     Backdrop, Border, Chrome, ContentEffect, CornerShape, Corners, DragDeformation, Elevation,
     Fill, FocusIndicator, PressFeedback, Ripple, StateLayer, Surface, Wash,
 };
+pub use code::{CodeLook, CodeMetrics};
 pub use dialog::{DialogLook, default_dialog_look};
 pub use disclosure::{DisclosureLayout, DisclosureLook, DisclosureSpec};
 pub use floating::{

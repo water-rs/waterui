@@ -9,7 +9,7 @@ use accesskit::{
 };
 use hydrolysis::draw::{BlendSpace, MaterialRegistry};
 use hydrolysis::theme::{
-    AvatarLook, BadgeLook, ButtonLook, ButtonSpec, CardLook, CheckboxLook, DialogLook,
+    AvatarLook, BadgeLook, ButtonLook, ButtonSpec, CardLook, CheckboxLook, CodeLook, DialogLook,
     DisclosureLook, DisclosureSpec, FloatingLook, GlassLook, IndicatorLook, LinearProgressLook,
     ListLook, ListRowLayoutMetrics, ListSpec, MenuLook, MenuPickerLook, MenuSpec,
     NavigationBarLook, NavigationSpec, PickerSpec, ProgressSpec, RadioGroupLook,
@@ -165,6 +165,10 @@ impl WidgetTheme for ErasedStyle {
 
     fn avatar(&self, env: &Environment) -> AvatarLook {
         self.0.avatar(env)
+    }
+
+    fn code(&self, env: &Environment) -> CodeLook {
+        self.0.code(env)
     }
 }
 

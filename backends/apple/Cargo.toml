@@ -27,6 +27,7 @@ default = [
     "context_menu",
     "date_picker",
     "dialog",
+    "highlight",
     "link",
     "menu",
     "list",
@@ -52,6 +53,7 @@ color_picker = ["waterui/color-picker"]
 context_menu = ["waterui/menu"]
 date_picker = ["waterui/date-picker"]
 dialog = ["waterui/dialog", "cocoa-ui/dialog"]
+highlight = ["waterui/highlight"]
 link = ["waterui/link"]
 list = ["waterui/list"]
 # `cocoa-ui/map` brings `MKMapView`, the `MapKit` framework link and the

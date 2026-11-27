@@ -124,7 +124,7 @@ locale-relative-time = ["waterui-locale/relative-time", "waterui-core/locale-rel
 # The `Code` widget and the bundled syntect highlighter behind it. Default-on,
 # because `code(…)` is a plain authoring API; an application that shows no code
 # drops syntect, two-face, and their syntax and theme tables by opting out.
-highlight = ["waterui-text/highlight", "waterui-controls/highlight", "waterui-core/highlight"]
+highlight = ["waterui-text/highlight", "waterui-controls/highlight", "waterui-backend-core/highlight", "waterui-core/highlight"]
 # The devtools Inspector hub and its wire protocol. Opt-in: a packaged
 # application that never attaches an inspector leaves the hub and its server
 # stack out, and embedded firmware disables it anyway — the hub is desktop
