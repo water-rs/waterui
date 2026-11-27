@@ -45,7 +45,7 @@ pub(crate) fn preview_style(
 /// the same environment a run would.
 pub(crate) fn app_environment() -> waterui::env::Environment {
     let env = waterui::configure_environment!(waterui::env::Environment::new());
-    {{ crate_name_ident }}::app(env).env
+    {{ crate_name_ident }}::app(env).into_parts().env
 }
 {% endif -%}
 {% if let Some(body) = semantic_automation_body %}
