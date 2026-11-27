@@ -143,8 +143,9 @@ the parent does propose a size.
 Two more sizing modifiers:
 
 ```rust
-.aspect_ratio(16.0 / 9.0)     // width : height; shrinks to fit inside the offer
-.layout_priority(1)           // a stack compresses its lowest-priority children first
+.aspect_ratio(16.0 / 9.0)                          // width : height; defaults to ContentMode::Fit
+.aspect_ratio(1.0).content_mode(ContentMode::Fill) // returns AspectRatio; Fill covers the offer
+.layout_priority(1)                                // a stack compresses its lowest-priority children first
 ```
 
 `.horizontal_alignment_guide(HorizontalAlignment::Leading, |d| d.size.width / 2.0)` and
