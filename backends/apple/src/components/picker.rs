@@ -3,8 +3,9 @@
 //!
 //! Mirrors `WuiPicker`: a menu becomes `NSPopUpButton` / a `UIButton` with a
 //! `UIMenu`, segmented becomes `NSSegmentedControl` / `UISegmentedControl`,
-//! and radio becomes a vertical stack of radio buttons on `AppKit` or the
-//! single-column `UIPickerView` wheel `UIKit` offers for `.inline`. The
+//! radio becomes a vertical stack of radio buttons on both `AppKit` and
+//! `UIKit`, and wheel becomes a native drum composition on `AppKit` or a
+//! single-column `UIPickerView` on `UIKit`. The
 //! `selection` `Binding<Id>` is two-way: watchers push the tag's index onto
 //! the control, and the control's action writes the picked index's tag back.
 //!
@@ -72,6 +73,7 @@ const fn platform_style(style: WuiPickerStyle) -> PickerStyle {
     match style {
         WuiPickerStyle::Radio => PickerStyle::Radio,
         WuiPickerStyle::Segmented => PickerStyle::Segmented,
+        WuiPickerStyle::Wheel => PickerStyle::Wheel,
         // `Automatic`, `Menu` and future styles take the menu control.
         _ => PickerStyle::Menu,
     }
@@ -267,7 +269,7 @@ impl SubView for PickerSubView {
         // intrinsic sizes. The segmented row answers a finite proposed width
         // (never below its intrinsic width), and so does the `UIKit` wheel —
         // `WuiPicker` stretches it to the proposed width.
-        let wheel = state.style == PickerStyle::Radio && cfg!(target_os = "ios");
+        let wheel = state.style == PickerStyle::Wheel && cfg!(target_os = "ios");
         let width = match (self.stretch, proposal.width) {
             (StretchAxis::Horizontal, Some(proposed)) if proposed.is_finite() => {
                 f64::from(proposed).max(intrinsic_width)
@@ -284,6 +286,62 @@ impl SubView for PickerSubView {
 
     fn priority(&self) -> i32 {
         0
+    }
+}
+
+/// Binds semantic theme tokens onto composed picker presentations (wheel drum
+/// on `AppKit`, radio group on `UIKit`).
+fn bind_theme_colors(
+    style: PickerStyle,
+    ctx: &RenderContext<'_>,
+    leaf: &mut NativeLeaf,
+    state: &Rc<RefCell<PickerState>>,
+) {
+    #[cfg(target_os = "macos")]
+    if style == PickerStyle::Wheel {
+        use nami::SignalExt as _;
+        use waterui_controls::theme::color::{
+            Border, Foreground, MutedForeground, UnemphasizedSelection,
+        };
+
+        let palette = Foreground
+            .resolve(ctx.env())
+            .zip(&MutedForeground.resolve(ctx.env()))
+            .zip(&UnemphasizedSelection.resolve(ctx.env()))
+            .zip(&Border.resolve(ctx.env()))
+            .computed();
+        leaf.bind(&palette, {
+            let state = Rc::clone(state);
+            move |(((fg, muted), highlight), border)| {
+                state.borrow().picker.set_wheel_colors(
+                    &crate::theme::platform_color(&fg),
+                    &crate::theme::platform_color(&muted),
+                    &crate::theme::platform_color(&highlight),
+                    &crate::theme::platform_color(&border),
+                );
+            }
+        });
+    }
+
+    #[cfg(target_os = "ios")]
+    if style == PickerStyle::Radio {
+        use nami::SignalExt as _;
+        use waterui_controls::theme::color::{Foreground, MutedForeground};
+
+        let palette = crate::components::button_chrome::tint_signal(ctx.env())
+            .zip(&Foreground.resolve(ctx.env()))
+            .zip(&MutedForeground.resolve(ctx.env()))
+            .computed();
+        leaf.bind(&palette, {
+            let state = Rc::clone(state);
+            move |((accent, fg), muted)| {
+                state.borrow().picker.set_radio_colors(
+                    &crate::theme::platform_color(&accent),
+                    &crate::theme::platform_color(&fg),
+                    &crate::theme::platform_color(&muted),
+                );
+            }
+        });
     }
 }
 
@@ -387,6 +445,8 @@ pub fn realize_picker_config(config: PickerConfig<Held>, ctx: &RenderContext<'_>
         }
     });
 
+    bind_theme_colors(platform_style(config.style()), ctx, &mut leaf, &state);
+
     // The label's semantic text is announced on the container — as the
     // accessibility label (and tooltip on `AppKit`), exactly the
     // `WuiControlAccessibility` treatment.
@@ -429,6 +489,7 @@ mod tests {
             platform_style(WuiPickerStyle::Segmented),
             PickerStyle::Segmented
         );
+        assert_eq!(platform_style(WuiPickerStyle::Wheel), PickerStyle::Wheel);
     }
 
     #[test]

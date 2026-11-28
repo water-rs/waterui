@@ -15,12 +15,15 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
+use std::future::Future;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use executor_core::{LocalExecutor as _, Task as _};
 use jni::Env;
 use jni::objects::{Global, JMethodID, JObject, JValue};
 use jni::signature::{MethodSignature, Primitive, ReturnType, RuntimeMethodSignature};
@@ -31,6 +34,7 @@ use nami::{Binding, Signal};
 use ndk::looper::{FdEvent, ForeignLooper, ThreadLooper};
 #[cfg(feature = "menu")]
 use waterui_backend_core::app::AppMenuBar;
+use waterui_backend_core::app::{AppPhase, PhaseHandle};
 use waterui_backend_core::gesture::DEFAULT_LONG_PRESS_DURATION;
 use waterui_backend_core::window::{WindowParts, WindowState};
 use waterui_controls::theme::ColorScheme;
@@ -1428,8 +1432,22 @@ pub struct AndroidSession {
     /// matching the callback the activity registers.
     #[cfg(feature = "navigation")]
     back_navigation_available: bool,
+    /// The lifecycle phase machine driving `Computed<AppPhase>` and
+    /// `App::on_phase_change` hooks from `onStart`/`onResume`/`onPause`/`onStop`.
+    phase: PhaseHandle,
     /// Sessions are owned and driven on the UI thread only.
     _not_send: std::marker::PhantomData<*const ()>,
+}
+
+/// Maps Android's Activity `(started, resumed)` lifecycle state onto [`AppPhase`].
+pub(super) const fn android_phase(started: bool, resumed: bool) -> AppPhase {
+    if started && resumed {
+        AppPhase::Active
+    } else if started {
+        AppPhase::Inactive
+    } else {
+        AppPhase::Background
+    }
 }
 
 /// What the load hook creates once per UI thread: the executor every
@@ -1547,6 +1565,14 @@ impl HostAppearance {
     }
 }
 
+/// Initial host snapshot supplied to [`AndroidSession::create`]: layout
+/// metrics, system appearance, and initial Activity lifecycle phase.
+pub struct SessionInit {
+    pub metrics: MetricsSnapshot,
+    pub appearance: HostAppearance,
+    pub initial_phase: AppPhase,
+}
+
 /// What `create` wires into the platform host and the session: the one
 /// window the app registered, its environment, theme and fonts, the
 /// window's registry id, and the bindings and sinks the host later drives.
@@ -1573,6 +1599,7 @@ struct SessionMounts {
     color_scheme: nami::Binding<ColorScheme>,
     /// The session's Reduce Motion signal — `set_reduce_motion` writes it.
     reduce_motion: Binding<bool>,
+    phase: PhaseHandle,
     #[cfg(hydrolysis_android_system_webview)]
     android_webview: crate::widgets::platform::webview::AndroidSystemWebViewController,
 }
@@ -1588,6 +1615,7 @@ struct SessionMounts {
 fn session_mounts(
     services: &'static UiThreadServices,
     appearance: HostAppearance,
+    initial_phase: AppPhase,
     jni_env: &mut Env,
     bridge: &HostBridge,
 ) -> Result<Option<SessionMounts>, JniError> {
@@ -1608,6 +1636,7 @@ fn session_mounts(
         // Android kills the process without notice, so the termination
         // hooks are never called and the machine is never started.
         termination: _,
+        phase,
     } = parts;
     let mut env = env.layered_on(&services.env);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
@@ -1690,6 +1719,8 @@ fn session_mounts(
         return Ok(None);
     }
 
+    let phase = phase.start_with(&env, initial_phase);
+
     Ok(Some(SessionMounts {
         env,
         window,
@@ -1706,6 +1737,7 @@ fn session_mounts(
         keyboard_area,
         color_scheme,
         reduce_motion,
+        phase,
         #[cfg(hydrolysis_android_system_webview)]
         android_webview,
     }))
@@ -1855,10 +1887,14 @@ impl AndroidSession {
         bridge: Arc<HostBridge>,
         #[cfg(hydrolysis_gpu_painter)] gpu: AndroidGpuContext,
         painter: &JObject<'_>,
-        metrics: MetricsSnapshot,
-        appearance: HostAppearance,
+        init: SessionInit,
         services: &'static UiThreadServices,
     ) -> Result<Option<Box<Self>>, JniError> {
+        let SessionInit {
+            metrics,
+            appearance,
+            initial_phase,
+        } = init;
         let executor = services.executor.clone();
 
         waterui_locale::start_system_locale_listener();
@@ -1879,9 +1915,10 @@ impl AndroidSession {
             keyboard_area,
             color_scheme,
             reduce_motion,
+            phase,
             #[cfg(hydrolysis_android_system_webview)]
             android_webview,
-        }) = session_mounts(services, appearance, jni_env, &bridge)?
+        }) = session_mounts(services, appearance, initial_phase, jni_env, &bridge)?
         else {
             return Ok(None);
         };
@@ -1956,6 +1993,7 @@ impl AndroidSession {
             ready_logged: Cell::new(false),
             #[cfg(feature = "navigation")]
             back_navigation_available: false,
+            phase,
             _not_send: std::marker::PhantomData,
         })))
     }
@@ -2059,11 +2097,21 @@ impl AndroidSession {
         }
     }
 
-    /// The hosting Activity crossed `onStart`/`onStop` — Android's
-    /// visibility signal. Stopping parks the pump even when the surface
-    /// survives; starting posts the single restore frame when the band
-    /// can present again.
-    pub(crate) fn set_visible(&mut self, jni_env: &mut Env, started: bool) {
+    /// Applies the Activity's initial `(started, resumed)` state during async
+    /// GPU startup without firing intermediate `on_phase_change` transitions
+    /// (the phase machine was already seeded with `android_phase(started, resumed)`).
+    #[cfg(hydrolysis_gpu_painter)]
+    pub(crate) fn apply_initial_lifecycle(
+        &mut self,
+        jni_env: &mut Env,
+        started: bool,
+        resumed: bool,
+    ) {
+        self.apply_visible(jni_env, started);
+        self.android_bridge.set_resumed(jni_env, resumed);
+    }
+
+    fn apply_visible(&mut self, jni_env: &mut Env, started: bool) {
         self.runtime.platform.started = started;
         #[cfg(hydrolysis_gpu_painter)]
         if !started {
@@ -2085,10 +2133,99 @@ impl AndroidSession {
         self.runtime.sync_occlusion_and_post_restore();
     }
 
+    /// The hosting Activity crossed `onStart`/`onStop` — Android's
+    /// visibility signal. Stopping parks the pump even when the surface
+    /// survives; starting posts the single restore frame when the band
+    /// can present again.
+    pub(crate) fn set_visible(&mut self, jni_env: &mut Env, started: bool) {
+        self.apply_visible(jni_env, started);
+        self.sync_app_phase();
+    }
+
     /// The hosting Activity crossed `onResume`/`onPause` — forwarded to
-    /// mounted `AndroidContent` views.
+    /// mounted `AndroidContent` views and reflected in [`AppPhase`].
     pub(crate) fn set_resumed(&self, jni_env: &mut Env, resumed: bool) {
         self.android_bridge.set_resumed(jni_env, resumed);
+        self.sync_app_phase();
+    }
+
+    fn sync_app_phase(&self) {
+        let (started, resumed) = self.android_bridge.lifecycle_state();
+        let next = android_phase(started, resumed);
+        let Some(work) = self.phase.transition_future(next) else {
+            return;
+        };
+        if next == AppPhase::Background {
+            self.run_background_phase_work(work);
+        } else {
+            self.executor.spawn_local(work).detach();
+        }
+    }
+
+    /// Drives an `AppPhase::Background` hook on the local executor and pumps
+    /// ready tasks — waiting on the executor's `eventfd` within a bounded
+    /// budget — so state persistence completes reliably before `onStop`
+    /// returns and Android freezes or kills the process.
+    fn run_background_phase_work(&self, work: Pin<Box<dyn Future<Output = ()>>>) {
+        // Android enforces a ~5 s ANR window on Activity lifecycle callbacks;
+        // bound synchronous pumping at 2 s so disk/database saves finish
+        // reliably while a stalled hook cannot trigger an ANR.
+        const BACKGROUND_SAVE_BUDGET: Duration = Duration::from_secs(2);
+
+        let done = Rc::new(Cell::new(false));
+        let done_flag = Rc::clone(&done);
+        self.executor
+            .spawn_local(async move {
+                work.await;
+                done_flag.set(true);
+            })
+            .detach();
+
+        let deadline = std::time::Instant::now() + BACKGROUND_SAVE_BUDGET;
+        loop {
+            while self.executor.drain() {
+                if done.get() {
+                    return;
+                }
+            }
+            if done.get() {
+                return;
+            }
+            let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                tracing::warn!(
+                    "hydrolysis android: on_phase_change(Background) did not finish within {BACKGROUND_SAVE_BUDGET:?}; \
+                     returning from onStop with the task still pending on the local executor"
+                );
+                return;
+            };
+            let timeout_ms = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
+            let fd = self.executor.wake().fd().as_raw_fd();
+            let mut pfd = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: `pfd` points to one valid `pollfd` holding the executor's live eventfd.
+            let ready = unsafe { libc::poll(&raw mut pfd, 1, timeout_ms) };
+            if ready > 0 && (pfd.revents & libc::POLLIN) != 0 {
+                let mut count: u64 = 0;
+                // SAFETY: `fd` is the executor's non-blocking eventfd; reading
+                // acknowledges the wake whose runnables the next iteration drains.
+                unsafe {
+                    libc::eventfd_read(fd, &raw mut count);
+                }
+            } else if ready < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                tracing::error!(
+                    %error,
+                    "hydrolysis android: poll on executor eventfd failed during onStop"
+                );
+                return;
+            }
+        }
     }
 
     /// The Kotlin host bound or unbound the view — the HWUI draw gate.

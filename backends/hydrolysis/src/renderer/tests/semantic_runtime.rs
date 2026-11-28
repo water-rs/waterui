@@ -237,6 +237,67 @@ fn toggle_emits_and_click_flips() {
 }
 
 #[test]
+fn mixed_checkbox_publishes_mixed_and_click_resolves_to_on() {
+    use nami::SignalExt as _;
+
+    let items = Binding::new([true, false, false]);
+    let all = Binding::mapping(
+        &items,
+        |list| list.iter().all(|&done| done),
+        |source, on| source.set([on, on, on]),
+    );
+    let some_but_not_all = items
+        .map(|list| list.iter().any(|&done| done) && !list.iter().all(|&done| done))
+        .computed();
+    let all_for_view = all.clone();
+    let mixed_for_view = some_but_not_all.clone();
+
+    let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(vstack((toggle("Select all", &all_for_view)
+            .checkbox()
+            .mixed(mixed_for_view.clone()),)))
+    }));
+
+    // Starts partially selected: mixed accessibility state.
+    let update = pumped(&mut runtime);
+    let (checkbox_id, checkbox_node) =
+        find_by_label(&update, Role::CheckBox, "Select all").expect("the checkbox is missing");
+    assert_eq!(checkbox_node.toggled(), Some(Toggled::Mixed));
+    assert!(checkbox_node.supports_action(Action::Click));
+
+    // Activating while mixed resolves the binding to `true`, selecting all items.
+    assert!(
+        act(&mut runtime, Action::Click, checkbox_id),
+        "Click on mixed checkbox changed nothing"
+    );
+    assert!(all.snapshot(), "activating a mixed checkbox must set true");
+    assert!(!some_but_not_all.snapshot());
+    assert_eq!(items.snapshot(), [true, true, true]);
+
+    let update = pumped(&mut runtime);
+    let (checkbox_id, checkbox_node) =
+        find_by_label(&update, Role::CheckBox, "Select all").expect("the checkbox vanished");
+    assert_eq!(checkbox_node.toggled(), Some(Toggled::True));
+
+    // Clicking again while checked clears all items to false (not mixed).
+    assert!(act(&mut runtime, Action::Click, checkbox_id));
+    assert!(!all.snapshot());
+    assert_eq!(items.snapshot(), [false, false, false]);
+
+    let update = pumped(&mut runtime);
+    let (_, checkbox_node) =
+        find_by_label(&update, Role::CheckBox, "Select all").expect("the checkbox vanished");
+    assert_eq!(checkbox_node.toggled(), Some(Toggled::False));
+
+    // Mutating one item back to true restores the mixed state reactively.
+    items.set([false, true, false]);
+    let update = pumped(&mut runtime);
+    let (_, checkbox_node) =
+        find_by_label(&update, Role::CheckBox, "Select all").expect("the checkbox vanished");
+    assert_eq!(checkbox_node.toggled(), Some(Toggled::Mixed));
+}
+
+#[test]
 #[expect(
     clippy::float_cmp,
     reason = "SetValue must store the written value exactly, not a stepped or snapped one"
@@ -603,6 +664,55 @@ fn radio_picker_hidden_label_still_names_the_group() {
         1,
         "a hidden label must not add a second node carrying the label"
     );
+}
+
+#[test]
+fn wheel_picker_emits_value_options_and_steps_selection() {
+    let selection = Binding::new(0i32);
+    let selection_for_view = selection.clone();
+    let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(vstack((picker(
+            "Unit",
+            vec![
+                text("Celsius").tag(0i32),
+                text("Fahrenheit").tag(1i32),
+                text("Kelvin").tag(2i32),
+            ],
+            &selection_for_view,
+        )
+        .wheel(),)))
+    }));
+
+    let update = pumped(&mut runtime);
+    let (wheel_id, wheel_node) =
+        find_by_label(&update, Role::ListBox, "Unit").expect("the wheel picker is missing");
+    assert_eq!(wheel_node.value(), Some("Celsius"));
+    let children = wheel_node.children();
+    assert_eq!(children.len(), 3);
+    assert_eq!(lookup(&update, children[0]).is_selected(), Some(true));
+    assert_eq!(lookup(&update, children[1]).is_selected(), Some(false));
+
+    assert!(
+        act(&mut runtime, Action::Increment, wheel_id),
+        "wheel Increment must advance selection"
+    );
+    assert_eq!(selection.snapshot(), 1);
+    let update = pumped(&mut runtime);
+    let (_, wheel_node) =
+        find_by_label(&update, Role::ListBox, "Unit").expect("the wheel picker is missing");
+    assert_eq!(wheel_node.value(), Some("Fahrenheit"));
+
+    assert!(
+        act(&mut runtime, Action::Click, children[2]),
+        "clicking a wheel option must select it"
+    );
+    assert_eq!(selection.snapshot(), 2);
+
+    assert!(
+        act(&mut runtime, Action::Decrement, wheel_id),
+        "wheel Decrement must step back"
+    );
+    assert_eq!(selection.snapshot(), 1);
 }
 
 #[test]

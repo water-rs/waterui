@@ -14,6 +14,7 @@ use std::rc::Rc;
 
 use cherenkov_record::Recorder;
 use kurbo::Rect;
+use waterui_controls::list::ListStyle;
 use waterui_core::animation::Animation;
 use waterui_core::layout::LayoutDirection;
 
@@ -28,6 +29,7 @@ use super::{Chrome, ListMetrics};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListSpec {
     direction: LayoutDirection,
+    style: ListStyle,
 }
 
 /// Layout metrics for a key/value [`ListRowConfig`](waterui_controls::list::ListRowConfig).
@@ -52,16 +54,32 @@ impl Default for ListRowLayoutMetrics {
 }
 
 impl ListSpec {
-    /// The spec of a list laid out `direction`.
+    /// The spec of a list laid out `direction` with [`ListStyle::Automatic`].
     #[must_use]
     pub const fn new(direction: LayoutDirection) -> Self {
-        Self { direction }
+        Self {
+            direction,
+            style: ListStyle::Automatic,
+        }
+    }
+
+    /// Sets the list's resolved presentation [`ListStyle`].
+    #[must_use]
+    pub const fn with_style(mut self, style: ListStyle) -> Self {
+        self.style = style;
+        self
     }
 
     /// The layout direction the list is laid out in.
     #[must_use]
     pub const fn direction(&self) -> LayoutDirection {
         self.direction
+    }
+
+    /// The list's resolved presentation style.
+    #[must_use]
+    pub const fn style(&self) -> ListStyle {
+        self.style
     }
 }
 

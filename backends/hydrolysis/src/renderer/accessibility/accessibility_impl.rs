@@ -6,6 +6,8 @@ use crate::renderer::transformed_rect;
 use std::borrow::Cow;
 use waterui_controls::sheet::SheetContentScope;
 use waterui_core::contract_violation;
+#[cfg(feature = "accessibility")]
+use waterui_core::handler::ReportExtraction as _;
 
 #[cfg(feature = "accessibility")]
 #[cfg(feature = "stepper")]
@@ -301,11 +303,10 @@ pub struct DelegatedActivation<E: crate::text::TextEngine> {
 pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
     /// Direct semantic activation: `Click` invokes the widget's own activation
     /// handler, no pointer and no coordinates.
-    Activate {
-        action: AccessibilityActivation<E>,
-    },
+    Activate { action: AccessibilityActivation<E> },
     Toggle {
         binding: nami::Binding<bool>,
+        mixed: Option<nami::Computed<bool>>,
     },
     #[cfg(feature = "slider")]
     Slider {
@@ -335,13 +336,16 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
         line_limit: Option<usize>,
     },
     #[cfg(feature = "secure-field")]
-    SecureField {
-        value: nami::Binding<FormSecure>,
-    },
+    SecureField { value: nami::Binding<FormSecure> },
     #[cfg(any(feature = "picker", feature = "navigation"))]
     PickerSelect {
         selection: nami::Binding<waterui_core::id::Id>,
         target: waterui_core::id::Id,
+    },
+    #[cfg(feature = "picker")]
+    PickerWheel {
+        selection: nami::Binding<waterui_core::id::Id>,
+        tags: Vec<waterui_core::id::Id>,
     },
     Scroll {
         handle: ScrollHandle,
@@ -404,11 +408,16 @@ pub struct AccessibilityBuilder<E: crate::text::TextEngine> {
     node_index: std::collections::BTreeMap<AccessibilityNodeId, usize>,
     pub(crate) root_children: Vec<AccessibilityNodeId>,
     pub(crate) actions: BTreeMap<AccessibilityNodeId, AccessibilityActionTarget<E>>,
-    /// Named custom-action dispatch targets exposed on a node (for example,
-    /// descendant controls folded into an `AccessibilityChildren::Combine`
-    /// element), keyed by node id and `(CustomAction::id, target)`.
+    /// Named custom-action dispatch targets exposed on a node (both scoped
+    /// `.a11y_action(...)` handlers and descendant controls folded into an
+    /// `AccessibilityChildren::Combine` element), keyed by node id and
+    /// `(CustomAction::id, target)`.
     pub(crate) custom_actions:
         BTreeMap<AccessibilityNodeId, Vec<(i32, AccessibilityActionTarget<E>)>>,
+    /// Scoped `.a11y_adjustable(...)` increment/decrement handlers attached to
+    /// each node.
+    pub(crate) adjustable_actions:
+        BTreeMap<AccessibilityNodeId, (Environment, AccessibilityAdjustable)>,
     /// The [`InteractionFocusBinding`] a node was emitted under, keyed by node
     /// — the same modifier state the pointer path reads for press slots, so a
     /// keyboard-focused node writes its author binding regardless of whether a
@@ -545,6 +554,7 @@ impl<E: crate::text::TextEngine> Default for AccessibilityBuilder<E> {
             root_children: Vec::new(),
             actions: BTreeMap::new(),
             custom_actions: BTreeMap::new(),
+            adjustable_actions: BTreeMap::new(),
             focus_bindings: BTreeMap::new(),
             interaction_nodes: BTreeMap::new(),
             delegated_activations: BTreeMap::new(),
@@ -609,6 +619,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         self.root_children.clear();
         self.actions.clear();
         self.custom_actions.clear();
+        self.adjustable_actions.clear();
         self.focus_bindings.clear();
         self.interaction_nodes.clear();
         self.delegated_activations.clear();
@@ -662,6 +673,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         for id in &dead {
             self.actions.remove(id);
             self.custom_actions.remove(id);
+            self.adjustable_actions.remove(id);
             self.node_owners.remove(id);
             self.node_regions.remove(id);
             self.node_clips.remove(id);
@@ -1193,6 +1205,33 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         self.retire_nodes(&all_descendants);
     }
 
+    /// Installs `(description, target)` custom actions on `node_id`, re-indexing
+    /// AccessKit custom-action ids sequentially from `0`.
+    fn set_custom_action_entries(
+        &mut self,
+        node_id: AccessibilityNodeId,
+        entries: Vec<(String, AccessibilityActionTarget<E>)>,
+    ) {
+        if entries.is_empty() {
+            return;
+        }
+        let mut descriptors = Vec::with_capacity(entries.len());
+        let mut targets = Vec::with_capacity(entries.len());
+        for (index, (description, target)) in entries.into_iter().enumerate() {
+            let Ok(id) = i32::try_from(index) else {
+                break;
+            };
+            descriptors.push(AccessibilityCustomAction { id, description });
+            targets.push((id, target));
+        }
+        if let Some(index) = self.node_index.get(&node_id).copied() {
+            let node = &mut self.nodes[index].1;
+            node.set_custom_actions(descriptors);
+            node.add_action(AccessibilityAction::CustomAction);
+        }
+        self.custom_actions.insert(node_id, targets);
+    }
+
     /// Collapses a synthesized naming container around exactly one semantic
     /// node into that node.
     ///
@@ -1241,10 +1280,16 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         }
         let label = container.label().map(str::to_owned);
         let value = container.value().map(str::to_owned);
+        let description = container.description().map(str::to_owned);
         let author_id = container.author_id().map(str::to_owned);
         let role = container.role();
         let click = container.supports_action(AccessibilityAction::Click);
         let focus = container.supports_action(AccessibilityAction::Focus);
+        let increment = container.supports_action(AccessibilityAction::Increment);
+        let decrement = container.supports_action(AccessibilityAction::Decrement);
+        let container_custom = self.take_custom_action_entries(container_id);
+        let child_custom = self.take_custom_action_entries(child_id);
+        let container_adjustable = self.adjustable_actions.remove(&container_id);
         let child = self
             .nodes
             .iter_mut()
@@ -1256,6 +1301,9 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         if let Some(value) = value {
             child.set_value(value);
         }
+        if let Some(description) = description {
+            child.set_description(description);
+        }
         // The container's advertised actions and action target — the activation
         // a silenced tap delegated to it — move to the surviving node; a real
         // action the child registered itself always wins.
@@ -1265,15 +1313,11 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         if focus {
             child.add_action(AccessibilityAction::Focus);
         }
-        if let Some(target) = self.actions.remove(&container_id) {
-            self.actions.entry(child_id).or_insert(target);
+        if increment {
+            child.add_action(AccessibilityAction::Increment);
         }
-        // A delegated activation rides with its target: the surviving child
-        // dispatches it and projects its point through the donor's region.
-        if let Some(donation) = self.delegated_activations.remove(&container_id) {
-            self.delegated_activations
-                .entry(child_id)
-                .or_insert(donation);
+        if decrement {
+            child.add_action(AccessibilityAction::Decrement);
         }
         // The scope's automation id was claimed by the container, so it would
         // vanish with it. A child that carries its own id keeps it, matching
@@ -1286,30 +1330,28 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         if role != AccessibilityNodeRole::Group {
             child.set_role(role);
         }
-        // The child takes the container's place under its parent.
-        if let Some(slot) = self
-            .root_children
-            .iter_mut()
-            .find(|slot| **slot == container_id)
-        {
-            *slot = child_id;
-        } else {
-            let slot = self
-                .nodes
-                .iter_mut()
-                .filter(|(id, _)| *id != container_id)
-                .find_map(|(_, node)| {
-                    node.children()
-                        .iter()
-                        .position(|child| *child == container_id)
-                        .map(|position| (node, position))
-                });
-            let (parent, position) =
-                slot.expect("hydrolysis accessibility container to collapse has no parent");
-            let mut children = parent.children().to_vec();
-            children[position] = child_id;
-            parent.set_children(children);
+        if !child_custom.is_empty() || !container_custom.is_empty() {
+            let mut merged = child_custom;
+            merged.extend(container_custom);
+            self.set_custom_action_entries(child_id, merged);
         }
+        if let Some(adjustable) = container_adjustable {
+            self.adjustable_actions
+                .entry(child_id)
+                .or_insert(adjustable);
+        }
+        if let Some(target) = self.actions.remove(&container_id) {
+            self.actions.entry(child_id).or_insert(target);
+        }
+        // A delegated activation rides with its target: the surviving child
+        // dispatches it and projects its point through the donor's region.
+        if let Some(donation) = self.delegated_activations.remove(&container_id) {
+            self.delegated_activations
+                .entry(child_id)
+                .or_insert(donation);
+        }
+        // The child takes the container's place under its parent.
+        self.replace_child_in_parent(container_id, child_id);
         // `remove` shifts every later node down a slot — rebuild the
         // id-index so the bounds pass at finalize still lands on them.
         self.nodes.remove(container_index);
@@ -1318,6 +1360,38 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
             self.focus = child_id;
         }
         Some(child_id)
+    }
+
+    /// Replaces `container_id` with `child_id` in whichever parent list
+    /// (`root_children` or an enclosing node's children) owns it.
+    fn replace_child_in_parent(
+        &mut self,
+        container_id: AccessibilityNodeId,
+        child_id: AccessibilityNodeId,
+    ) {
+        if let Some(slot) = self
+            .root_children
+            .iter_mut()
+            .find(|slot| **slot == container_id)
+        {
+            *slot = child_id;
+            return;
+        }
+        let slot = self
+            .nodes
+            .iter_mut()
+            .filter(|(id, _)| *id != container_id)
+            .find_map(|(_, node)| {
+                node.children()
+                    .iter()
+                    .position(|child| *child == container_id)
+                    .map(|position| (node, position))
+            });
+        let (parent, position) =
+            slot.expect("hydrolysis accessibility container to collapse has no parent");
+        let mut children = parent.children().to_vec();
+        children[position] = child_id;
+        parent.set_children(children);
     }
 
     /// The update `finalize_tree_update` publishes: the synthesized window
@@ -1573,10 +1647,10 @@ impl<E: crate::text::TextEngine> AccessibilityContainerScope<E> {
 /// once for the bar.
 #[cfg(feature = "accessibility")]
 pub fn accessibility_container_child_environment(env: &Environment) -> Option<Environment> {
-    // A role, a label, a value, or `AccessibilityChildren::Combine` names the
-    // container. Identifier/hidden/state metadata are subtree-scoped and name
-    // nothing on their own, so they never make a bare container into a semantic
-    // node.
+    // A role, label, value, hint, custom actions, adjustable actions, or
+    // `AccessibilityChildren::Combine` names or arms the container.
+    // Identifier/hidden/state metadata are subtree-scoped and name nothing on
+    // their own, so they never make a bare container into a semantic node.
     let combines = env
         .get::<AccessibilityChildren>()
         .is_some_and(AccessibilityChildren::combines_descendants);
@@ -1584,6 +1658,9 @@ pub fn accessibility_container_child_environment(env: &Environment) -> Option<En
         && env.get::<AccessibilityRole>().is_none()
         && env.get::<AccessibilityLabel>().is_none()
         && env.get::<AccessibilityValue>().is_none()
+        && env.get::<AccessibilityHint>().is_none()
+        && env.get::<AccessibilityCustomActions>().is_none()
+        && env.get::<AccessibilityAdjustable>().is_none()
     {
         return None;
     }
@@ -1592,6 +1669,9 @@ pub fn accessibility_container_child_environment(env: &Environment) -> Option<En
     child_env.remove::<ScopedAccessibilityIdentifier>();
     child_env.remove::<AccessibilityLabel>();
     child_env.remove::<AccessibilityValue>();
+    child_env.remove::<AccessibilityHint>();
+    child_env.remove::<AccessibilityCustomActions>();
+    child_env.remove::<AccessibilityAdjustable>();
     child_env.remove::<AccessibilityRole>();
     child_env.remove::<AccessibilityHidden>();
     child_env.remove::<AccessibilityChildren>();
@@ -1894,6 +1974,24 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             }
             return changed;
         }
+        if matches!(
+            action,
+            AccessibilityAction::Increment | AccessibilityAction::Decrement
+        ) && let Some((captured_env, adjustable)) = self
+            .accessibility
+            .adjustable_actions
+            .get(&target_node)
+            .cloned()
+        {
+            let action_env = captured_env.layered_on(env);
+            let result = match action {
+                AccessibilityAction::Increment => adjustable.increment(&action_env),
+                AccessibilityAction::Decrement => adjustable.decrement(&action_env),
+                _ => unreachable!(),
+            };
+            result.report_extraction();
+            return true;
+        }
         let Some(target) = self.accessibility.actions.get(&target_node).cloned() else {
             // A node may legitimately register no action target: a disabled
             // control stays in the tree (focusable, announced as disabled)
@@ -1976,9 +2074,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 AccessibilityAction::Focus => true,
                 _ => declined_action("activation", action),
             },
-            AccessibilityActionTarget::Toggle { binding } => match action {
+            AccessibilityActionTarget::Toggle { binding, mixed } => match action {
                 AccessibilityAction::Click => {
-                    let next = !binding.snapshot();
+                    let next = if mixed.as_ref().is_some_and(nami::Signal::snapshot) {
+                        true
+                    } else {
+                        !binding.snapshot()
+                    };
                     binding.set(next);
                     true
                 }
@@ -2056,6 +2158,45 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             AccessibilityActionTarget::PickerSelect { selection, target } => {
                 handle_accessibility_picker_select_action(&selection, target, action)
             }
+            #[cfg(feature = "picker")]
+            AccessibilityActionTarget::PickerWheel { selection, tags } => match action {
+                AccessibilityAction::Increment => {
+                    if tags.is_empty() {
+                        false
+                    } else {
+                        let current = tags
+                            .iter()
+                            .position(|tag| *tag == selection.snapshot())
+                            .unwrap_or(0);
+                        let next = (current + 1).min(tags.len() - 1);
+                        if tags[next] == selection.snapshot() {
+                            false
+                        } else {
+                            selection.set(tags[next]);
+                            true
+                        }
+                    }
+                }
+                AccessibilityAction::Decrement => {
+                    if tags.is_empty() {
+                        false
+                    } else {
+                        let current = tags
+                            .iter()
+                            .position(|tag| *tag == selection.snapshot())
+                            .unwrap_or(0);
+                        let prev = current.saturating_sub(1);
+                        if tags[prev] == selection.snapshot() {
+                            false
+                        } else {
+                            selection.set(tags[prev]);
+                            true
+                        }
+                    }
+                }
+                AccessibilityAction::Focus => true,
+                _ => declined_action("wheel picker", action),
+            },
             AccessibilityActionTarget::Scroll { handle, axis } => {
                 handle_accessibility_scroll_action(self, &handle, axis, action, target_node)
             }
@@ -2589,9 +2730,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 placement: self.current_placement(),
             },
         });
-        let Some(node_id) = self
-            .accessibility
-            .register_node_internal(node, placement, env, None, true, None)
+        let Some(node_id) =
+            self.register_accessibility_node_inner(node, placement, env, None, true, None)
         else {
             // Bounds are positive (or semantic `None`) and the scope is unclaimed,
             // so registration can only have declined because the whole subtree is
@@ -2819,6 +2959,88 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    fn register_accessibility_node_inner(
+        &mut self,
+        mut node: AccessibilityNode,
+        placement: Option<NodePlacement>,
+        env: &Environment,
+        action_target: Option<AccessibilityActionTarget<E>>,
+        attach_to_root: bool,
+        semantic_key: Option<i64>,
+    ) -> Option<AccessibilityNodeId> {
+        self.watch_accessibility_state(env);
+        if let Some(hint) = env.get::<AccessibilityHint>() {
+            let signal = hint.resolve(env);
+            let text = self.read_signal(&signal);
+            if !text.is_empty() {
+                node.set_description(text.as_str().to_owned());
+            }
+        }
+        let resolved_custom: Option<Vec<(String, AccessibilityActionTarget<E>)>> = env
+            .get::<AccessibilityCustomActions>()
+            .filter(|actions| !actions.is_empty())
+            .map(|actions| {
+                actions
+                    .actions()
+                    .iter()
+                    .map(|action| {
+                        let signal = action.resolve_name(env);
+                        let name = self.read_signal(&signal);
+                        let custom_action = action.clone();
+                        let captured_env = env.clone();
+                        let target = AccessibilityActionTarget::Activate {
+                            action: Rc::new(RefCell::new(
+                                move |_core: &mut Self, dispatch_env: &Environment| {
+                                    let action_env = captured_env.layered_on(dispatch_env);
+                                    custom_action.invoke(&action_env).report_extraction();
+                                    true
+                                },
+                            )),
+                        };
+                        (name.as_str().to_owned(), target)
+                    })
+                    .collect()
+            });
+        let adjustable = env.get::<AccessibilityAdjustable>().cloned();
+
+        let node_id = self.accessibility.register_node_internal(
+            node,
+            placement,
+            env,
+            action_target,
+            attach_to_root,
+            semantic_key,
+        )?;
+
+        let disabled = self
+            .accessibility
+            .node(node_id)
+            .is_some_and(AccessibilityNode::is_disabled);
+        if !disabled {
+            if let Some(entries) = resolved_custom
+                && !entries.is_empty()
+            {
+                let mut existing = self.accessibility.take_custom_action_entries(node_id);
+                existing.extend(entries);
+                self.accessibility
+                    .set_custom_action_entries(node_id, existing);
+            }
+            if let Some(adjustable) = adjustable {
+                if let Some(index) = self.accessibility.node_index.get(&node_id).copied() {
+                    let registered = &mut self.accessibility.nodes[index].1;
+                    registered.add_action(AccessibilityAction::Focus);
+                    registered.add_action(AccessibilityAction::Increment);
+                    registered.add_action(AccessibilityAction::Decrement);
+                }
+                self.accessibility
+                    .adjustable_actions
+                    .insert(node_id, (env.clone(), adjustable));
+            }
+        }
+        Some(node_id)
+    }
+
+    #[cfg(feature = "accessibility")]
     pub(crate) fn register_accessibility_node(
         &mut self,
         node: AccessibilityNode,
@@ -2826,14 +3048,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         env: &Environment,
         action_target: Option<AccessibilityActionTarget<E>>,
     ) -> Option<AccessibilityNodeId> {
-        self.watch_accessibility_state(env);
         let placement = NodePlacement {
             region: crate::renderer::mount::Region {
                 local: bounds,
                 placement: self.current_placement(),
             },
         };
-        self.accessibility.register_node_internal(
+        self.register_accessibility_node_inner(
             node,
             Some(placement),
             env,
@@ -2913,9 +3134,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         env: &Environment,
         action_target: Option<AccessibilityActionTarget<E>>,
     ) -> Option<AccessibilityNodeId> {
-        self.watch_accessibility_state(env);
-        self.accessibility
-            .register_node_internal(node, None, env, action_target, true, None)
+        self.register_accessibility_node_inner(node, None, env, action_target, true, None)
     }
 
     #[cfg(feature = "accessibility")]
@@ -2927,14 +3146,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         env: &Environment,
         action_target: Option<AccessibilityActionTarget<E>>,
     ) -> Option<AccessibilityNodeId> {
-        self.watch_accessibility_state(env);
         let placement = NodePlacement {
             region: crate::renderer::mount::Region {
                 local: bounds,
                 placement: self.current_placement(),
             },
         };
-        self.accessibility.register_node_internal(
+        self.register_accessibility_node_inner(
             node,
             Some(placement),
             env,
@@ -2952,9 +3170,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         env: &Environment,
         action_target: Option<AccessibilityActionTarget<E>>,
     ) -> Option<AccessibilityNodeId> {
-        self.watch_accessibility_state(env);
-        self.accessibility
-            .register_node_internal(node, None, env, action_target, false, None)
+        self.register_accessibility_node_inner(node, None, env, action_target, false, None)
     }
 
     #[cfg(feature = "accessibility")]
@@ -2967,14 +3183,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         env: &Environment,
         action_target: Option<AccessibilityActionTarget<E>>,
     ) -> Option<AccessibilityNodeId> {
-        self.watch_accessibility_state(env);
         let placement = NodePlacement {
             region: crate::renderer::mount::Region {
                 local: bounds,
                 placement: self.current_placement(),
             },
         };
-        self.accessibility.register_node_internal(
+        self.register_accessibility_node_inner(
             node,
             Some(placement),
             env,
@@ -2993,8 +3208,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         env: &Environment,
         action_target: Option<AccessibilityActionTarget<E>>,
     ) -> Option<AccessibilityNodeId> {
-        self.watch_accessibility_state(env);
-        self.accessibility.register_node_internal(
+        self.register_accessibility_node_inner(
             node,
             None,
             env,
@@ -3546,8 +3760,9 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
             Self::Activate { action } => Self::Activate {
                 action: action.clone(),
             },
-            Self::Toggle { binding } => Self::Toggle {
+            Self::Toggle { binding, mixed } => Self::Toggle {
                 binding: binding.clone(),
+                mixed: mixed.clone(),
             },
             #[cfg(feature = "slider")]
             Self::Slider { value, range, step } => Self::Slider {
@@ -3586,6 +3801,11 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
             Self::PickerSelect { selection, target } => Self::PickerSelect {
                 selection: selection.clone(),
                 target: *target,
+            },
+            #[cfg(feature = "picker")]
+            Self::PickerWheel { selection, tags } => Self::PickerWheel {
+                selection: selection.clone(),
+                tags: tags.clone(),
             },
             Self::Scroll { handle, axis } => Self::Scroll {
                 handle: handle.clone(),

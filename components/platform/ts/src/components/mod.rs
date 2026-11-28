@@ -469,9 +469,13 @@ fn controls(
             ))
         }
         "Toggle" => {
-            let mut attributes = ToggleAttributes::from_js(config, bridge)?;
-            let label = children::label(bridge, component, attributes.take_label(), children)?;
-            Ok(AnyView::new(Toggle::new(label, attributes.value())))
+            let (value, mixed, label) = ToggleAttributes::from_js(config, bridge)?.into_parts();
+            let label = children::label(bridge, component, label, children)?;
+            let toggle = Toggle::new(label, &value);
+            Ok(AnyView::new(match mixed {
+                Some(mixed) => toggle.mixed(mixed),
+                None => toggle,
+            }))
         }
         "Slider" => {
             let mut attributes = SliderAttributes::from_js(config, bridge)?;
@@ -499,11 +503,12 @@ fn controls(
         "Picker" => {
             let mut attributes = PickerAttributes::from_js(config, bridge)?;
             let label = children::label(bridge, component, attributes.take_label(), children)?;
-            Ok(AnyView::new(Picker::new(
-                label,
-                options(attributes.options()),
-                attributes.value(),
-            )))
+            let picker = Picker::new(label, options(attributes.options()), attributes.value());
+            let picker = match attributes.style() {
+                Some(style) => picker.style(style.into()),
+                None => picker,
+            };
+            Ok(AnyView::new(picker))
         }
         "Progress" => {
             let attributes = ProgressAttributes::from_js(config, bridge)?;

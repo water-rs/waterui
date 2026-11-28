@@ -443,6 +443,20 @@ fn ts_toggle_is_a_toggle() {
 }
 
 #[test]
+fn ts_toggle_forwards_mixed_attribute() {
+    let on = Binding::new(false);
+    let mixed = Binding::new(true);
+    assert_same(
+        "Toggle mixed",
+        &stateful(
+            "globalThis.on = waterui.createSignal(false); globalThis.mixed = waterui.createSignal(true);",
+            r#"waterui.jsx("Toggle", { value: globalThis.on, mixed: globalThis.mixed, children: "Select all" })"#,
+        ),
+        toggle("Select all", &on).mixed(mixed),
+    );
+}
+
+#[test]
 fn ts_slider_is_a_slider() {
     let amount = Binding::new(0.25_f64);
     assert_same(
@@ -539,6 +553,59 @@ fn ts_picker_is_a_picker() {
             ],
             &choice,
         ),
+    );
+    assert_same(
+        "Picker, wheel",
+        &stateful(
+            r#"globalThis.choice = waterui.createSignal("alpha");"#,
+            r#"waterui.jsx("Picker", {
+                value: globalThis.choice,
+                style: "wheel",
+                options: [
+                    { value: "alpha", label: "Alpha" },
+                    { value: "beta", label: "Beta" },
+                ],
+                children: "Variant",
+            })"#,
+        ),
+        Picker::new(
+            "Variant",
+            vec![
+                PickerItem::new(Str::from("alpha"), text("Alpha")),
+                PickerItem::new(Str::from("beta"), text("Beta")),
+            ],
+            &choice,
+        )
+        .wheel(),
+    );
+    assert_same(
+        "Picker with ambient pickerStyle",
+        &stateful(
+            r#"globalThis.choice = waterui.createSignal("alpha");"#,
+            r#"waterui.jsx("VStack", {
+                pickerStyle: "radio",
+                children: waterui.jsx("Picker", {
+                    value: globalThis.choice,
+                    options: [
+                        { value: "alpha", label: "Alpha" },
+                        { value: "beta", label: "Beta" },
+                    ],
+                    children: "Variant",
+                }),
+            })"#,
+        ),
+        vstack(
+            HorizontalAlignment::Center,
+            vec![AnyView::new(Picker::new(
+                "Variant",
+                vec![
+                    PickerItem::new(Str::from("alpha"), text("Alpha")),
+                    PickerItem::new(Str::from("beta"), text("Beta")),
+                ],
+                &choice,
+            ))],
+        )
+        .picker_style(waterui::form::picker::PickerStyle::Radio),
     );
 }
 

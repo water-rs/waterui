@@ -90,6 +90,11 @@ impl KeyCommandRegistry {
             .map(ToString::to_string)
     }
 
+    /// Whether two commands carry the same armed token in their `propertyList`.
+    pub(super) fn same_token(a: &UICommand, b: &UICommand) -> bool {
+        matches!((Self::token(a), Self::token(b)), (Some(lhs), Some(rhs)) if lhs == rhs)
+    }
+
     /// `command` was armed in this registry — `false` for foreign or
     /// retired tokens, the ownership `canPerformAction` checks.
     pub(super) fn owns(&self, command: &UICommand) -> bool {

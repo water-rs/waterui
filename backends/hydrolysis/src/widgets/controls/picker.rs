@@ -12,7 +12,8 @@ use crate::renderer::{InteractionKey, Track, TrackAction, measure_segmented_intr
 use crate::renderer::{picker_menu_panel_height, picker_menu_row_rect};
 use crate::theme::{
     Chrome, Inputs, MenuLayout, MenuPickerLayout, MenuPickerLook, PickerSpec, RadioGroupLook,
-    RadioLayout, Segment, SegmentedLayout, SegmentedLook, SegmentedSpec, SpecTint, WidgetTheme,
+    RadioLayout, Segment, SegmentedLayout, SegmentedLook, SegmentedSpec, SpecTint,
+    WheelPickerLayout, WheelPickerLook, WidgetTheme,
 };
 use crate::widgets::controls::button::label_styled;
 use crate::widgets::util::mirrored_in;
@@ -21,6 +22,7 @@ use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
     Toggled as AccessibilityToggled,
 };
+use cherenkov_record::Draw as _;
 use kurbo::{Point, Rect, Vec2};
 use nami::{Binding, Computed, Signal, SignalExt as _};
 use std::any::Any;
@@ -63,6 +65,35 @@ pub struct PickerRenderState<E: crate::text::TextEngine> {
     /// Each radio item's live indicator, keyed by the item.
     radio_parts: BTreeMap<Id, Option<LiveToggleParts>>,
     segmented: SegmentedState<E>,
+    wheel: WheelState,
+}
+
+/// A wheel picker's retained state: the cached theme look, live vertical drag
+/// offset (reset to 0 on release/snap), accumulated scroll wheel delta, and a
+/// lightweight scroll handle used to register the drum's scroll target.
+struct WheelState {
+    look: Option<(PickerSpec, WheelPickerLook)>,
+    drag_offset_px: Binding<f64>,
+    scroll_accum_px: Rc<Cell<f64>>,
+    scroll_handle: crate::scroll::ScrollHandle,
+}
+
+impl Default for WheelState {
+    fn default() -> Self {
+        Self {
+            look: None,
+            drag_offset_px: Binding::new(0.0),
+            scroll_accum_px: Rc::new(Cell::new(0.0)),
+            scroll_handle: crate::scroll::ScrollHandle::new(
+                waterui_layout::scroll::Axis::Vertical,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                None,
+            ),
+        }
+    }
 }
 
 /// The look a theme gave for a segmented picker's spec, held while the spec
@@ -135,6 +166,7 @@ impl<E: crate::text::TextEngine> PickerRenderState<E> {
             radio: None,
             radio_parts: BTreeMap::new(),
             segmented: SegmentedState::default(),
+            wheel: WheelState::default(),
         }
     }
 
@@ -170,6 +202,27 @@ impl<E: crate::text::TextEngine> PickerRenderState<E> {
             self.radio_parts.clear();
         }
         let (_, look) = self.radio.as_ref().expect("the look was just ensured");
+        look.clone()
+    }
+
+    /// The wheel picker's look for its spec in `env`: the one already held
+    /// when the spec is unchanged, otherwise requested again.
+    fn wheel_picker_look(
+        &mut self,
+        theme: &Rc<dyn WidgetTheme>,
+        env: &Environment,
+    ) -> WheelPickerLook {
+        let spec = picker_spec(&self.config, env);
+        if self
+            .wheel
+            .look
+            .as_ref()
+            .is_none_or(|(held, _)| *held != spec)
+        {
+            let look = theme.wheel_picker(&spec, env);
+            self.wheel.look = Some((spec, look));
+        }
+        let (_, look) = self.wheel.look.as_ref().expect("the look was just ensured");
         look.clone()
     }
 
@@ -647,6 +700,126 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                     }
                 }
             }
+            PickerStyle::Wheel => {
+                let selected = renderer.read_signal(picker.selection());
+                let selected_index = selected_item_index(&items, selected);
+                let option_labels: Vec<String> = items
+                    .iter()
+                    .map(|item| {
+                        renderer
+                            .read_resolved_text_styled(&item.content, env)
+                            .to_plain()
+                            .to_string()
+                    })
+                    .collect();
+                let selected_text = selected_option_text(&option_labels, selected_index);
+                let mut node = AccessibilityNode::new(
+                    crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
+                        env,
+                        AccessibilityNodeRole::ListBox,
+                    ),
+                );
+                let default_label = renderer.accessibility_label_from_label(picker.label(), env);
+                if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
+                    node.set_label(label);
+                }
+                if let Some(value) = renderer.resolve_accessibility_value(env, Some(selected_text))
+                {
+                    node.set_value(value);
+                }
+                node.add_action(AccessibilityAction::Focus);
+                let wheel_target = if disabled {
+                    node.set_disabled();
+                    None
+                } else {
+                    node.add_action(AccessibilityAction::Increment);
+                    node.add_action(AccessibilityAction::Decrement);
+                    Some(AccessibilityActionTarget::PickerWheel {
+                        selection: picker.selection().clone(),
+                        tags: items.iter().map(|item| item.tag).collect(),
+                    })
+                };
+                let geometry = ctx.as_ref().zip(theme).map(|(ctx, theme)| {
+                    let look = theme.wheel_picker(&picker_spec(picker, env), env);
+                    let heading_height = f64::from(
+                        state
+                            .label_view
+                            .measure_built(renderer.state_mut(), env, theme)
+                            .height,
+                    );
+                    let (_, drum) = wheel_label_area(ctx.bounds(), look.layout(), heading_height);
+                    (drum, look.layout())
+                });
+                let selected_pos = selected_index.unwrap_or(0);
+                for (index, (item, label)) in items.iter().zip(option_labels).enumerate() {
+                    let mut option = AccessibilityNode::new(
+                        crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
+                            env,
+                            AccessibilityNodeRole::ListBoxOption,
+                        ),
+                    );
+                    option.set_label(label);
+                    let is_selected = item.tag == selected;
+                    option.set_selected(is_selected);
+                    option.set_toggled(AccessibilityToggled::from(is_selected));
+                    option.add_action(AccessibilityAction::Focus);
+                    if disabled {
+                        option.set_disabled();
+                    } else {
+                        option.add_action(AccessibilityAction::Click);
+                    }
+                    let option_target =
+                        (!disabled).then(|| AccessibilityActionTarget::PickerSelect {
+                            selection: picker.selection().clone(),
+                            target: item.tag,
+                        });
+                    let option_id = match geometry {
+                        Some((drum, layout)) => {
+                            let row_rect = wheel_row_rect(
+                                drum,
+                                f64::from(layout.row_height),
+                                index,
+                                crate::num_cast::usize_as_f64(selected_pos),
+                            )
+                            .intersect(drum);
+                            let option_bounds = if row_rect.area() > 0.0 {
+                                row_rect
+                            } else {
+                                drum
+                            };
+                            renderer.register_accessibility_child_node_with_key(
+                                i64::from(i32::from(item.tag)),
+                                option,
+                                option_bounds,
+                                env,
+                                option_target,
+                            )
+                        }
+                        None => renderer.register_accessibility_child_node_with_key_semantic(
+                            i64::from(i32::from(item.tag)),
+                            option,
+                            env,
+                            option_target,
+                        ),
+                    };
+                    if let Some(option_id) = option_id {
+                        node.push_child(option_id);
+                    }
+                }
+                let node_id = match ctx {
+                    Some(ctx) => {
+                        let bounds = geometry.map_or_else(|| ctx.bounds(), |(drum, _)| drum);
+                        renderer.register_accessibility_node(node, bounds, env, wheel_target)
+                    }
+                    None => renderer.register_accessibility_node_semantic(node, env, wheel_target),
+                };
+                if let Some(node_id) = node_id {
+                    renderer.register_accessibility_focus_link(
+                        &InteractionKey::for_rc(owner, 0),
+                        node_id,
+                    );
+                }
+            }
             style => contract_violation!(
                 "hydrolysis PickerStyle variant {style:?} is not implemented; the picker exposes no accessibility node"
             ),
@@ -828,6 +1001,9 @@ pub fn render_picker_parts<E: crate::text::TextEngine>(
         }
         PickerStyle::Segmented => {
             render_segmented_picker(ctx, state, selection, items, env);
+        }
+        PickerStyle::Wheel => {
+            render_wheel_picker(ctx, state, selection, items, env);
         }
         style => contract_violation!(
             "hydrolysis PickerStyle variant {style:?} is not implemented; the picker is not drawn"
@@ -1906,6 +2082,382 @@ fn segmented_label_rect(
     kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
+/// Where a wheel picker's optional heading and drum container lie in `bounds`.
+pub fn wheel_label_area(
+    bounds: Rect,
+    layout: WheelPickerLayout,
+    label_height: f64,
+) -> (Option<Rect>, Rect) {
+    if label_height > 0.0 {
+        let heading = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y0 + label_height);
+        let drum_y0 = (heading.y1 + f64::from(layout.label_spacing)).min(bounds.y1);
+        (
+            Some(heading),
+            Rect::new(bounds.x0, drum_y0, bounds.x1, bounds.y1),
+        )
+    } else {
+        (None, bounds)
+    }
+}
+
+/// The vertical band for row `index` inside `drum` when `center_index` is
+/// aligned with the drum's vertical midpoint.
+pub fn wheel_row_rect(drum: Rect, row_height: f64, index: usize, center_index: f64) -> Rect {
+    let center_y = drum.center().y;
+    let rel = crate::num_cast::usize_as_f64(index) - center_index;
+    let row_center = rel.mul_add(row_height, center_y);
+    let half = row_height * 0.5;
+    Rect::new(drum.x0, row_center - half, drum.x1, row_center + half)
+}
+
+/// Opacity falloff for a wheel row at `distance` rows from the centered band.
+#[must_use]
+pub fn wheel_row_alpha(distance: f64, visible_rows: usize) -> f32 {
+    if distance <= 0.15 {
+        return 1.0;
+    }
+    let half = crate::num_cast::usize_as_f64(visible_rows.max(1)) * 0.5;
+    let factor = (1.0 - distance / (half + 0.5)).clamp(0.0, 1.0);
+    crate::num_cast::f64_as_f32((factor * 0.85).clamp(0.0, 0.72))
+}
+
+/// The item index a vertical drag of `drag_offset_px` snaps to from
+/// `selected_index`. Dragging downward (`drag_offset_px > 0`) pulls earlier
+/// items down into the center; dragging upward pulls later items up.
+#[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    reason = "clamped row delta fits in item count"
+)]
+pub fn wheel_snap_index(
+    selected_index: usize,
+    drag_offset_px: f64,
+    row_height: f64,
+    count: usize,
+) -> usize {
+    if count == 0 || row_height <= 0.0 {
+        return 0;
+    }
+    let delta = (-drag_offset_px / row_height).round() as isize;
+    let max = (count - 1) as isize;
+    (selected_index as isize + delta).clamp(0, max) as usize
+}
+
+/// The item index hit by clicking `point_y` inside a drum centered at
+/// `drum_center_y`.
+#[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    reason = "clamped row delta fits in item count"
+)]
+pub fn wheel_click_index(
+    selected_index: usize,
+    point_y: f64,
+    drum_center_y: f64,
+    row_height: f64,
+    count: usize,
+) -> usize {
+    if count == 0 || row_height <= 0.0 {
+        return 0;
+    }
+    let delta = ((point_y - drum_center_y) / row_height).round() as isize;
+    let max = (count - 1) as isize;
+    (selected_index as isize + delta).clamp(0, max) as usize
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one continuous wheel render and interaction pass"
+)]
+pub fn render_wheel_picker<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    owner: &Rc<RefCell<PickerRenderState<E>>>,
+    selection: Binding<Id>,
+    items: Vec<PickerItem<Id>>,
+    env: &Environment,
+) {
+    let interaction_key = InteractionKey::for_rc(owner, 0);
+    let theme = ctx.theme();
+    let look = owner.borrow_mut().wheel_picker_look(&theme, env);
+    let layout = look.layout();
+    let disabled = {
+        let signal = widget_disabled(env);
+        ctx.renderer_mut().read_signal(&signal)
+    };
+    let selected = ctx.renderer_mut().read_signal(&selection);
+    let selected_index = selected_item_index(&items, selected).unwrap_or(0);
+    let drag_offset_binding = owner.borrow().wheel.drag_offset_px.clone();
+    let drag_offset_px = ctx.renderer_mut().read_signal(&drag_offset_binding);
+    let scroll_accum_px = Rc::clone(&owner.borrow().wheel.scroll_accum_px);
+    let scroll_handle = owner.borrow().wheel.scroll_handle.clone();
+
+    let label_size = owner
+        .borrow_mut()
+        .label_view
+        .measure_intrinsic(ctx.renderer_mut(), env);
+    let (heading, drum) = wheel_label_area(ctx.bounds, layout, f64::from(label_size.height));
+    if let Some(heading) = heading {
+        flush_picker_label(ctx, &mut owner.borrow_mut().label_view, env, heading);
+    }
+    if drum.width() <= 0.0 || drum.height() <= 0.0 {
+        return;
+    }
+
+    let row_height = f64::from(layout.row_height).max(1.0);
+    let surface = ctx.renderer_mut().read_signal(&look.surface().resolve(env));
+    let border = ctx.renderer_mut().read_signal(&look.border().resolve(env));
+    let highlight = ctx
+        .renderer_mut()
+        .read_signal(&look.highlight().resolve(env));
+    let focus_ring = ctx
+        .renderer_mut()
+        .read_signal(&look.focus_ring().resolve(env));
+    let drum_center_y = drum.center().y;
+    let highlight_inset = f64::from(layout.highlight_inset);
+    let band_rect = Rect::new(
+        (drum.x0 + highlight_inset).min(drum.x1),
+        row_height.mul_add(-0.5, drum_center_y),
+        (drum.x1 - highlight_inset).max(drum.x0),
+        row_height.mul_add(0.5, drum_center_y),
+    );
+
+    let press_slot = if disabled {
+        None
+    } else {
+        let (_, slot, _) =
+            ctx.renderer_mut()
+                .bind_interaction_target(interaction_key.clone(), drum, env);
+        Some(slot)
+    };
+    let focused = ctx
+        .renderer_mut()
+        .reported_interaction_state(&interaction_key)
+        .contains(InteractionState::FOCUSED);
+
+    ctx.draw_context(|draw| {
+        let drum_shape = kurbo::RoundedRect::from_rect(drum, f64::from(layout.corner_radius));
+        draw.fill(drum_shape, surface);
+        let band_shape =
+            kurbo::RoundedRect::from_rect(band_rect, f64::from(layout.highlight_corner_radius));
+        draw.fill(band_shape, highlight);
+        draw.stroke(drum_shape, kurbo::Stroke::new(1.0), border);
+        if focused {
+            draw.stroke(drum_shape, kurbo::Stroke::new(2.0), focus_ring);
+        }
+    });
+
+    let count = items.len();
+    let max_center = crate::num_cast::usize_as_f64(count.saturating_sub(1));
+    let raw_center = crate::num_cast::usize_as_f64(selected_index) - (drag_offset_px / row_height);
+    // Allow subtle 0.35-row rubber-band past either end while dragging.
+    let center_index_f = raw_center.clamp(-0.35, max_center + 0.35);
+    let half_visible = crate::num_cast::usize_as_f64(layout.visible_rows.max(1)) * 0.5;
+    let horizontal_inset = f64::from(layout.horizontal_inset);
+    let row_texts: Vec<StyledStr> = items
+        .iter()
+        .map(|item| {
+            ctx.renderer_mut()
+                .read_resolved_text_styled(&item.content, env)
+        })
+        .collect();
+
+    let clip_key = crate::renderer::mount::ScopeKey {
+        role: "wheel-clip",
+        item: 0,
+    };
+    ctx.with_scope(clip_key, 1.0, drum, |ctx| {
+        for (index, base_styled) in row_texts.into_iter().enumerate() {
+            let rel = crate::num_cast::usize_as_f64(index) - center_index_f;
+            let dist = rel.abs();
+            if dist > half_visible + 1.0 {
+                continue;
+            }
+            let alpha = wheel_row_alpha(dist, layout.visible_rows);
+            if alpha <= 0.0 {
+                continue;
+            }
+            let row_rect = wheel_row_rect(drum, row_height, index, center_index_f);
+            let label_style = if dist < 0.5 {
+                look.get_selected_label()
+            } else {
+                look.get_unselected_label()
+            };
+            let styled = label_styled(label_style, base_styled);
+            let measured = HydrolysisRenderer::measure_text_intrinsic_size(
+                ctx.state_mut(),
+                styled.clone(),
+                env,
+            );
+            let text_height = f64::from(measured.height).min(row_rect.height());
+            let text_y0 = (row_rect.height() - text_height).mul_add(0.5, row_rect.y0);
+            let text_rect = Rect::new(
+                (row_rect.x0 + horizontal_inset).min(row_rect.x1),
+                text_y0,
+                (row_rect.x1 - horizontal_inset).max(row_rect.x0),
+                text_y0 + text_height,
+            );
+            let row_clip = row_rect.intersect(drum);
+            if row_clip.width() <= 0.0 || row_clip.height() <= 0.0 {
+                continue;
+            }
+            let row_key = crate::renderer::mount::ScopeKey {
+                role: "wheel-row",
+                item: index as u64,
+            };
+            ctx.with_scope(row_key, alpha, row_clip, |ctx| {
+                ctx.render_styled_text(styled, HorizontalAlignment::Center, env, text_rect);
+            });
+        }
+    });
+
+    if disabled {
+        return;
+    }
+
+    let tags: Vec<Id> = items.iter().map(|item| item.tag).collect();
+    if let Some(press_slot) = press_slot {
+        let track = wheel_track(
+            tags.clone(),
+            selected_index,
+            drum_center_y,
+            row_height,
+            press_slot.slop,
+            drag_offset_binding,
+            selection.clone(),
+        );
+        let keyboard_tags = tags.clone();
+        let keyboard_selection = selection.clone();
+        ctx.renderer_mut().register_tracked_pointer_target(
+            drum,
+            press_slot,
+            track,
+            move |_renderer, _point, _env| {
+                let current = keyboard_tags
+                    .iter()
+                    .position(|tag| *tag == keyboard_selection.snapshot())
+                    .unwrap_or(0);
+                let next = (current + 1) % keyboard_tags.len();
+                select(&keyboard_selection, keyboard_tags[next])
+            },
+        );
+    }
+
+    ctx.renderer_mut().register_scroll_target(
+        drum,
+        scroll_handle,
+        move |_dx, dy, is_line_delta| {
+            let step_px = if is_line_delta {
+                f64::from(dy) * row_height
+            } else {
+                f64::from(dy)
+            };
+            // Negative `dy` scrolls down (later items), positive `dy` scrolls up.
+            let accum = scroll_accum_px.get() - step_px;
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "bounded step count across picker items"
+            )]
+            let steps = (accum / row_height).trunc() as isize;
+            if steps == 0 {
+                scroll_accum_px.set(accum);
+                return false;
+            }
+            scroll_accum_px
+                .set(crate::num_cast::i64_as_f64(steps as i64).mul_add(-row_height, accum));
+            let current = tags
+                .iter()
+                .position(|tag| *tag == selection.snapshot())
+                .unwrap_or(0);
+            #[expect(
+                clippy::cast_possible_wrap,
+                clippy::cast_sign_loss,
+                reason = "clamped within 0..tags.len()"
+            )]
+            let target = (current as isize + steps).clamp(0, (tags.len() - 1) as isize) as usize;
+            select(&selection, tags[target])
+        },
+    );
+}
+
+/// Pointer press/drag handler for a wheel picker drum: dragging vertically
+/// moves the drum live and snaps to the nearest item on release; clicking a
+/// row above or below center selects that row directly.
+fn wheel_track(
+    tags: Vec<Id>,
+    selected_index: usize,
+    drum_center_y: f64,
+    row_height: f64,
+    slop: f64,
+    drag_offset_px: Binding<f64>,
+    selection: Binding<Id>,
+) -> TrackAction {
+    let start = Cell::new(None::<Point>);
+    let dragging = Cell::new(false);
+    Rc::new(RefCell::new(move |step: Track| match step {
+        Track::Begin(point) => {
+            start.set(Some(point));
+            dragging.set(false);
+        }
+        Track::Move(point, _at) => {
+            let Some(from) = start.get() else {
+                return;
+            };
+            let dy = point.y - from.y;
+            if !dragging.get() && dy.abs() > slop {
+                dragging.set(true);
+            }
+            if dragging.get() {
+                let remaining = crate::num_cast::usize_as_f64(
+                    tags.len().saturating_sub(1).saturating_sub(selected_index),
+                );
+                let max_up = row_height.mul_add(0.35, remaining * row_height);
+                let max_down = row_height.mul_add(
+                    0.35,
+                    crate::num_cast::usize_as_f64(selected_index) * row_height,
+                );
+                drag_offset_px.set(dy.clamp(-max_up, max_down));
+            }
+        }
+        Track::Release { within_reach, .. } => {
+            let start_point = start.replace(None);
+            if dragging.replace(false) {
+                let offset = drag_offset_px.snapshot();
+                drag_offset_px.set(0.0);
+                let target = wheel_snap_index(selected_index, offset, row_height, tags.len());
+                if let Some(tag) = tags.get(target).copied() {
+                    select(&selection, tag);
+                }
+            } else if within_reach && let Some(point) = start_point {
+                let target = wheel_click_index(
+                    selected_index,
+                    point.y,
+                    drum_center_y,
+                    row_height,
+                    tags.len(),
+                );
+                if let Some(tag) = tags.get(target).copied() {
+                    select(&selection, tag);
+                }
+            }
+        }
+        Track::Cancel => {
+            start.set(None);
+            dragging.set(false);
+            if drag_offset_px.snapshot().to_bits() != 0.0_f64.to_bits() {
+                drag_offset_px.set(0.0);
+            }
+        }
+    }))
+}
+
 /// Emits a retained picker's accessibility tree for the semantic walk — the
 /// same nodes `picker_accessibility` registers, with no bounds.
 #[cfg(feature = "accessibility")]
@@ -2100,5 +2652,26 @@ mod tests {
             selected_option_text(&["a".to_owned(), "b".to_owned()], index),
             "b"
         );
+    }
+
+    #[test]
+    fn wheel_snap_and_click_indices_clamp_to_valid_rows() {
+        assert_eq!(super::wheel_snap_index(1, -32.0, 32.0, 4), 2);
+        assert_eq!(super::wheel_snap_index(1, 32.0, 32.0, 4), 0);
+        assert_eq!(super::wheel_snap_index(1, -500.0, 32.0, 4), 3);
+        assert_eq!(super::wheel_snap_index(1, 500.0, 32.0, 4), 0);
+        assert_eq!(super::wheel_click_index(1, 132.0, 100.0, 32.0, 4), 2);
+        assert_eq!(super::wheel_click_index(1, 68.0, 100.0, 32.0, 4), 0);
+        assert_eq!(super::wheel_click_index(1, 100.0, 100.0, 32.0, 4), 1);
+    }
+
+    #[test]
+    fn wheel_row_alpha_dims_off_center_rows() {
+        let center = super::wheel_row_alpha(0.0, 5);
+        let one_away = super::wheel_row_alpha(1.0, 5);
+        let two_away = super::wheel_row_alpha(2.0, 5);
+        assert!((center - 1.0).abs() < f32::EPSILON);
+        assert!(one_away < center && one_away > two_away);
+        assert!(two_away > 0.0);
     }
 }

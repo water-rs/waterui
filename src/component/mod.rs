@@ -9,14 +9,14 @@ pub use waterui_controls::{
     CustomButtonStyle, CustomLabel, CustomTextSelection, Disclosure, DisclosureConfig, ErasedLabel,
     IconLabel, IconPosition, IconSlot, IntoButtonStyle, IntoLabel, Label, LabelDisplayMode,
     LabelKind, NoopSlot, PrimitiveButtonStyle, PrimitiveButtonStyleConfiguration, Progress,
-    ProgressConfig, ProgressStyle, ProgressWithTotal, SemanticLabel, SlotBuilder, TextSelection,
-    TitleLabel, button, disclosure, input, label, loading, size, slot, text_selection,
+    ProgressConfig, ProgressStyle, ProgressWithTotal, SemanticLabel, Shortcut, ShortcutKey,
+    ShortcutModifiers, ShortcutNamedKey, SlotBuilder, TextSelection, TitleLabel, button,
+    disclosure, input, label, loading, shortcut, size, slot, text_selection,
 };
 #[cfg(feature = "menu")]
 #[doc(inline)]
 pub use waterui_controls::{
-    Command, CommandExt, Menu, MenuBarView, MenuItem, MenuView, NamedKey, Shortcut, ShortcutKey,
-    ShortcutModifiers, ShortcutNamedKey, menu,
+    Command, CommandExt, Menu, MenuBarView, MenuItem, MenuView, NamedKey, menu,
 };
 #[cfg(feature = "toggle")]
 #[doc(inline)]

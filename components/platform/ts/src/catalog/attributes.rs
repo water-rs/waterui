@@ -28,8 +28,8 @@ use waterui_ts::JsViewBuilder;
 
 use super::values::{
     A11yChildrenValue, BackgroundValue, BorderValue, ColorValue, HorizontalAlign, JsAction,
-    PaddingValue, PickerOption, ProgressStyleValue, ScrollAxis, ShadowValue, ShapeValue,
-    StackAlign, TextContent, UrlValue, VerticalAlign,
+    PaddingValue, PickerOption, PickerStyleValue, ProgressStyleValue, ScrollAxis, ShadowValue,
+    ShapeValue, StackAlign, TextContent, UrlValue, VerticalAlign,
 };
 
 /// `<VStack>`: children stacked top to bottom.
@@ -195,12 +195,14 @@ impl ButtonAttributes {
     }
 }
 
-/// `<Toggle>`: a two-state switch.
+/// `<Toggle>`: a two-state switch or tri-state checkbox.
 #[derive(Debug, TsType)]
 #[non_exhaustive]
 pub struct ToggleAttributes {
     /// The state the switch reads and writes.
     value: Binding<bool>,
+    /// Whether a checkbox toggle shows the mixed (indeterminate) state.
+    mixed: Option<Computed<bool>>,
     /// The label, when it is not the children.
     label: Option<AnyView>,
 }
@@ -212,6 +214,12 @@ impl ToggleAttributes {
         &self.value
     }
 
+    /// Whether a checkbox toggle shows the mixed (indeterminate) state.
+    #[must_use]
+    pub const fn mixed(&self) -> Option<&Computed<bool>> {
+        self.mixed.as_ref()
+    }
+
     /// The label, when it is not the children.
     #[must_use]
     pub const fn label(&self) -> Option<&AnyView> {
@@ -221,6 +229,12 @@ impl ToggleAttributes {
     /// Takes the label out, leaving none behind.
     pub const fn take_label(&mut self) -> Option<AnyView> {
         self.label.take()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Binding<bool>, Option<Computed<bool>>, Option<AnyView>) {
+        (self.value, self.mixed, self.label)
     }
 }
 
@@ -347,6 +361,8 @@ pub struct PickerAttributes {
     value: Binding<Str>,
     /// The options to choose from.
     options: Computed<Vec<PickerOption>>,
+    /// The visual style of the picker.
+    style: Option<PickerStyleValue>,
     /// The label, when it is not the children.
     label: Option<AnyView>,
 }
@@ -362,6 +378,12 @@ impl PickerAttributes {
     #[must_use]
     pub const fn options(&self) -> &Computed<Vec<PickerOption>> {
         &self.options
+    }
+
+    /// The visual style of the picker, when explicitly set.
+    #[must_use]
+    pub const fn style(&self) -> Option<PickerStyleValue> {
+        self.style
     }
 
     /// The label, when it is not the children.
@@ -869,6 +891,8 @@ pub struct Modifiers {
     a11y_hidden: bool,
     /// Controls how descendant views contribute to accessibility.
     a11y_children: A11yChildrenValue,
+    /// Sets the default picker style for pickers in this subtree.
+    picker_style: PickerStyleValue,
 }
 
 impl Modifiers {
@@ -994,5 +1018,11 @@ impl Modifiers {
     #[must_use]
     pub const fn a11y_children(&self) -> A11yChildrenValue {
         self.a11y_children
+    }
+
+    /// Sets the default picker style for pickers in this subtree.
+    #[must_use]
+    pub const fn picker_style(&self) -> PickerStyleValue {
+        self.picker_style
     }
 }

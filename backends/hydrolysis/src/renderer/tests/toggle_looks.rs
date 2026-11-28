@@ -453,3 +453,109 @@ fn knob_ends(snapshot: &HeadlessSnapshot) -> Vec<f64> {
     ends.sort_by(f64::total_cmp);
     ends
 }
+
+/// Pointer activation of a mixed checkbox resolves its binding to `true`,
+/// and subsequent taps while unmixed toggle normally between `true` and `false`.
+#[test]
+fn mixed_checkbox_pointer_tap_resolves_to_on() {
+    use nami::SignalExt as _;
+
+    let items = Binding::new([true, false]);
+    let all = Binding::mapping(
+        &items,
+        |list| list.iter().all(|&done| done),
+        |source, on| source.set([on, on]),
+    );
+    let some_but_not_all = items
+        .map(|list| list.iter().any(|&done| done) && !list.iter().all(|&done| done))
+        .computed();
+
+    let mut runtime = runtime_with(
+        toggle("Select all", &all)
+            .checkbox()
+            .mixed(some_but_not_all.clone()),
+        MinimalTestTheme::default(),
+    );
+    let mut frames = Frames {
+        start: Instant::now(),
+        next: 0,
+    };
+    for _ in 0..4 {
+        frames.pump(&mut runtime);
+    }
+
+    let mixed_toggle = {
+        let toggles = runtime.renderer().hit_test.interaction.live_toggles();
+        assert_eq!(toggles.len(), 1);
+        Rc::clone(&toggles[0])
+    };
+
+    // Tap the checkbox control directly.
+    let target = runtime
+        .renderer()
+        .hit_test
+        .pointer_targets
+        .last()
+        .expect("checkbox registers a pointer target")
+        .bounds;
+    let center = target.center();
+    let x = crate::num_cast::f64_as_f32(center.x);
+    let y = crate::num_cast::f64_as_f32(center.y);
+    runtime.push_input_event(InputEvent::PointerDown {
+        id: POINTER,
+        kind: PointerKind::Mouse,
+        x,
+        y,
+        button: PointerButton::Primary,
+    });
+    runtime.push_input_event(InputEvent::PointerUp {
+        id: POINTER,
+        kind: PointerKind::Mouse,
+        x,
+        y,
+        button: PointerButton::Primary,
+    });
+    for _ in 0..4 {
+        frames.pump(&mut runtime);
+    }
+
+    assert!(
+        all.snapshot(),
+        "tapping a mixed checkbox must resolve the binding to true"
+    );
+    assert!(!some_but_not_all.snapshot());
+    assert_eq!(items.snapshot(), [true, true]);
+
+    // Switching out of mixed swaps the mounted live toggle from the mixed
+    // control back to the regular checkbox control.
+    let unmixed_toggle = {
+        let toggles = runtime.renderer().hit_test.interaction.live_toggles();
+        assert_eq!(toggles.len(), 1);
+        Rc::clone(&toggles[0])
+    };
+    assert!(
+        !Rc::ptr_eq(&mixed_toggle, &unmixed_toggle),
+        "leaving mixed state switches from the mixed control back to the regular checkbox control"
+    );
+
+    // Tapping again while unmixed toggles to false.
+    runtime.push_input_event(InputEvent::PointerDown {
+        id: POINTER,
+        kind: PointerKind::Mouse,
+        x,
+        y,
+        button: PointerButton::Primary,
+    });
+    runtime.push_input_event(InputEvent::PointerUp {
+        id: POINTER,
+        kind: PointerKind::Mouse,
+        x,
+        y,
+        button: PointerButton::Primary,
+    });
+    for _ in 0..4 {
+        frames.pump(&mut runtime);
+    }
+    assert!(!all.snapshot());
+    assert_eq!(items.snapshot(), [false, false]);
+}

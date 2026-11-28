@@ -3872,10 +3872,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         modifiers: Modifiers,
         env: &Environment,
     ) -> bool {
-        #[cfg(not(feature = "menu"))]
-        let _ = logical_key;
         self.registries();
-        // A declared menu chord claims its key before any built-in key
+        // A declared menu or button chord claims its key before any built-in key
         // handling — Escape, Tab traversal, arrow stepping, activation and
         // focused text input — as AppKit offers key equivalents before
         // `keyDown` (water-rs/hydrolysis#247). The runner seeds the registry
@@ -3886,7 +3884,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // types J, while J with nothing editable focused fires its chord —
         // the space bar included — and a bare `Delete` chord does not
         // steal the field's own delete either (water-rs/waterui#2118).
-        #[cfg(feature = "menu")]
         {
             let registry =
                 menu_shortcut_registry::<E>(env, "menu chords are not dispatched for this key");
@@ -3897,7 +3894,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             let typing = false;
             if !typing
                 && let Some(registry) = registry
-                && registry.dispatch(self.window_id, logical_key, modifiers, env)
+                && registry.dispatch(
+                    self.window_id,
+                    logical_key,
+                    modifiers,
+                    self.modal_shield_active(),
+                    env,
+                )
             {
                 return true;
             }
@@ -3994,7 +3997,25 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     }
                 }
                 if let Some(node) = self.keyboard_focus_node() {
-                    let step_action = if step_forward {
+                    #[cfg(feature = "picker")]
+                    let wheel_node = matches!(
+                        self.accessibility.actions.get(&node),
+                        Some(AccessibilityActionTarget::PickerWheel { .. })
+                    );
+                    #[cfg(not(feature = "picker"))]
+                    let wheel_node = false;
+                    let step_action = if wheel_node {
+                        // On a vertical wheel drum, ArrowDown steps to the next
+                        // item (below) and ArrowUp steps to the previous item (above).
+                        if matches!(
+                            key,
+                            KeyCode::Named(value) if value == "ArrowDown" || value == "ArrowRight"
+                        ) {
+                            AccessibilityAction::Increment
+                        } else {
+                            AccessibilityAction::Decrement
+                        }
+                    } else if step_forward {
                         AccessibilityAction::Increment
                     } else {
                         AccessibilityAction::Decrement
@@ -5262,7 +5283,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 }
 
 impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
-    #[cfg(any(test, feature = "list"))]
+    #[cfg(any(test, feature = "list", feature = "picker"))]
     pub(crate) fn bind_interaction_target(
         &mut self,
         key: InteractionKey,

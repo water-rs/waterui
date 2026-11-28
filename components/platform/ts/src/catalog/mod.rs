@@ -64,9 +64,9 @@ pub(crate) use values::ResolvedTextPart;
 pub use values::color_of;
 pub use values::{
     A11yChildrenValue, ActionArguments, BackgroundValue, BorderValue, ColorValue, EdgeValues,
-    HorizontalAlign, JsAction, LocalizedArgs, PaddingValue, PickerOption, ProgressStyleValue,
-    RoundedShape, ScrollAxis, ShadowValue, ShapeName, ShapeValue, StackAlign, TextContent,
-    UrlValue, VerticalAlign,
+    HorizontalAlign, JsAction, LocalizedArgs, PaddingValue, PickerOption, PickerStyleValue,
+    ProgressStyleValue, RoundedShape, ScrollAxis, ShadowValue, ShapeName, ShapeValue, StackAlign,
+    TextContent, UrlValue, VerticalAlign,
 };
 
 /// The whole vocabulary.
@@ -240,7 +240,7 @@ const fn with(extra: ComponentSchema) -> [ComponentSchema; CORE.len() + 1] {
 }
 
 /// The modifiers, which apply to every component because `ViewExt` does.
-const MODIFIERS: [ModifierSchema; 20] = [
+const MODIFIERS: [ModifierSchema; 21] = [
     modifier(
         "padding",
         "Insets the view, in written order with the rest of the chain.",
@@ -266,6 +266,10 @@ const MODIFIERS: [ModifierSchema; 20] = [
     modifier(
         "a11yChildren",
         "Controls how descendant views contribute to accessibility.",
+    ),
+    modifier(
+        "pickerStyle",
+        "Sets the default picker style for pickers in this subtree.",
     ),
 ];
 

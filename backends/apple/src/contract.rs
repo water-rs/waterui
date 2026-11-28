@@ -125,6 +125,13 @@ pub struct NativeLeaf {
     /// enclosing scope rendered around the same leaf must not apply its own,
     /// less specific state over it.
     accessibility_state_applied: bool,
+    /// Whether an accessibility-hint or state scope already owns this leaf's
+    /// hint/help channel (`accessibilityHelp` / `accessibilityHint`), so
+    /// hint and busy state compose once without overwriting one another.
+    accessibility_hint_applied: bool,
+    /// Whether an accessibility-custom-actions scope already applied the
+    /// merged action list to this leaf's view.
+    accessibility_custom_actions_applied: bool,
     /// The clip shape carried by this leaf when wrapped in `.clip(...)` (and
     /// preserved across bounds-preserving wrappers), so an enclosing `.shadow(...)`
     /// follows the caster's clipped silhouette when no explicit override is set.
@@ -164,6 +171,8 @@ impl NativeLeaf {
             transition: None,
             handler_env: None,
             accessibility_state_applied: false,
+            accessibility_hint_applied: false,
+            accessibility_custom_actions_applied: false,
             clip_shape: None,
             #[cfg(target_os = "ios")]
             attached_controllers: Vec::new(),
@@ -218,6 +227,18 @@ impl NativeLeaf {
     /// nothing.
     pub(crate) const fn claim_accessibility_state(&mut self) -> bool {
         !core::mem::replace(&mut self.accessibility_state_applied, true)
+    }
+
+    /// Claims this leaf's hint/help channel so `AccessibilityHint` and
+    /// `AccessibilityState::busy` compose through a single reactive binding.
+    pub(crate) const fn claim_accessibility_hint(&mut self) -> bool {
+        !core::mem::replace(&mut self.accessibility_hint_applied, true)
+    }
+
+    /// Claims this leaf's custom-actions channel so chained
+    /// `AccessibilityCustomActions` apply once in declaration order.
+    pub(crate) const fn claim_accessibility_custom_actions(&mut self) -> bool {
+        !core::mem::replace(&mut self.accessibility_custom_actions_applied, true)
     }
 
     /// The clip shape carried by this leaf, if wrapped in `.clip(...)` or a

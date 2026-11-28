@@ -87,6 +87,7 @@ pub(crate) mod main_queue_owned;
 pub(crate) mod measure_memo;
 #[cfg(all(any(target_os = "macos", target_os = "ios"), waterui_feature = "menu"))]
 pub(crate) mod menus;
+pub(crate) mod phase;
 #[cfg(feature = "gpu_surface")]
 mod presentation_time;
 pub(crate) mod primary_content;
