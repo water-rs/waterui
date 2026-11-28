@@ -25,8 +25,8 @@ use executor_core::{
 use nami::Binding;
 use nami::Signal;
 use waterui_backend_core::app::{
-    App, AppMenuBar, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost,
-    TerminationKind, Windows,
+    App, AppMenuBar, AppParts, AppPhase, LastWindowPolicy, PhaseHandle, TerminationHandle,
+    TerminationHost, TerminationKind, Windows,
 };
 use waterui_backend_core::window::{
     Activation, Monitor, MonitorSelector, WindowParts, WindowState,
@@ -873,6 +873,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
         env,
         last_window,
         termination,
+        phase,
     } = app.into_parts();
     let RootWindows {
         initial: windows,
@@ -1046,6 +1047,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
             session_end: Rc::clone(&session_end),
         },
     );
+    let phase = phase.start(&env);
     // A declared `MenuItem::CloseWindow` closes the window it was invoked
     // for through the runner, which owns the windows: the primitive only
     // posts the target's identity to the event loop.
@@ -1153,6 +1155,8 @@ pub fn run<W: Windows, M: AppMenuBar>(
         #[cfg(target_os = "linux")]
         _linux_locale: linux_locale,
         termination,
+        phase,
+        suspended: false,
         #[cfg(target_os = "windows")]
         session_end,
         #[cfg(target_os = "windows")]
@@ -1271,6 +1275,11 @@ struct WinitRunner {
     /// the last window closing, `Quit` in the environment, Windows'
     /// `WM_QUERYENDSESSION`.
     termination: TerminationHandle,
+    /// The lifecycle phase machine driving `Computed<AppPhase>` and
+    /// `App::on_phase_change` hooks.
+    phase: PhaseHandle,
+    /// Set while the winit event loop is suspended (`ApplicationHandler::suspended`).
+    suspended: bool,
     /// What the Windows session-end paths — the window subclass and the
     /// console control handler — share with the `TerminationHost`.
     #[cfg(target_os = "windows")]
@@ -1979,6 +1988,9 @@ impl WinitRunner {
         if let Some(runtime) = self.windows.get(&window_id) {
             self.detach_menu_bar_hwnd(runtime);
         }
+        if self.focused_window == Some(window_id) {
+            self.focused_window = None;
+        }
         self.windows.remove(&window_id);
         self.popup_window_ids.remove(&window_id);
         self.accesskit_adapters.remove(&window_id);
@@ -1989,6 +2001,25 @@ impl WinitRunner {
                 declared.phase = DeclaredWindowPhase::Closed;
             }
         }
+        self.sync_app_phase();
+    }
+
+    /// Recomputes and reports the current desktop [`AppPhase`] from suspension,
+    /// focus, and window occlusion state.
+    fn sync_app_phase(&self) {
+        let visibility = if self.windows.is_empty() {
+            WinitWindowVisibility::NoWindows
+        } else if self
+            .windows
+            .values()
+            .all(|runtime| runtime.platform.is_occluded())
+        {
+            WinitWindowVisibility::AllOccluded
+        } else {
+            WinitWindowVisibility::AnyVisible
+        };
+        let next = derive_winit_phase(self.suspended, self.focused_window.is_some(), visibility);
+        self.phase.set_phase(next);
     }
 
     /// A declared `MenuItem::CloseWindow` asks `source` to close — the
@@ -2155,7 +2186,13 @@ impl WinitRunner {
 }
 
 impl ApplicationHandler<RunnerEvent> for WinitRunner {
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        self.suspended = true;
+        self.sync_app_phase();
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let was_suspended = core::mem::replace(&mut self.suspended, false);
         let _ = self.drain_local_executor_queue();
         self.mount_pending_windows(event_loop);
         for runtime in self.windows.values_mut() {
@@ -2165,6 +2202,9 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             runtime.sync_occlusion();
             runtime.request_redraw();
             runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
+        }
+        if was_suspended {
+            self.sync_app_phase();
         }
         // A windowless launch under `Quit` is a required termination —
         // asked here, not before the loop runs, so the hook futures have a
@@ -2196,9 +2236,18 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
         // Selector inputs that outlive a single event: `Focused` feeds the
         // `Focused` monitor selector, and the last pointer-touched window is
         // Wayland's only answer to "which monitor is the pointer on".
+        let mut phase_event = false;
         match &event {
             WindowEvent::Focused(focused) => {
-                self.focused_window = focused.then_some(window_id);
+                if *focused {
+                    self.focused_window = Some(window_id);
+                } else if self.focused_window == Some(window_id) {
+                    self.focused_window = None;
+                }
+                phase_event = true;
+            }
+            WindowEvent::Occluded(_) => {
+                phase_event = true;
             }
             // The system theme moved: winit re-reads it and reports only a
             // real change, but repeats the event on every window — the
@@ -2229,6 +2278,9 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             runtime.sync_occlusion();
             Self::handle_input_events(runtime, &self.env)
         };
+        if phase_event {
+            self.sync_app_phase();
+        }
 
         if !self.pending_window_queue.borrow().is_empty() || !self.pending_windows.is_empty() {
             self.mount_pending_windows(event_loop);
@@ -2389,21 +2441,77 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                     runtime.platform.refresh_visibility_signals();
                     runtime.sync_occlusion();
                 }
+                self.sync_app_phase();
             }
         }
+    }
+}
+
+/// Aggregate visibility of the runner's open windows for [`derive_winit_phase`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WinitWindowVisibility {
+    NoWindows,
+    AnyVisible,
+    AllOccluded,
+}
+
+/// Derives the desktop [`AppPhase`] from winit's suspension, focus, and window
+/// occlusion state.
+const fn derive_winit_phase(
+    suspended: bool,
+    has_focused_window: bool,
+    visibility: WinitWindowVisibility,
+) -> AppPhase {
+    if suspended {
+        AppPhase::Background
+    } else if has_focused_window {
+        AppPhase::Active
+    } else if matches!(visibility, WinitWindowVisibility::AllOccluded) {
+        AppPhase::Background
+    } else {
+        AppPhase::Inactive
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        DeclaredWindowAction, DeclaredWindowPhase, ends_event_loop, native_window_attributes,
-        transition_declared_window,
+        DeclaredWindowAction, DeclaredWindowPhase, WinitWindowVisibility, derive_winit_phase,
+        ends_event_loop, native_window_attributes, transition_declared_window,
     };
     #[cfg(windows)]
     use super::{TerminationAction, TerminationRequests};
+    use waterui_backend_core::app::AppPhase;
     use waterui_backend_core::window::{Window, WindowState};
     use waterui_core::{Binding, binding};
+
+    #[test]
+    fn winit_phase_derivation_covers_focus_occlusion_and_suspension() {
+        assert_eq!(
+            derive_winit_phase(false, true, WinitWindowVisibility::AnyVisible),
+            AppPhase::Active
+        );
+        assert_eq!(
+            derive_winit_phase(false, false, WinitWindowVisibility::AnyVisible),
+            AppPhase::Inactive
+        );
+        assert_eq!(
+            derive_winit_phase(false, false, WinitWindowVisibility::AllOccluded),
+            AppPhase::Background
+        );
+        assert_eq!(
+            derive_winit_phase(false, false, WinitWindowVisibility::NoWindows),
+            AppPhase::Inactive
+        );
+        assert_eq!(
+            derive_winit_phase(true, true, WinitWindowVisibility::AnyVisible),
+            AppPhase::Background
+        );
+        assert_eq!(
+            derive_winit_phase(true, false, WinitWindowVisibility::NoWindows),
+            AppPhase::Background
+        );
+    }
 
     #[cfg(windows)]
     #[test]

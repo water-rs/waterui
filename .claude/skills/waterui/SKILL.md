@@ -196,7 +196,7 @@ pub fn app(env: Environment) -> App<impl Windows> {
 ```
 
 `use waterui::prelude::*;` brings in views, layout, colors, text (`IntoText`), controls,
-navigation, menus, `Binding`, `Computed`, `binding` (the general constructor), `StateList`,
+navigation, menus, `App`, `AppPhase`, `Window`, `Binding`, `Computed`, `binding` (the general constructor), `StateList`,
 `SignalCollection`, `State`, `Str`, `AnyView`, `Identifiable` (derive and trait),
 `IntoComputed`, `IntoSignal`, `IntoSignalF32`, `SignalExt`, `Animation`, `AnimationExt`,
 built-in shapes (`Circle`, `Capsule`, `Rectangle`, `RoundedRectangle`, `ShapeExt`), keyboard

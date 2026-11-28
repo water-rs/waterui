@@ -222,6 +222,18 @@ impl Application {
         self.app.setActivationPolicy(policy.native())
     }
 
+    /// Whether this is currently the active application — `NSApplication.isActive`.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.app.isActive()
+    }
+
+    /// Whether the application is currently hidden — `NSApplication.isHidden`.
+    #[must_use]
+    pub fn is_hidden(&self) -> bool {
+        self.app.isHidden()
+    }
+
     /// Asks the system to make this the active application — the
     /// cooperative `activate` macOS 14 introduced.
     ///

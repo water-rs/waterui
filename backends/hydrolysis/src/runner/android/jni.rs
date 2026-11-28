@@ -560,8 +560,15 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
         }
         #[cfg(hydrolysis_hwui)]
         {
-            let Some(session) =
-                AndroidSession::create(env, bridge, &painter, metrics, appearance, services)?
+            let Some(session) = AndroidSession::create(
+                env,
+                bridge,
+                &painter,
+                metrics,
+                appearance,
+                waterui_backend_core::app::AppPhase::Background,
+                services,
+            )?
             else {
                 return Ok(0);
             };

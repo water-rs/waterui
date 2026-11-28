@@ -27,16 +27,16 @@ use std::rc::Rc;
 use cocoa_ui::MainThreadMarker;
 use cocoa_ui::locale::observe_changes as observe_locale_changes;
 use cocoa_ui::main_queue::MainQueueWake;
-use cocoa_ui::notification::NotificationObserver;
+use cocoa_ui::notification::{NotificationName, NotificationObserver, observe};
 use cocoa_ui::reduce_motion::{
     observe_changes as observe_reduce_motion_changes, system_reduce_motion,
 };
-use cocoa_ui::uikit::{self, ApplicationHandlers, Window, WindowScene};
+use cocoa_ui::uikit::{self, ApplicationHandlers, ApplicationState, Window, WindowScene};
 use executor_core::{LocalExecutor as _, Task as _};
 use nami::{Binding, Signal as _};
 #[cfg(feature = "menu")]
 use waterui_apple_menu::ios::{Declared, build_handler, declared, install_declared};
-use waterui_backend_core::app::{App, AppMenuBar, Windows};
+use waterui_backend_core::app::{App, AppMenuBar, AppPhase, Phase, PhaseHandle, Windows};
 #[cfg(feature = "menu")]
 use waterui_controls::label::SemanticLabel;
 #[cfg(feature = "menu")]
@@ -74,6 +74,7 @@ struct LaunchParts {
     #[cfg(feature = "menu")]
     menu_bar: Option<nami::Computed<Vec<Menu<SemanticLabel>>>>,
     env: Environment,
+    phase: Phase,
 }
 
 /// What launch needs from `run`'s arguments.
@@ -130,6 +131,9 @@ struct UiKitApplication {
     /// Keeps the `NSCurrentLocaleDidChangeNotification` observer registered
     /// for the lifetime of the `UIKit` application.
     locale_observer: RefCell<Option<NotificationObserver>>,
+    /// Keeps the `UIApplication` lifecycle phase observers registered for the
+    /// lifetime of the `UIKit` application.
+    phase_observers: RefCell<Option<[NotificationObserver; 4]>>,
     process: OnceCell<Rc<Process>>,
     scenes: RefCell<BTreeMap<String, Rc<UiKitScene>>>,
     #[cfg(feature = "menu")]
@@ -165,6 +169,7 @@ impl UiKitApplication {
             #[cfg(feature = "menu")]
             menu_bar,
             env,
+            phase,
         } = app(env);
         let RootWindows { initial, channels } = windows;
         let (open_windows, dormant_window_watches) = split_open_and_watch_dormant(initial, || {
@@ -223,6 +228,15 @@ impl UiKitApplication {
                 Rc::new(waterui_apple_menu::no_menu_icon),
             ));
         }
+
+        let initial_phase = match uikit::application_state(mtm) {
+            ApplicationState::Active => AppPhase::Active,
+            ApplicationState::Inactive => AppPhase::Inactive,
+            ApplicationState::Background => AppPhase::Background,
+        };
+        let phase_handle = phase.start_with(&env, initial_phase);
+        *self.phase_observers.borrow_mut() =
+            Some(observe_ios_phase(mtm, phase_handle, self.executor.clone()));
 
         let application = Rc::clone(self);
         self.executor
@@ -369,6 +383,7 @@ pub(in crate::runner) fn run<W: Windows, M: AppMenuBar>(
                         .then(|| parts.menu_bar.declared().cloned())
                         .flatten(),
                     env: parts.env,
+                    phase: parts.phase,
                 }
             }),
             env,
@@ -377,6 +392,7 @@ pub(in crate::runner) fn run<W: Windows, M: AppMenuBar>(
         })),
         color_scheme: nami::binding(framework_scheme(uikit::current_scheme())),
         locale_observer: RefCell::new(None),
+        phase_observers: RefCell::new(None),
         process: OnceCell::new(),
         scenes: RefCell::new(BTreeMap::new()),
         #[cfg(feature = "menu")]
@@ -392,6 +408,53 @@ pub(in crate::runner) fn run<W: Windows, M: AppMenuBar>(
             menus,
         ),
     )
+}
+
+fn observe_ios_phase(
+    mtm: MainThreadMarker,
+    handle: PhaseHandle,
+    executor: AppleExecutor,
+) -> [NotificationObserver; 4] {
+    let on_become_active = observe(mtm, &NotificationName::application_did_become_active(), {
+        let handle = handle.clone();
+        move || handle.set_phase(AppPhase::Active)
+    });
+    let on_resign_active = observe(mtm, &NotificationName::application_will_resign_active(), {
+        let handle = handle.clone();
+        move || handle.set_phase(AppPhase::Inactive)
+    });
+    let on_will_enter_foreground = observe(
+        mtm,
+        &NotificationName::application_will_enter_foreground(),
+        {
+            let handle = handle.clone();
+            move || handle.set_phase(AppPhase::Inactive)
+        },
+    );
+    let on_did_enter_background = observe(
+        mtm,
+        &NotificationName::application_did_enter_background(),
+        move || {
+            let Some(work) = handle.transition_future(AppPhase::Background) else {
+                return;
+            };
+            let mtm =
+                MainThreadMarker::new().expect("notification observer runs on the main thread");
+            let background_task = uikit::begin_background_task(mtm, "waterui.phase_change");
+            executor
+                .spawn_local(async move {
+                    let _background_task = background_task;
+                    work.await;
+                })
+                .detach();
+        },
+    );
+    [
+        on_become_active,
+        on_resign_active,
+        on_will_enter_foreground,
+        on_did_enter_background,
+    ]
 }
 
 fn application_handlers(
