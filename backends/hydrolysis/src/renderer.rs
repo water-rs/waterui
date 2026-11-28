@@ -256,7 +256,7 @@ use waterui_shape::style::{Offset, Rotation, Scale, Shadow};
 #[cfg(feature = "accessibility")]
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::spacer::Spacer;
-use waterui_shape::{ClipShape, PathCommand, ResolvedShape, ShapeKind};
+use waterui_shape::{ClipShape, PathCommand, ResolvedShape, ResolvedStrokedShape, ShapeKind};
 #[cfg(any(feature = "menu", all(feature = "list", feature = "accessibility")))]
 use waterui_text::Text;
 use waterui_text::styled::StyledStr;

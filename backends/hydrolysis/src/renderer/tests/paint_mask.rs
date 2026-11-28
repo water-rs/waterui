@@ -6,7 +6,7 @@ use std::time::Instant;
 use waterui::component::text;
 use waterui::graphics::{Color, Gradient};
 use waterui::layout::UnitPoint;
-use waterui::shape::{Circle, ShapeExt as _};
+use waterui::shape::{Capsule, Circle, ShapeExt as _};
 use waterui::{Binding, View, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_layout::stack::zstack;
@@ -143,5 +143,88 @@ fn gradient_masked_by_text_reveals_gradient_glyphs_without_erasing_backdrop() {
     assert!(
         right_blue_glyph_pixels > 25,
         "right half of gradient-masked text must contain blue gradient glyph pixels, got {right_blue_glyph_pixels}"
+    );
+}
+
+#[test]
+fn gradient_stroked_circle_paints_ring_and_leaves_center_and_corners_clear() {
+    let frame = snapshot(100, 100, || {
+        zstack((
+            Color::srgb(0, 180, 0),
+            Circle
+                .stroke(
+                    Gradient::linear(
+                        [Color::srgb(255, 0, 0), Color::srgb(0, 0, 255)],
+                        UnitPoint::LEADING,
+                        UnitPoint::TRAILING,
+                    ),
+                    10.0,
+                )
+                .size(100.0, 100.0),
+        ))
+    });
+
+    let corner = pixel(&frame, 4, 4);
+    assert!(
+        corner[1] > 140 && corner[0] < 30 && corner[2] < 30,
+        "corner outside stroked circle must keep green backdrop, got {corner:?}"
+    );
+
+    let center = pixel(&frame, 50, 50);
+    assert!(
+        center[1] > 140 && center[0] < 30 && center[2] < 30,
+        "center inside stroked circle must remain transparent to green backdrop, got {center:?}"
+    );
+
+    let left_ring = pixel(&frame, 5, 50);
+    assert!(
+        left_ring[0] > 150 && left_ring[0] > left_ring[2].saturating_add(60),
+        "left edge of gradient-stroked circle must be red-dominant, got {left_ring:?}"
+    );
+
+    let right_ring = pixel(&frame, 95, 50);
+    assert!(
+        right_ring[2] > 150 && right_ring[2] > right_ring[0].saturating_add(60),
+        "right edge of gradient-stroked circle must be blue-dominant, got {right_ring:?}"
+    );
+}
+
+#[test]
+fn border_shape_strokes_capsule_without_clipping_content() {
+    let frame = snapshot(160, 80, || {
+        zstack((
+            Color::srgb(0, 180, 0),
+            Color::srgb(240, 240, 240).size(160.0, 80.0).border_shape(
+                Capsule,
+                Color::srgb(220, 20, 20),
+                8.0,
+            ),
+        ))
+    });
+
+    // Capsule border strokes along the pill rim (e.g., top-center (80, 4) and left-mid (4, 40)),
+    // while leaving the interior white and NOT clipping the rectangular content at corner (4, 4).
+    let top_rim = pixel(&frame, 80, 4);
+    assert!(
+        top_rim[0] > 180 && top_rim[1] < 60 && top_rim[2] < 60,
+        "top rim of capsule border must be red, got {top_rim:?}"
+    );
+
+    let left_rim = pixel(&frame, 4, 40);
+    assert!(
+        left_rim[0] > 180 && left_rim[1] < 60 && left_rim[2] < 60,
+        "left arc of capsule border must be red, got {left_rim:?}"
+    );
+
+    let center = pixel(&frame, 80, 40);
+    assert!(
+        center[0] > 220 && center[1] > 220 && center[2] > 220,
+        "interior must keep white content, got {center:?}"
+    );
+
+    let corner = pixel(&frame, 4, 4);
+    assert!(
+        corner[0] > 220 && corner[1] > 220 && corner[2] > 220,
+        "capsule border must not clip rectangular content at corners, got {corner:?}"
     );
 }

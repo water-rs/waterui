@@ -261,6 +261,65 @@ pub fn resolved_shape_to_path(shape: &ResolvedShape, bounds: kurbo::Rect) -> kur
         .unwrap_or_else(|| path_commands_to_path(shape.commands(), bounds))
 }
 
+/// Effective stroke width clamped to the shorter side of `bounds`, or `0.0`
+/// for non-positive/non-finite widths.
+#[must_use]
+pub fn effective_stroke_width(bounds: kurbo::Rect, width: f32) -> f64 {
+    if !width.is_finite() || width <= 0.0 {
+        return 0.0;
+    }
+    let shorter = bounds.width().min(bounds.height()).max(0.0);
+    f64::from(width).min(shorter)
+}
+
+/// Bounds-aware path inset by half the stroke width so strokes stay inside
+/// `bounds` and align flush with `.fill(...)` / `.clip(...)` outlines.
+#[must_use]
+pub fn stroked_shape_path(
+    kind: ShapeKind,
+    commands: &[PathCommand],
+    bounds: kurbo::Rect,
+    width: f32,
+) -> kurbo::BezPath {
+    let effective = effective_stroke_width(bounds, width);
+    if effective <= 0.0 || bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+        return kurbo::BezPath::new();
+    }
+    let shorter = bounds.width().min(bounds.height());
+    let max_inset = shorter.mul_add(0.5, -1e-3).max(0.0);
+    let half = (effective * 0.5).min(max_inset);
+    let inset = kurbo::Rect::new(
+        bounds.x0 + half,
+        bounds.y0 + half,
+        bounds.x1 - half,
+        bounds.y1 - half,
+    );
+    let inset_kind = match kind {
+        ShapeKind::RoundedRect { radii } => {
+            let outer_shorter = crate::num_cast::f64_as_f32(shorter);
+            let half_f32 = crate::num_cast::f64_as_f32(half);
+            ShapeKind::RoundedRect {
+                radii: waterui_shape::CornerRadii::from_corners(
+                    waterui_shape::CornerRadius::points(
+                        (radii.top_leading().resolve(outer_shorter) - half_f32).max(0.0),
+                    ),
+                    waterui_shape::CornerRadius::points(
+                        (radii.top_trailing().resolve(outer_shorter) - half_f32).max(0.0),
+                    ),
+                    waterui_shape::CornerRadius::points(
+                        (radii.bottom_leading().resolve(outer_shorter) - half_f32).max(0.0),
+                    ),
+                    waterui_shape::CornerRadius::points(
+                        (radii.bottom_trailing().resolve(outer_shorter) - half_f32).max(0.0),
+                    ),
+                ),
+            }
+        }
+        other => other,
+    };
+    shape_kind_path(inset_kind, inset).unwrap_or_else(|| path_commands_to_path(commands, inset))
+}
+
 /// Bounds-aware path for the structured shape kinds; `None` for custom paths,
 /// which only exist as unit-space commands.
 pub fn shape_kind_path(kind: ShapeKind, bounds: kurbo::Rect) -> Option<kurbo::BezPath> {

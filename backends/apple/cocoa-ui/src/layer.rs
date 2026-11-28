@@ -183,6 +183,11 @@ impl ShapeLayer {
     pub fn set_frame(&self, frame: Rect) {
         self.0.setFrame(frame.into());
     }
+
+    /// The layer's z-position among sibling layers.
+    pub fn set_z_position(&self, z: f64) {
+        self.0.setZPosition(z);
+    }
 }
 
 impl Default for ShapeLayer {

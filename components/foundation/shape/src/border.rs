@@ -5,6 +5,8 @@ use waterui_core::{IntoSignalF32, metadata::MetadataKey};
 use waterui_graphics::color::Color;
 use waterui_layout::EdgeSet;
 
+use crate::{ClipShape, Shape};
+
 /// Represents a border effect that can be applied to UI elements.
 ///
 /// A border is defined by its color, width, corner radius, and which edges
@@ -39,6 +41,8 @@ pub struct Border {
     corner_radius: Computed<f32>,
     /// Which edges to draw the border on (default: all edges).
     edges: EdgeSet,
+    /// Optional outline shape overriding the rectangular border geometry.
+    shape: Option<ClipShape>,
 }
 
 impl Border {
@@ -65,6 +69,15 @@ impl Border {
     pub const fn get_edges(&self) -> EdgeSet {
         self.edges
     }
+
+    /// The custom outline shape for this border, if any.
+    ///
+    /// When set, backends stroke this shape's outline rather than a rectangle
+    /// with `corner_radius` and `edges`.
+    #[must_use]
+    pub const fn get_shape(&self) -> Option<&ClipShape> {
+        self.shape.as_ref()
+    }
 }
 
 impl MetadataKey for Border {}
@@ -86,6 +99,7 @@ impl Border {
             width: width.into_signal_f32().computed(),
             corner_radius: 0.0_f32.into_signal_f32().computed(),
             edges: EdgeSet::ALL,
+            shape: None,
         }
     }
 
@@ -123,6 +137,18 @@ impl Border {
         self.edges = edges;
         self
     }
+
+    /// Sets an outline shape for this border (for example, [`Capsule`](crate::Capsule)
+    /// or [`Circle`](crate::Circle)).
+    ///
+    /// When set, the border strokes the shape's outline instead of a rectangle
+    /// with `corner_radius`. Like all borders, it only strokes and never clips
+    /// the wrapped view.
+    #[must_use]
+    pub fn shape(mut self, shape: impl Shape) -> Self {
+        self.shape = Some(ClipShape::new(shape));
+        self
+    }
 }
 
 impl Default for Border {
@@ -157,5 +183,21 @@ mod tests {
         assert!((cloned.width().snapshot() - 2.0).abs() < f32::EPSILON);
         assert!((cloned.get_corner_radius().snapshot() - 8.0).abs() < f32::EPSILON);
         assert_eq!(cloned.get_edges(), EdgeSet::BOTTOM);
+        assert!(cloned.get_shape().is_none());
+    }
+
+    #[test]
+    fn border_carries_custom_shape() {
+        let border = Border::new(Foreground, 3.0).shape(crate::Capsule);
+        let cloned = border.clone();
+        assert_eq!(
+            border.get_shape().map(crate::ClipShape::kind),
+            Some(crate::ShapeKind::Capsule)
+        );
+        assert_eq!(
+            cloned.get_shape().map(crate::ClipShape::kind),
+            Some(crate::ShapeKind::Capsule)
+        );
+        assert!((cloned.width().snapshot() - 3.0).abs() < f32::EPSILON);
     }
 }

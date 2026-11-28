@@ -249,16 +249,20 @@ rebuild. An animated mesh with `speed` `0.0` holds still and lets the engine idl
 
 ## Shapes
 
-A shape is an outline, not a view: `.fill(paint)` turns it into one (a `FilledShape`,
-which fills the space it is given), and `.clip(shape)` clips a view to its outline.
-`.fill(paint)` accepts any [`Paint`] — a concrete `Color`, theme token, reactive colour
-signal, or `Gradient` (linear, radial, or angular). To mask a view with the alpha channel
+A shape is an outline, not a view: `.fill(paint)` turns it into a `FilledShape`,
+`.stroke(paint, width)` turns it into a `StrokedShape` (both fill the space they are given),
+and `.clip(shape)` clips a view to its outline.
+Both `.fill(paint)` and `.stroke(paint, width)` accept any [`Paint`] — a concrete `Color`,
+theme token, reactive colour signal, or `Gradient` (linear, radial, or angular) — and
+`.stroke`'s `width` accepts any `impl IntoSignalF32`. To mask a view with the alpha channel
 of an arbitrary view (such as gradient-filled text), use `.mask(mask_view)`:
 
 ```rust
 use waterui::shape::{CornerRadii, CornerRadius, Ellipse, Path};
+use waterui::theme::color::Accent;
 
 Circle.fill(Color::srgb_hex("#3B82F6")).size(80.0, 80.0)   // solid color fill
+Capsule.stroke(Accent, 2.0).size(120.0, 40.0)               // stroked shape outline
 Circle
     .fill(Gradient::linear(
         [Color::srgb_hex("#38BDF8"), Color::srgb_hex("#A855F7")],
@@ -330,6 +334,8 @@ use waterui::border::Border;
 use waterui::theme::color::Accent;
 
 card.border(Color::srgb_hex("#E5E7EB"), 1.0)                       // all edges, square corners
+card.border_shape(Capsule, Accent, 1.0)                            // stroke along any Shape outline
+card.border_with(Border::new(Accent, 1.0).shape(Circle))           // shape-aware Border builder
 card.border_with(Border::new(Accent, 1.0).corner_radius(12.0).edges(EdgeSet::BOTTOM))
 avatar.clip(Circle).shadow(Shadow::new(4.0))                       // inherits the caster's `.clip` silhouette
 card.shadow(

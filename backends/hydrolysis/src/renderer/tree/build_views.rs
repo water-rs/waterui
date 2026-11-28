@@ -106,6 +106,12 @@ impl_widget_behavior!(
     ; a11y: crate::renderer::views::emit_graphics_leaf_accessibility
 );
 impl_widget_behavior!(
+    ResolvedStrokedShape,
+    crate::renderer::render_stroked_shape_node,
+    crate::renderer::measure_stroked_shape_node
+    ; a11y: crate::renderer::views::emit_graphics_leaf_accessibility
+);
+impl_widget_behavior!(
     Spacer,
     crate::widgets::layout::spacer::render_spacer_node,
     crate::widgets::layout::spacer::measure_spacer_node,
@@ -341,6 +347,18 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     pub(super) fn build_shape(
         renderer: &SemanticCore<E>,
         shape: ResolvedShape,
+        env: &Environment,
+    ) -> Self {
+        let stretch = waterui_core::NativeView::stretch_axis(&shape);
+        let shape = Rc::new(RefCell::new(shape));
+        Self::build_widget(renderer, shape, stretch, env)
+    }
+
+    /// Build a persistent stroked shape node: retain the resolved stroked shape
+    /// payload and stroke its inset bounds-aware path with reactive paint and width.
+    pub(super) fn build_stroked_shape(
+        renderer: &SemanticCore<E>,
+        shape: ResolvedStrokedShape,
         env: &Environment,
     ) -> Self {
         let stretch = waterui_core::NativeView::stretch_axis(&shape);

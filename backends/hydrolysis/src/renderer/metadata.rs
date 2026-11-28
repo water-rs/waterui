@@ -220,13 +220,29 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let corner_signal = border.get_corner_radius().clone();
         let color_signal = border.color().resolve(env);
         let paint = EngineAnimated(color_signal.zip(&width_signal).map(|(color, width)| {
-            Paint::Solid(if width <= 0.0 {
+            Paint::Solid(if !width.is_finite() || width <= 0.0 {
                 EngineWorkingColor::TRANSPARENT
             } else {
                 color
             })
         }))
         .computed();
+
+        if let Some(shape) = border.get_shape().cloned() {
+            let stroke = EngineAnimated(
+                width_signal.map(move |width| Stroke::new(effective_stroke_width(bounds, width))),
+            )
+            .computed();
+            let shape_data = EngineAnimated(width_signal.map(move |width| {
+                let path = stroked_shape_path(shape.kind(), shape.commands(), bounds, width);
+                ShapeData::of(&path)
+            }))
+            .computed();
+            renderer
+                .scene_mut()
+                .live_stroke_paint(stroke, ctx.local(), paint, shape_data);
+            return;
+        }
 
         if edges.all() && renderer.read_signal(&corner_signal.map(|r| r > 0.0)) {
             let shape = EngineAnimated(corner_signal.map(move |radius| {

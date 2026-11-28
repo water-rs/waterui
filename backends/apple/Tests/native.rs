@@ -4377,6 +4377,14 @@ mod gpu_surface {
                 "gpu_surface::solid_color_masked_by_circle_renders_red_circle_over_backdrop",
                 solid_color_masked_by_circle_renders_red_circle_over_backdrop,
             ),
+            Trial::test(
+                "gpu_surface::gradient_stroked_circle_renders_gradient_ring_over_backdrop",
+                gradient_stroked_circle_renders_gradient_ring_over_backdrop,
+            ),
+            Trial::test(
+                "gpu_surface::border_shape_strokes_capsule_without_clipping_content",
+                border_shape_strokes_capsule_without_clipping_content,
+            ),
         ]
     }
 
@@ -5471,6 +5479,163 @@ mod gpu_surface {
                 && center[0] > center[1].saturating_add(80)
                 && center[0] > center[2].saturating_add(80),
             "center inside circle mask must be red, got {center:?}"
+        );
+        Ok(())
+    }
+
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub fn gradient_stroked_circle_renders_gradient_ring_over_backdrop() -> Result<(), Failed> {
+        use std::time::Duration;
+
+        use cocoa_ui::ColorScheme;
+        use waterui::ViewExt as _;
+        use waterui::graphics::{Color, Gradient};
+        use waterui::layout::{Size, UnitPoint};
+        use waterui::shape::{Circle, ShapeExt as _};
+        use waterui_apple::native_test_support::view_renderer::{AppleBackend, GpuRuntime};
+        use waterui_apple::native_test_support::{
+            block_on_main, install_gpu, refresh_theme, window_environment,
+        };
+        use waterui_backend_core::NativeBackend as _;
+        use waterui_capture::view_renderer::{RenderRequest, ViewRenderer as _};
+        use waterui_layout::stack::zstack;
+
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .map_err(|error| format!("the GPU runtime: {error}"))?;
+        let (mut env, theme) = window_environment(mtm());
+        install_gpu(&mut env, runtime);
+        refresh_theme(&theme, ColorScheme::Light);
+
+        let renderer = AppleBackend::new(mtm()).offscreen(&env);
+        let request = RenderRequest::new(Size::new(100.0, 100.0), Duration::from_secs(10));
+        let view = zstack((
+            Color::srgb(0, 180, 0),
+            Circle
+                .stroke(
+                    Gradient::linear(
+                        [Color::srgb(255, 0, 0), Color::srgb(0, 0, 255)],
+                        UnitPoint::LEADING,
+                        UnitPoint::TRAILING,
+                    ),
+                    10.0,
+                )
+                .size(100.0, 100.0),
+        ));
+
+        let result = block_on_main(30.0, renderer.render_to_rgba(view, &env, request))
+            .map_err(|error| format!("gradient stroked circle render_to_rgba failed: {error}"))?;
+        let width = result.width() as usize;
+        let height = result.height() as usize;
+        let pixel = |fx: f64, fy: f64| -> [u8; 4] {
+            let x = ((width as f64) * fx).clamp(0.0, (width - 1) as f64) as usize;
+            let y = ((height as f64) * fy).clamp(0.0, (height - 1) as f64) as usize;
+            let offset = (y * width + x) * 4;
+            result.rgba_data()[offset..offset + 4].try_into().unwrap()
+        };
+
+        let corner = pixel(0.04, 0.04);
+        assert!(
+            corner[1] > 140
+                && corner[1] > corner[0].saturating_add(60)
+                && corner[1] > corner[2].saturating_add(60),
+            "corner outside stroked circle must keep green backdrop, got {corner:?}"
+        );
+        let center = pixel(0.50, 0.50);
+        assert!(
+            center[1] > 140
+                && center[1] > center[0].saturating_add(60)
+                && center[1] > center[2].saturating_add(60),
+            "center inside stroked circle must keep green backdrop, got {center:?}"
+        );
+        let left_ring = pixel(0.05, 0.50);
+        assert!(
+            left_ring[0] > 140 && left_ring[0] > left_ring[2].saturating_add(50),
+            "left ring of gradient stroked circle must be red-dominant, got {left_ring:?}"
+        );
+        let right_ring = pixel(0.95, 0.50);
+        assert!(
+            right_ring[2] > 140 && right_ring[2] > right_ring[0].saturating_add(50),
+            "right ring of gradient stroked circle must be blue-dominant, got {right_ring:?}"
+        );
+        Ok(())
+    }
+
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub fn border_shape_strokes_capsule_without_clipping_content() -> Result<(), Failed> {
+        use std::time::Duration;
+
+        use cocoa_ui::ColorScheme;
+        use waterui::ViewExt as _;
+        use waterui::graphics::Color;
+        use waterui::layout::Size;
+        use waterui::shape::Capsule;
+        use waterui_apple::native_test_support::view_renderer::{AppleBackend, GpuRuntime};
+        use waterui_apple::native_test_support::{
+            block_on_main, install_gpu, refresh_theme, window_environment,
+        };
+        use waterui_backend_core::NativeBackend as _;
+        use waterui_capture::view_renderer::{RenderRequest, ViewRenderer as _};
+        use waterui_layout::stack::zstack;
+
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .map_err(|error| format!("the GPU runtime: {error}"))?;
+        let (mut env, theme) = window_environment(mtm());
+        install_gpu(&mut env, runtime);
+        refresh_theme(&theme, ColorScheme::Light);
+
+        let renderer = AppleBackend::new(mtm()).offscreen(&env);
+        let request = RenderRequest::new(Size::new(160.0, 80.0), Duration::from_secs(10));
+        let view = zstack((
+            Color::srgb(0, 180, 0),
+            Color::srgb(240, 240, 240).size(160.0, 80.0).border_shape(
+                Capsule,
+                Color::srgb(220, 20, 20),
+                8.0,
+            ),
+        ));
+
+        let result = block_on_main(30.0, renderer.render_to_rgba(view, &env, request))
+            .map_err(|error| format!("capsule border render_to_rgba failed: {error}"))?;
+        let width = result.width() as usize;
+        let height = result.height() as usize;
+        let pixel = |fx: f64, fy: f64| -> [u8; 4] {
+            let x = ((width as f64) * fx).clamp(0.0, (width - 1) as f64) as usize;
+            let y = ((height as f64) * fy).clamp(0.0, (height - 1) as f64) as usize;
+            let offset = (y * width + x) * 4;
+            result.rgba_data()[offset..offset + 4].try_into().unwrap()
+        };
+
+        let top_rim = pixel(0.50, 0.05);
+        assert!(
+            top_rim[0] > 160
+                && top_rim[0] > top_rim[1].saturating_add(80)
+                && top_rim[0] > top_rim[2].saturating_add(80),
+            "top rim of capsule border must be red, got {top_rim:?}"
+        );
+        let left_rim = pixel(0.025, 0.50);
+        assert!(
+            left_rim[0] > 160
+                && left_rim[0] > left_rim[1].saturating_add(80)
+                && left_rim[0] > left_rim[2].saturating_add(80),
+            "left arc of capsule border must be red, got {left_rim:?}"
+        );
+        let center = pixel(0.50, 0.50);
+        assert!(
+            center[0] > 210 && center[1] > 210 && center[2] > 210,
+            "center must keep white content, got {center:?}"
+        );
+        let corner = pixel(0.025, 0.05);
+        assert!(
+            corner[0] > 210 && corner[1] > 210 && corner[2] > 210,
+            "capsule border must not clip rectangular content at corners, got {corner:?}"
         );
         Ok(())
     }

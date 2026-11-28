@@ -215,6 +215,16 @@ impl NativeBackend for AppleBackend {
         crate::components::resolved_shape::realize_resolved_shape(native, &self.entry(env))
     }
 
+    fn stroked_shape(
+        &mut self,
+        native: waterui_shape::ResolvedStrokedShape,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("stroked_shape");
+        crate::components::resolved_shape::realize_resolved_stroked_shape(native, &self.entry(env))
+    }
+
     fn gradient(
         &mut self,
         native: waterui_graphics::Gradient,

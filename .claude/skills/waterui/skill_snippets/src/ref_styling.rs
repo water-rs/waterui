@@ -359,9 +359,13 @@ pub fn styling_block_10() {
     let photo = Divider;
 
     use waterui::shape::{CornerRadii, CornerRadius, Ellipse, Path};
+    use waterui::theme::color::Accent;
 
     let _ = {
         Circle.fill(Color::srgb_hex("#3B82F6")).size(80.0, 80.0) // solid color fill
+    };
+    let _ = {
+        Capsule.stroke(Accent, 2.0).size(120.0, 40.0) // stroked shape outline
     };
     let _ = {
         Circle
@@ -490,6 +494,14 @@ pub fn styling_block_13() {
     let card = Divider;
     let _ = {
         card.border(Color::srgb_hex("#E5E7EB"), 1.0) // all edges, square corners
+    };
+    let card = Divider;
+    let _ = {
+        card.border_shape(Capsule, Accent, 1.0) // stroke along any Shape outline
+    };
+    let card = Divider;
+    let _ = {
+        card.border_with(Border::new(Accent, 1.0).shape(Circle)) // shape-aware Border builder
     };
     let card = Divider;
     let _ = {

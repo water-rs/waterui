@@ -838,6 +838,8 @@ native_backend! {
         divider: waterui_controls::divider::Divider,
         /// A resolved shape.
         shape: waterui_shape::ResolvedShape,
+        /// A resolved stroked shape.
+        stroked_shape: waterui_shape::ResolvedStrokedShape,
         /// A gradient fill.
         gradient: waterui_graphics::Gradient,
         #[cfg(any(waterui_feature = "gpu", waterui_feature = "cpu"))]

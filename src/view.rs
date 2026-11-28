@@ -1197,6 +1197,29 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, border)
     }
 
+    /// Applies a border stroked along `shape`'s outline.
+    ///
+    /// Equivalent to `.border_with(Border::new(color, width).shape(shape))`.
+    /// Like [`border`](ViewExt::border), this only strokes the outline and never
+    /// clips the wrapped view; apply `.clip(shape)` separately to clip content.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::theme::color::Accent;
+    ///
+    /// text("Pill").border_shape(Capsule, Accent, 1.0);
+    /// ```
+    fn border_shape(
+        self,
+        shape: impl Shape,
+        color: impl IntoSignal<Color> + 'static,
+        width: impl IntoSignalF32,
+    ) -> Metadata<Border, Self> {
+        Metadata::new(self, Border::new(color, width).shape(shape))
+    }
+
     /// Applies a uniform scale transform to this view around its center.
     ///
     /// Scales are purely visual and do not affect layout calculations.
