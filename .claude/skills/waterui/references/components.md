@@ -999,10 +999,13 @@ in when the picture is the subject, such as a full-width profile header. `.focus
 use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 
 .a11y_label("Delete message")          // override the derived label
+.a11y_hint("Opens the thread")         // supplemental outcome hint (IntoText)
 .a11y_id("inbox.row.3")                // stable automation id — reaches XCUITest and Android
 .a11y_role(AccessibilityRole::Button)
 .a11y_hidden(true)                     // or a reactive boolean signal
 .a11y_state(active.map(|a| AccessibilityState::new().selected(a)))
+.a11y_action("Archive", archive)       // chainable named actions in declaration order
+.a11y_adjustable(increment, decrement) // VoiceOver / TalkBack increment & decrement
 ```
 
 The idiom for a composed row that should read as a single node: `.a11y_hidden(true)` on

@@ -92,18 +92,28 @@ pub enum Checked {
     Mixed,
 }
 
+/// Callback invoked when an assistive client performs a custom action.
+pub type CustomActionHandler = std::rc::Rc<dyn Fn() -> bool>;
+
 #[cfg(target_os = "ios")]
 mod imp {
-    use objc2_foundation::NSString;
+    use std::ptr;
+    use std::rc::Rc;
+
+    use block2::RcBlock;
+    use objc2::MainThreadOnly as _;
+    use objc2::runtime::Bool;
+    use objc2_foundation::{NSArray, NSString};
     use objc2_ui_kit::{
-        NSObjectUIAccessibility, UIAccessibilityTraitAdjustable, UIAccessibilityTraitButton,
-        UIAccessibilityTraitHeader, UIAccessibilityTraitImage, UIAccessibilityTraitLink,
-        UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSearchField,
-        UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText,
-        UIAccessibilityTraitUpdatesFrequently, UIAccessibilityTraits, UIView,
+        NSObjectUIAccessibility, NSObjectUIAccessibilityAction, UIAccessibilityCustomAction,
+        UIAccessibilityTraitAdjustable, UIAccessibilityTraitButton, UIAccessibilityTraitHeader,
+        UIAccessibilityTraitImage, UIAccessibilityTraitLink, UIAccessibilityTraitNotEnabled,
+        UIAccessibilityTraitSearchField, UIAccessibilityTraitSelected,
+        UIAccessibilityTraitStaticText, UIAccessibilityTraitUpdatesFrequently,
+        UIAccessibilityTraits, UIView,
     };
 
-    use super::{Checked, Role};
+    use super::{Checked, CustomActionHandler, Role};
 
     /// The traits `set_role` manages: the union of everything any role can
     /// add, removed before the role's own are set.
@@ -177,8 +187,15 @@ mod imp {
             return;
         };
         let mut current = view.accessibilityTraits(mtm);
+        let keep_adjustable = view
+            .downcast_ref::<crate::uikit::HostView>()
+            .is_some_and(crate::uikit::HostView::is_accessibility_adjustable);
         current &= !managed_traits();
         current |= role_traits;
+        if keep_adjustable {
+            // SAFETY: the trait constant is an immutable `u64` published by UIKit.
+            current |= unsafe { UIAccessibilityTraitAdjustable };
+        }
         view.setAccessibilityTraits(current, mtm);
     }
 
@@ -194,6 +211,67 @@ mod imp {
         let mtm = objc2::MainThreadMarker::from(view);
         view.setIsAccessibilityElement(true, mtm);
         view.setAccessibilityValue(Some(value), mtm);
+    }
+
+    /// Gives `view` a supplemental accessibility hint, or clears it when `None`.
+    pub fn set_hint(view: &UIView, hint: Option<&NSString>) {
+        let mtm = objc2::MainThreadMarker::from(view);
+        if hint.is_some() {
+            view.setIsAccessibilityElement(true, mtm);
+        }
+        view.setAccessibilityHint(hint, mtm);
+    }
+
+    /// Sets the `UIAccessibilityCustomAction` list on `view` in declaration order.
+    pub fn set_custom_actions(view: &UIView, actions: &[(String, CustomActionHandler)]) {
+        let mtm = objc2::MainThreadMarker::from(view);
+        if actions.is_empty() {
+            view.setAccessibilityCustomActions(None, mtm);
+            return;
+        }
+        view.setIsAccessibilityElement(true, mtm);
+        let built: Vec<_> = actions
+            .iter()
+            .map(|(name, handler)| {
+                let handler = Rc::clone(handler);
+                let block = RcBlock::new(
+                    move |_action: ptr::NonNull<UIAccessibilityCustomAction>| -> Bool {
+                        Bool::new(crate::callback::guarded(
+                            "UIAccessibilityCustomAction",
+                            || handler(),
+                        ))
+                    },
+                );
+                // SAFETY: `UIKit` copies the handler block for the action's life;
+                // `name` and the block pointer are valid arguments.
+                unsafe {
+                    UIAccessibilityCustomAction::initWithName_actionHandler(
+                        UIAccessibilityCustomAction::alloc(mtm),
+                        &NSString::from_str(name),
+                        RcBlock::as_ptr(&block),
+                    )
+                }
+            })
+            .collect();
+        let array = NSArray::from_retained_slice(&built);
+        view.setAccessibilityCustomActions(Some(&array), mtm);
+    }
+
+    /// Sets or clears `UIAccessibilityTraitAdjustable` on `view`.
+    pub fn set_adjustable(view: &UIView, adjustable: bool) {
+        let mtm = objc2::MainThreadMarker::from(view);
+        if adjustable {
+            view.setIsAccessibilityElement(true, mtm);
+        }
+        let mut current = view.accessibilityTraits(mtm);
+        // SAFETY: the trait constant is an immutable `u64` published by UIKit.
+        let trait_adjustable = unsafe { UIAccessibilityTraitAdjustable };
+        if adjustable {
+            current |= trait_adjustable;
+        } else {
+            current &= !trait_adjustable;
+        }
+        view.setAccessibilityTraits(current, mtm);
     }
 
     /// Gives `view` the stable automation identifier UI tests locate it
@@ -275,6 +353,7 @@ mod imp {
         original_value: Option<&NSString>,
         busy: bool,
         original_hint: Option<&NSString>,
+        manage_hint: bool,
     ) {
         let mtm = objc2::MainThreadMarker::from(view);
         view.setIsAccessibilityElement(true, mtm);
@@ -304,24 +383,32 @@ mod imp {
         } else if checked_value_written {
             view.setAccessibilityValue(original_value, mtm);
         }
-        set_busy(view, busy, original_hint);
+        if manage_hint {
+            set_busy(view, busy, original_hint);
+        }
     }
 }
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use objc2::runtime::{AnyObject, ProtocolObject};
+    use std::rc::Rc;
+
+    use block2::RcBlock;
+    use objc2::AnyThread as _;
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyObject, Bool, ProtocolObject};
     use objc2_app_kit::{
         NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityCheckBoxRole,
-        NSAccessibilityComboBoxRole, NSAccessibilityGroupRole, NSAccessibilityHeadingRole,
-        NSAccessibilityImageRole, NSAccessibilityLinkRole, NSAccessibilityListRole,
-        NSAccessibilityMenuBarRole, NSAccessibilityMenuItemRole, NSAccessibilityMenuRole,
-        NSAccessibilityProgressIndicatorRole, NSAccessibilityRadioButtonRole, NSAccessibilityRole,
-        NSAccessibilitySliderRole, NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole,
+        NSAccessibilityComboBoxRole, NSAccessibilityCustomAction, NSAccessibilityGroupRole,
+        NSAccessibilityHeadingRole, NSAccessibilityImageRole, NSAccessibilityLinkRole,
+        NSAccessibilityListRole, NSAccessibilityMenuBarRole, NSAccessibilityMenuItemRole,
+        NSAccessibilityMenuRole, NSAccessibilityProgressIndicatorRole,
+        NSAccessibilityRadioButtonRole, NSAccessibilityRole, NSAccessibilitySliderRole,
+        NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole,
     };
     use objc2_foundation::{NSArray, NSNumber, NSString};
 
-    use super::{Checked, Role};
+    use super::{Checked, CustomActionHandler, Role};
 
     /// The `NSAccessibility` role this role is announced as, or `None` when
     /// `AppKit` has no equivalent.
@@ -407,6 +494,53 @@ mod imp {
         unsafe { element.setAccessibilityValue(Some(AsRef::<AnyObject>::as_ref(value))) };
     }
 
+    /// Gives `element` a supplemental accessibility help string, or clears it
+    /// when `None`.
+    pub fn set_hint(element: &ProtocolObject<dyn NSAccessibility>, hint: Option<&NSString>) {
+        if hint.is_some() {
+            element.setAccessibilityElement(true);
+        }
+        element.setAccessibilityHelp(hint);
+    }
+
+    /// The current accessibility help string, if any.
+    #[must_use]
+    pub fn hint(element: &ProtocolObject<dyn NSAccessibility>) -> Option<Retained<NSString>> {
+        element.accessibilityHelp()
+    }
+
+    /// Sets the `NSAccessibilityCustomAction` list on `element` in declaration
+    /// order.
+    pub fn set_custom_actions(
+        element: &ProtocolObject<dyn NSAccessibility>,
+        actions: &[(String, CustomActionHandler)],
+    ) {
+        if actions.is_empty() {
+            element.setAccessibilityCustomActions(None);
+            return;
+        }
+        element.setAccessibilityElement(true);
+        let built: Vec<_> = actions
+            .iter()
+            .map(|(name, handler)| {
+                let handler = Rc::clone(handler);
+                let block = RcBlock::new(move || -> Bool {
+                    Bool::new(crate::callback::guarded(
+                        "NSAccessibilityCustomAction",
+                        || handler(),
+                    ))
+                });
+                NSAccessibilityCustomAction::initWithName_handler(
+                    NSAccessibilityCustomAction::alloc(),
+                    &NSString::from_str(name),
+                    Some(&*block),
+                )
+            })
+            .collect();
+        let array = NSArray::from_retained_slice(&built);
+        element.setAccessibilityCustomActions(Some(&array));
+    }
+
     /// Gives `element` the stable automation identifier UI tests locate
     /// it by — `accessibilityIdentifier`.
     pub fn set_identifier(element: &ProtocolObject<dyn NSAccessibility>, identifier: &NSString) {
@@ -464,6 +598,7 @@ mod imp {
 
     /// Applies the dynamic accessibility state: enabled, selected, checked,
     /// expanded, busy.
+    #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     pub fn apply_state(
         element: &ProtocolObject<dyn NSAccessibility>,
         disabled: bool,
@@ -471,6 +606,8 @@ mod imp {
         checked: Option<Checked>,
         expanded: Option<bool>,
         busy: bool,
+        original_help: Option<&NSString>,
+        manage_help: bool,
     ) {
         element.setAccessibilityElement(true);
         element.setAccessibilityEnabled(!disabled);
@@ -489,7 +626,13 @@ mod imp {
         if let Some(expanded) = expanded {
             element.setAccessibilityExpanded(expanded);
         }
-        set_busy(element, busy);
+        if manage_help {
+            if busy {
+                set_busy(element, true);
+            } else {
+                element.setAccessibilityHelp(original_help);
+            }
+        }
     }
 }
 

@@ -26,22 +26,37 @@
 //! On `AppKit`, `expanded` is applied only when present and `hidden`
 //! restores `isAccessibilityElement`.
 
+use alloc::format;
+use alloc::rc::Rc;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::cell::RefCell;
+
 use cocoa_ui::accessibility::{self as a11y, Role};
-use cocoa_ui::response;
-use cocoa_ui::{PlatformView, view};
+#[cfg(target_os = "macos")]
+use cocoa_ui::appkit::HostView;
+#[cfg(target_os = "ios")]
+use cocoa_ui::uikit::HostView;
+use cocoa_ui::{PlatformView, Rect, response, view};
 use nami::Computed;
 use objc2_foundation::NSString;
 use waterui_accessibility::{
-    AccessibilityChecked, AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden,
+    AccessibilityAdjustable, AccessibilityChecked, AccessibilityChildren,
+    AccessibilityCustomActions, AccessibilityGeometry, AccessibilityHidden, AccessibilityHint,
     AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
     AccessibilityValue,
 };
+use waterui_core::handler::ReportExtraction as _;
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 use waterui_core::metadata::MetadataKey;
-use waterui_core::{Environment, Metadata, SignalExt};
+use waterui_core::{Environment, Metadata, Signal, SignalExt};
 use waterui_interaction::interaction::Selected;
 
-use crate::contract::{Held, NativeLeaf, RenderContext};
-use crate::proposal::in_view;
+use crate::contract::{Held, Mounted, NativeLeaf, RenderContext};
+use crate::proposal::{self, in_view};
 
 #[cfg(target_os = "macos")]
 pub mod target {
@@ -130,14 +145,28 @@ const fn role(role: &AccessibilityRole) -> Role {
     }
 }
 
+/// Composes an explicit accessibility hint with the `busy` state flag so
+/// setting either one never clobbers the other.
+fn compose_hint(hint: Option<&str>, busy: bool) -> Option<String> {
+    let hint = hint.filter(|text| !text.is_empty());
+    match (busy, hint) {
+        (true, Some(hint)) => Some(format!("Busy, {hint}")),
+        (true, None) => Some(String::from("Busy")),
+        (false, Some(hint)) => Some(String::from(hint)),
+        (false, None) => None,
+    }
+}
+
 /// Applies an `AccessibilityState` to the view — `applyState`.
 #[cfg(target_os = "ios")]
+#[allow(clippy::too_many_arguments)]
 fn apply_state(
     target: &PlatformView,
     state: &AccessibilityState,
     checked_value_written: bool,
     original_value: Option<&NSString>,
     original_hint: Option<&NSString>,
+    manage_hint: bool,
 ) {
     a11y::apply_state(
         target,
@@ -148,12 +177,18 @@ fn apply_state(
         original_value,
         state.is_busy(),
         original_hint,
+        manage_hint,
     );
 }
 
 /// Applies an `AccessibilityState` to the view — `applyState`.
 #[cfg(target_os = "macos")]
-fn apply_state(target: &PlatformView, state: &AccessibilityState) {
+fn apply_state(
+    target: &PlatformView,
+    state: &AccessibilityState,
+    original_help: Option<&NSString>,
+    manage_help: bool,
+) {
     a11y::apply_state(
         target::of(target),
         state.is_disabled(),
@@ -161,6 +196,8 @@ fn apply_state(target: &PlatformView, state: &AccessibilityState) {
         state.checked_state().map(checked),
         state.expanded_state(),
         state.is_busy(),
+        original_help,
+        manage_help,
     );
 }
 
@@ -209,11 +246,18 @@ fn render_state(
         .state()
         .clone();
     let mut leaf = ctx.with_env(&env).realize(content);
+    let target = view::retain_base(leaf.view());
+    let has_scoped_hint = env.get::<AccessibilityHint>().cloned();
+    if let Some(hint) = has_scoped_hint
+        && leaf.claim_accessibility_hint()
+    {
+        bind_composed_hint(&mut leaf, target.clone(), &hint, Some(&merged), &env);
+    }
     leaf.keep(env);
     if !leaf.claim_accessibility_state() {
         return leaf;
     }
-    let target = view::retain_base(leaf.view());
+    let manage_hint = leaf.claim_accessibility_hint();
     leaf.keep(target.clone());
     #[cfg(target_os = "ios")]
     {
@@ -229,6 +273,7 @@ fn render_state(
                 wrote_checked.get(),
                 original_value.as_deref(),
                 original_hint.as_deref(),
+                manage_hint,
             );
             if state.checked_state().is_some() {
                 wrote_checked.set(true);
@@ -238,13 +283,41 @@ fn render_state(
     }
     #[cfg(target_os = "macos")]
     {
+        let original_help = a11y::hint(target::of(&target));
         let original_hidden = read_original_hidden(&target);
         leaf.bind(&merged, move |state| {
-            apply_state(&target, &state);
+            apply_state(&target, &state, original_help.as_deref(), manage_hint);
             apply_hidden(&target, state.is_hidden(), original_hidden);
         });
     }
     leaf
+}
+
+/// Binds an explicit `AccessibilityHint` (optionally composed with a scoped
+/// `AccessibilityStateSignal`'s `busy` flag) onto `target`.
+fn bind_composed_hint(
+    leaf: &mut NativeLeaf,
+    target: cocoa_ui::Retained<PlatformView>,
+    hint: &AccessibilityHint,
+    state: Option<&Computed<AccessibilityState>>,
+    env: &Environment,
+) {
+    leaf.keep(target.clone());
+    let hint_signal = hint.resolve(env);
+    if let Some(state_signal) = state {
+        let combined = nami::zip::zip(hint_signal, state_signal.clone());
+        leaf.bind(&combined, move |(hint_text, state)| {
+            let composed = compose_hint(Some(hint_text.as_str()), state.is_busy());
+            let ns = composed.as_deref().map(NSString::from_str);
+            a11y::set_hint(target::of(&target), ns.as_deref());
+        });
+    } else {
+        leaf.bind(&hint_signal, move |hint_text| {
+            let composed = compose_hint(Some(hint_text.as_str()), false);
+            let ns = composed.as_deref().map(NSString::from_str);
+            a11y::set_hint(target::of(&target), ns.as_deref());
+        });
+    }
 }
 
 fn scope_env<K: MetadataKey + Clone + 'static>(ctx: &RenderContext<'_>, value: &K) -> Environment {
@@ -260,6 +333,9 @@ pub fn child_env(env: &Environment) -> Environment {
     let mut child = env.clone();
     child.remove::<AccessibilityLabel>();
     child.remove::<AccessibilityValue>();
+    child.remove::<AccessibilityHint>();
+    child.remove::<AccessibilityCustomActions>();
+    child.remove::<AccessibilityAdjustable>();
     child.remove::<AccessibilityRole>();
     child.remove::<AccessibilityHidden>();
     child.remove::<AccessibilityChildren>();
@@ -321,6 +397,232 @@ pub fn realize_accessibility_value_metadata(
     });
     leaf.keep(scoped);
     leaf
+}
+
+pub fn realize_accessibility_hint_metadata(
+    metadata: Metadata<AccessibilityHint, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let scoped = scope_env(ctx, &metadata.value);
+    let mut leaf = ctx.with_env(&scoped).realize(metadata.content);
+    if leaf.claim_accessibility_hint() {
+        let target = view::retain_base(leaf.view());
+        let state_signal = scoped
+            .get::<AccessibilityStateSignal>()
+            .map(|scope| scope.state().clone());
+        bind_composed_hint(
+            &mut leaf,
+            target,
+            &metadata.value,
+            state_signal.as_ref(),
+            &scoped,
+        );
+    }
+    leaf.keep(scoped);
+    leaf
+}
+
+pub fn realize_accessibility_custom_actions_metadata(
+    metadata: Metadata<AccessibilityCustomActions, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mut scoped = ctx.env().clone();
+    AccessibilityCustomActions::install(&mut scoped, &metadata.value);
+    let merged = scoped
+        .get::<AccessibilityCustomActions>()
+        .expect("install inserts merged custom actions")
+        .clone();
+    let mut leaf = ctx.with_env(&scoped).realize(metadata.content);
+    let handler_env = leaf.handler_env(&scoped);
+    if leaf.claim_accessibility_custom_actions() {
+        let target = view::retain_base(leaf.view());
+        leaf.keep(target.clone());
+        let entries: Rc<Vec<_>> = Rc::new(
+            merged
+                .actions()
+                .iter()
+                .map(|action| {
+                    let name_signal = action.resolve_name(&handler_env);
+                    let action = action.clone();
+                    let action_env = handler_env.clone();
+                    let callback: Rc<dyn Fn() -> bool> =
+                        Rc::new(move || action.invoke(&action_env).report_extraction().is_some());
+                    (name_signal, callback)
+                })
+                .collect(),
+        );
+        let rebuild: Rc<dyn Fn()> = {
+            let entries = Rc::clone(&entries);
+            Rc::new(move || {
+                let resolved: Vec<(String, Rc<dyn Fn() -> bool>)> = entries
+                    .iter()
+                    .map(|(signal, callback)| {
+                        (
+                            String::from(signal.snapshot().as_str()),
+                            Rc::clone(callback),
+                        )
+                    })
+                    .collect();
+                a11y::set_custom_actions(target::of(&target), &resolved);
+            })
+        };
+        rebuild();
+        for (signal, _) in entries.iter() {
+            let rebuild = Rc::clone(&rebuild);
+            leaf.watch(signal, move |_| rebuild());
+        }
+    }
+    leaf.set_handler_env(handler_env);
+    leaf.keep(scoped);
+    leaf
+}
+
+/// Transparent wrapper state for `.a11y_adjustable(...)` when its wrapped leaf
+/// is not already a [`HostView`].
+struct AdjustableHostState {
+    child: Mounted,
+}
+
+impl core::fmt::Debug for AdjustableHostState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AdjustableHostState")
+            .finish_non_exhaustive()
+    }
+}
+
+struct AdjustableHostSubView {
+    state: Rc<RefCell<AdjustableHostState>>,
+}
+
+impl core::fmt::Debug for AdjustableHostSubView {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AdjustableHostSubView")
+            .finish_non_exhaustive()
+    }
+}
+
+impl SubView for AdjustableHostSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state
+            .borrow()
+            .child
+            .layout()
+            .resolve_extent(bounds, proposal)
+    }
+
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        self.state.borrow().child.layout().measure(proposal)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.state.borrow().child.layout().stretch_axis()
+    }
+
+    fn priority(&self) -> i32 {
+        self.state.borrow().child.layout().priority()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.state.borrow().child.layout().is_empty()
+    }
+}
+
+fn install_adjustable_on_host(
+    host: &HostView,
+    adjustable: AccessibilityAdjustable,
+    action_env: Environment,
+) {
+    let inc_action = adjustable.clone();
+    let inc_env = action_env.clone();
+    let dec_action = adjustable;
+    let dec_env = action_env;
+
+    #[cfg(target_os = "macos")]
+    {
+        use cocoa_ui::objc2_app_kit::NSAccessibility as _;
+        host.set_accessibility_adjustable_handlers(
+            move |_| inc_action.increment(&inc_env).report_extraction().is_some(),
+            move |_| dec_action.decrement(&dec_env).report_extraction().is_some(),
+        );
+        let host_view: &PlatformView = host;
+        target::of(host_view).setAccessibilityElement(true);
+    }
+    #[cfg(target_os = "ios")]
+    {
+        host.set_accessibility_adjustable_handlers(
+            move |_| {
+                inc_action.increment(&inc_env).report_extraction();
+            },
+            move |_| {
+                dec_action.decrement(&dec_env).report_extraction();
+            },
+        );
+        a11y::set_adjustable(host, true);
+    }
+}
+
+pub fn realize_accessibility_adjustable_metadata(
+    metadata: Metadata<AccessibilityAdjustable, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let scoped = scope_env(ctx, &metadata.value);
+    let mut leaf = ctx.with_env(&scoped).realize(metadata.content);
+    let handler_env = leaf.handler_env(&scoped);
+    if let Some(host) = leaf.view().downcast_ref::<HostView>() {
+        install_adjustable_on_host(host, metadata.value, handler_env.clone());
+        leaf.set_handler_env(handler_env);
+        leaf.keep(scoped);
+        return leaf;
+    }
+
+    // Wrap non-HostView leaves (for example a bare `Label`) in a transparent
+    // `HostView` that owns the increment/decrement overrides and forwards
+    // layout, primary content, and unset accessibility properties to the child.
+    let host = HostView::new(ctx.mtm(), Rect::ZERO);
+    let host_view: &PlatformView = &host;
+    let clip_shape = leaf.clip_shape_handle();
+    let mounted = leaf.mount(host_view);
+    view::set_translates_autoresizing(mounted.view(), true);
+    let state = Rc::new(RefCell::new(AdjustableHostState { child: mounted }));
+
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host| {
+            let bounds = view::bounds(host);
+            let child = state.borrow();
+            view::set_frame(child.child.view(), bounds);
+        }
+    });
+    crate::primary_content::forward(&host, state.borrow().child.view());
+    host.set_delegates_accessibility_to_primary(true);
+    #[cfg(target_os = "ios")]
+    host.set_combines_accessibility_children(true);
+
+    let sink_guard = proposal::register_sink(host_view, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            proposal::deliver(state.borrow().child.view(), selected);
+        }
+    });
+
+    install_adjustable_on_host(&host, metadata.value, handler_env.clone());
+
+    let mut wrapper = NativeLeaf::new(
+        host_view,
+        AdjustableHostSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    wrapper.set_clip_shape_handle(clip_shape);
+    wrapper.set_handler_env(handler_env);
+    wrapper.keep(sink_guard);
+    wrapper.keep(state);
+    wrapper.keep(scoped);
+    wrapper
 }
 
 pub fn realize_accessibility_role_metadata(
