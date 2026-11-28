@@ -1502,6 +1502,25 @@ fn ts_a_hidden_view_is_hidden_the_way_rust_hides_it() {
 }
 
 #[test]
+fn ts_a11y_children_combine_matches_rust() {
+    assert_same(
+        "a11yChildren combine",
+        &module(
+            r#"waterui.jsx("HStack", {
+                a11yChildren: "combine",
+                children: [
+                    waterui.jsx("Text", { children: "Alice" }),
+                    waterui.jsx("Text", { children: "Hello" }),
+                    waterui.jsx("Text", { children: "2m" }),
+                ],
+            })"#,
+        ),
+        waterui::component::hstack((text("Alice"), text("Hello"), text("2m")))
+            .a11y_children(waterui::accessibility::AccessibilityChildren::Combine),
+    );
+}
+
+#[test]
 fn ts_on_tap_gesture_is_the_rust_gesture() {
     assert_same(
         "onTapGesture",

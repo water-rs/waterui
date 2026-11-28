@@ -370,17 +370,26 @@ pub fn realize_accessibility_children_metadata(
     let scoped = scope_env(ctx, &metadata.value);
     let mut leaf = ctx.with_env(&scoped).realize(metadata.content);
     let target = view::retain_base(leaf.view());
-    if metadata.value.excludes_descendants() {
-        #[cfg(target_os = "macos")]
-        a11y::exclude_children(target::of(&target));
-        #[cfg(target_os = "ios")]
-        {
-            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
-            target.setIsAccessibilityElement(true, ctx.mtm());
-            for subview in view::subviews(&target) {
-                view::hide_from_accessibility(&subview);
+    match metadata.value {
+        AccessibilityChildren::ExcludeDescendants => {
+            #[cfg(target_os = "macos")]
+            a11y::exclude_children(target::of(&target));
+            #[cfg(target_os = "ios")]
+            {
+                use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+                target.setIsAccessibilityElement(true, ctx.mtm());
+                for subview in view::subviews(&target) {
+                    view::hide_from_accessibility(&subview);
+                }
             }
         }
+        AccessibilityChildren::Combine => {
+            #[cfg(target_os = "macos")]
+            a11y::combine_children(target::of(&target));
+            #[cfg(target_os = "ios")]
+            a11y::combine_children(&target);
+        }
+        _ => {}
     }
     leaf.keep(target);
     leaf.keep(scoped);

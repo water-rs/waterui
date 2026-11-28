@@ -420,6 +420,7 @@ fn trials() -> Vec<Trial> {
     }
     tests.extend(migration::trials());
     tests.extend(transition::trials());
+    tests.extend(dismiss::trials());
     tests.extend(owner_lifetimes::trials());
     tests.extend(scroll::trials());
     tests.extend(report_size::trials());
@@ -437,6 +438,7 @@ fn trials() -> Vec<Trial> {
     tests.extend(icon_a11y::trials());
     #[cfg(feature = "highlight")]
     tests.extend(code::trials());
+    tests.extend(a11y_combine::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
@@ -19892,6 +19894,243 @@ mod code {
     }
 }
 
+/// `AccessibilityChildren::Combine` merges descendant labels in reading order
+/// and forwards descendant actions on any role, independent of tap gestures
+/// (water-rs/waterui#4385).
+mod a11y_combine {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use libtest_mimic::Trial;
+    use waterui::ViewExt as _;
+    use waterui::accessibility::{AccessibilityChildren, AccessibilityRole};
+    use waterui::component::{button, hstack, text};
+
+    use super::resolve;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "a11y_combine::merges_labels_and_hides_children_for_any_role",
+                || {
+                    merges_labels_and_hides_children_for_any_role();
+                    Ok(())
+                },
+            ),
+            Trial::test("a11y_combine::explicit_label_wins_over_descendants", || {
+                explicit_label_wins_over_descendants();
+                Ok(())
+            }),
+            Trial::test(
+                "a11y_combine::forwards_single_and_multiple_descendant_actions",
+                || {
+                    forwards_single_and_multiple_descendant_actions();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn merges_labels_and_hides_children_for_any_role() {
+        let leaf = resolve::render(
+            hstack((
+                text("Alice"),
+                text("Secret").a11y_hidden(true),
+                text("Hey there"),
+                text("2m"),
+            ))
+            .a11y_role(AccessibilityRole::ListItem)
+            .a11y_children(AccessibilityChildren::Combine),
+        );
+        let view = leaf.view();
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::ProtocolObject;
+            use cocoa_ui::objc2_app_kit::NSAccessibility;
+
+            let element = ProtocolObject::<dyn NSAccessibility>::from_ref(view);
+            assert!(element.isAccessibilityElement());
+            assert_eq!(
+                element.accessibilityLabel().map(|s| s.to_string()),
+                Some(String::from("Alice, Hey there, 2m"))
+            );
+            assert_eq!(
+                element
+                    .accessibilityChildren()
+                    .map_or(0, |items| items.len()),
+                0,
+                "combined host must not expose merged descendants as standalone children"
+            );
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+
+            let mtm = super::mtm();
+            assert!(view.isAccessibilityElement(mtm));
+            assert_eq!(
+                view.accessibilityLabel(mtm).map(|s| s.to_string()),
+                Some(String::from("Alice, Hey there, 2m"))
+            );
+        }
+    }
+
+    fn explicit_label_wins_over_descendants() {
+        let leaf = resolve::render(
+            hstack((text("Part A"), text("Part B")))
+                .a11y_label("Custom Summary")
+                .a11y_children(AccessibilityChildren::Combine),
+        );
+        let view = leaf.view();
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::ProtocolObject;
+            use cocoa_ui::objc2_app_kit::NSAccessibility;
+
+            let element = ProtocolObject::<dyn NSAccessibility>::from_ref(view);
+            assert_eq!(
+                element.accessibilityLabel().map(|s| s.to_string()),
+                Some(String::from("Custom Summary"))
+            );
+            assert_eq!(
+                element
+                    .accessibilityChildren()
+                    .map_or(0, |items| items.len()),
+                0
+            );
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+
+            let mtm = super::mtm();
+            assert!(view.isAccessibilityElement(mtm));
+            assert_eq!(
+                view.accessibilityLabel(mtm).map(|s| s.to_string()),
+                Some(String::from("Custom Summary"))
+            );
+        }
+    }
+
+    fn forwards_single_and_multiple_descendant_actions() {
+        let single_pressed = Rc::new(Cell::new(0u32));
+        let single_leaf = resolve::render({
+            let single_pressed = Rc::clone(&single_pressed);
+            hstack((
+                text("Notifications"),
+                button("Enable").action(move || single_pressed.set(single_pressed.get() + 1)),
+            ))
+            .a11y_children(AccessibilityChildren::Combine)
+        });
+
+        let replied = Rc::new(Cell::new(0u32));
+        let archived = Rc::new(Cell::new(0u32));
+        let multi_leaf = resolve::render({
+            let replied = Rc::clone(&replied);
+            let archived = Rc::clone(&archived);
+            hstack((
+                text("Alice"),
+                button("Reply").action(move || replied.set(replied.get() + 1)),
+                button("Archive").action(move || archived.set(archived.get() + 1)),
+            ))
+            .a11y_children(AccessibilityChildren::Combine)
+        });
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::{Bool, ProtocolObject};
+            use cocoa_ui::objc2::{msg_send, sel};
+            use cocoa_ui::objc2_app_kit::NSAccessibility;
+
+            let single_view = single_leaf.view();
+            let single_el = ProtocolObject::<dyn NSAccessibility>::from_ref(single_view);
+            assert_eq!(
+                single_el.accessibilityLabel().map(|s| s.to_string()),
+                Some(String::from("Notifications, Enable"))
+            );
+            // SAFETY: `isAccessibilitySelectorAllowed:` and
+            // `accessibilityPerformPress` are standard `NSAccessibility` selectors.
+            let allowed: bool = unsafe {
+                msg_send![single_view, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)]
+            };
+            assert!(allowed, "single-button combined host must allow AXPress");
+            // SAFETY: `accessibilityPerformPress` is a standard `NSAccessibility` selector returning `BOOL`.
+            let pressed: bool = unsafe { msg_send![single_view, accessibilityPerformPress] };
+            assert!(pressed);
+            assert_eq!(single_pressed.get(), 1);
+
+            let multi_view = multi_leaf.view();
+            let multi_el = ProtocolObject::<dyn NSAccessibility>::from_ref(multi_view);
+            assert_eq!(
+                multi_el.accessibilityLabel().map(|s| s.to_string()),
+                Some(String::from("Alice, Reply, Archive"))
+            );
+            let actions = multi_el
+                .accessibilityCustomActions()
+                .expect("multi-button combined host must expose custom actions");
+            let names: Vec<String> = actions.iter().map(|a| a.name().to_string()).collect();
+            assert_eq!(names, vec![String::from("Reply"), String::from("Archive")]);
+            for action in &actions {
+                let handler = action.handler();
+                assert!(
+                    !handler.is_null(),
+                    "custom action must carry a handler block"
+                );
+                // SAFETY: `handler` is a valid non-null `block2::DynBlock<dyn Fn() -> Bool>`
+                // owned by `action`.
+                let result: Bool = unsafe { (*handler).call(()) };
+                assert!(result.as_bool());
+            }
+            assert_eq!(replied.get(), 1);
+            assert_eq!(archived.get(), 1);
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::{
+                NSObjectUIAccessibility as _, NSObjectUIAccessibilityAction as _,
+            };
+
+            let mtm = super::mtm();
+            let single_view = single_leaf.view();
+            assert_eq!(
+                single_view.accessibilityLabel(mtm).map(|s| s.to_string()),
+                Some(String::from("Notifications, Enable"))
+            );
+            assert!(single_view.accessibilityActivate(mtm));
+            assert_eq!(single_pressed.get(), 1);
+
+            let multi_view = multi_leaf.view();
+            assert_eq!(
+                multi_view.accessibilityLabel(mtm).map(|s| s.to_string()),
+                Some(String::from("Alice, Reply, Archive"))
+            );
+            let actions = multi_view
+                .accessibilityCustomActions(mtm)
+                .expect("multi-button combined host must expose custom actions");
+            let names: Vec<String> = actions.iter().map(|a| a.name().to_string()).collect();
+            assert_eq!(names, vec![String::from("Reply"), String::from("Archive")]);
+            for action in &actions {
+                // SAFETY: `actionHandler` returns the action's handler block pointer.
+                let handler = unsafe { action.actionHandler() };
+                assert!(
+                    !handler.is_null(),
+                    "custom action must carry a handler block"
+                );
+                // SAFETY: `handler` is a valid non-null block owned by `action`.
+                let result = unsafe { (*handler).call((core::ptr::NonNull::from(&*action),)) };
+                assert!(result.as_bool());
+            }
+            assert_eq!(replied.get(), 1);
+            assert_eq!(archived.get(), 1);
+        }
+    }
+}
+
 /// `ViewExt::report_size` (water-rs/waterui#4298): committed placed sizes write
 /// into the bound `Binding<Size>` after commit, stay silent on unchanged
 /// relayouts, and drive adaptive `when(size.map(...), ...)` across resize
@@ -20071,6 +20310,460 @@ mod report_size {
             writes.get(),
             writes_settled,
             "settled adapted layout must not re-write or cycle"
+        );
+    }
+}
+
+/// `Dismiss` extractor trials across `NavigationStack` and `AnchoredOverlay`.
+mod dismiss {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::Message;
+    use cocoa_ui::objc2::rc::{Retained, autoreleasepool};
+    use cocoa_ui::{PlatformView, view};
+    use waterui::ViewExt as _;
+    use waterui::component::{button, text, vstack};
+    use waterui::metadata::anchored_overlay::{AnchoredOverlay, Dismissal};
+    use waterui::navigation::{NavigationLink, NavigationPath, NavigationStack, NavigationView};
+    use waterui::reactive::{Signal as _, binding};
+    use waterui::{Dismiss, State};
+    use waterui_apple::native_test_support::pump_main_until;
+
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::appkit::Button as PlatformButton;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::uikit::button::CocoaUiButton as PlatformButton;
+
+    use super::{leaf, mtm, resolve};
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "dismiss::navigation_root_has_no_dismiss_and_pushed_pages_pop_on_dismiss",
+                || {
+                    navigation_root_has_no_dismiss_and_pushed_pages_pop_on_dismiss();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "dismiss::navigation_closure_link_pushed_page_pops_on_dismiss",
+                || {
+                    navigation_closure_link_pushed_page_pops_on_dismiss();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "dismiss::navigation_root_preserves_enclosing_dismiss_while_pushed_page_pops",
+                || {
+                    navigation_root_preserves_enclosing_dismiss_while_pushed_page_pops();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "dismiss::anchored_overlay_dismiss_closes_overlay_and_shadows_pushed_page",
+                || {
+                    anchored_overlay_dismiss_closes_overlay_and_shadows_pushed_page();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn collect_buttons(root: &PlatformView, out: &mut Vec<Retained<PlatformButton>>) {
+        for sub in view::subviews(root) {
+            if let Some(button) = sub.downcast_ref::<PlatformButton>() {
+                out.push(Message::retain(button));
+            }
+            collect_buttons(&sub, out);
+        }
+    }
+
+    fn click_button(button: &PlatformButton) {
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2_app_kit::NSControl;
+            // SAFETY: `performClick:` dispatches the button's target-action on the main thread.
+            unsafe { NSControl::performClick(button, None) };
+        }
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::UIControlEvents;
+            button.sendActionsForControlEvents(UIControlEvents::TouchUpInside);
+        }
+    }
+
+    #[cfg(target_os = "ios")]
+    fn find_nav_controller(
+        root: &PlatformView,
+    ) -> Retained<cocoa_ui::objc2_ui_kit::UINavigationController> {
+        use cocoa_ui::objc2_ui_kit::UINavigationController;
+        use cocoa_ui::uikit::view_controller::owning_controller;
+
+        fn search(view: &PlatformView) -> Option<Retained<UINavigationController>> {
+            if let Some(controller) = owning_controller(view) {
+                if let Ok(nav) = controller.clone().downcast() {
+                    return Some(nav);
+                }
+                if let Some(nav) = controller.navigationController() {
+                    return Some(nav);
+                }
+            }
+            view::subviews(view)
+                .into_iter()
+                .find_map(|sub| search(&sub))
+        }
+
+        search(root).expect("NavigationStack mounts a UINavigationController")
+    }
+
+    fn navigation_root_has_no_dismiss_and_pushed_pages_pop_on_dismiss() {
+        let root_had_dismiss = Rc::new(Cell::new(None::<bool>));
+        let root_probe = Rc::clone(&root_had_dismiss);
+        let path = NavigationPath::<i32>::new();
+        let stack_path = path.clone();
+
+        let rendered = resolve::render(
+            NavigationStack::with_path(
+                stack_path,
+                NavigationView::new(
+                    "Root",
+                    button("Probe Root").action(move |dismiss: Option<Dismiss>| {
+                        root_probe.set(Some(dismiss.is_some()));
+                    }),
+                ),
+            )
+            .destination(|_route: i32| {
+                NavigationView::new(
+                    "Detail",
+                    button("Dismiss Detail").action(|dismiss: Dismiss| dismiss.dismiss()),
+                )
+            }),
+        );
+
+        let mut root_buttons = Vec::new();
+        collect_buttons(rendered.view(), &mut root_buttons);
+        assert_eq!(root_buttons.len(), 1);
+        click_button(&root_buttons[0]);
+        assert_eq!(
+            root_had_dismiss.get(),
+            Some(false),
+            "root NavigationStack page must not receive a stack Dismiss"
+        );
+
+        autoreleasepool(|_| path.push(1));
+
+        #[cfg(target_os = "macos")]
+        let detail_button = {
+            assert!(
+                pump_main_until(2.0, || view::subviews(rendered.view()).len() == 2),
+                "pushing onto NavigationPath must mount the pushed page"
+            );
+            let pages = view::subviews(rendered.view());
+            let mut buttons = Vec::new();
+            collect_buttons(&pages[1], &mut buttons);
+            assert_eq!(buttons.len(), 1);
+            buttons.into_iter().next().unwrap()
+        };
+
+        #[cfg(target_os = "ios")]
+        let (nav, detail_button) = {
+            let nav = find_nav_controller(rendered.view());
+            assert!(
+                pump_main_until(2.0, || nav.viewControllers().count() == 2),
+                "pushing onto NavigationPath must push a UIViewController"
+            );
+            let top = nav.topViewController().expect("top pushed controller");
+            let top_view = top.view().expect("pushed controller view");
+            let mut buttons = Vec::new();
+            collect_buttons(&top_view, &mut buttons);
+            assert_eq!(buttons.len(), 1);
+            (nav, buttons.into_iter().next().unwrap())
+        };
+
+        autoreleasepool(|_| click_button(&detail_button));
+        assert!(
+            pump_main_until(2.0, || path.is_empty()),
+            "Dismiss on path-pushed page must pop NavigationPath"
+        );
+        #[cfg(target_os = "macos")]
+        assert!(
+            pump_main_until(2.0, || view::subviews(rendered.view()).len() == 1),
+            "macOS stack must return to root page"
+        );
+        #[cfg(target_os = "ios")]
+        assert!(
+            pump_main_until(2.0, || nav.viewControllers().count() == 1),
+            "iOS UINavigationController must return to root controller"
+        );
+    }
+
+    fn navigation_closure_link_pushed_page_pops_on_dismiss() {
+        let rendered = resolve::render(NavigationStack::new(NavigationView::new(
+            "Root",
+            NavigationLink::new("Push Closure Page", || {
+                NavigationView::new(
+                    "Closure Page",
+                    button("Dismiss Closure Page").action(|dismiss: Dismiss| dismiss.dismiss()),
+                )
+            }),
+        )));
+
+        let mut root_buttons = Vec::new();
+        collect_buttons(rendered.view(), &mut root_buttons);
+        assert_eq!(root_buttons.len(), 1);
+        autoreleasepool(|_| click_button(&root_buttons[0]));
+
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                pump_main_until(2.0, || view::subviews(rendered.view()).len() == 2),
+                "NavigationLink must push closure page onto stack"
+            );
+            let pages = view::subviews(rendered.view());
+            let mut detail_buttons = Vec::new();
+            collect_buttons(&pages[1], &mut detail_buttons);
+            assert_eq!(detail_buttons.len(), 1);
+            autoreleasepool(|_| click_button(&detail_buttons[0]));
+            assert!(
+                pump_main_until(2.0, || view::subviews(rendered.view()).len() == 1),
+                "Dismiss on closure-pushed page must pop back to root"
+            );
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            let nav = find_nav_controller(rendered.view());
+            assert!(
+                pump_main_until(2.0, || nav.viewControllers().count() == 2),
+                "NavigationLink must push closure controller"
+            );
+            let top_view = nav
+                .topViewController()
+                .and_then(|c| c.view())
+                .expect("top controller view");
+            let mut detail_buttons = Vec::new();
+            collect_buttons(&top_view, &mut detail_buttons);
+            assert_eq!(detail_buttons.len(), 1);
+            autoreleasepool(|_| click_button(&detail_buttons[0]));
+            assert!(
+                pump_main_until(2.0, || nav.viewControllers().count() == 1),
+                "Dismiss on closure-pushed page must pop back to root"
+            );
+        }
+    }
+
+    fn navigation_root_preserves_enclosing_dismiss_while_pushed_page_pops() {
+        let outer_dismissed = Rc::new(Cell::new(0usize));
+        let outer_counter = Rc::clone(&outer_dismissed);
+        let path = NavigationPath::from(vec![1_i32]);
+        let stack_path = path.clone();
+
+        let rendered = resolve::render_with(
+            NavigationStack::with_path(
+                stack_path,
+                NavigationView::new(
+                    "Root",
+                    button("Dismiss Outer").action(|dismiss: Dismiss| dismiss.dismiss()),
+                ),
+            )
+            .destination(|_route: i32| {
+                NavigationView::new(
+                    "Detail",
+                    button("Pop Pushed").action(|dismiss: Dismiss| dismiss.dismiss()),
+                )
+            }),
+            |env| {
+                env.insert(State(Dismiss::new(move || {
+                    outer_counter.set(outer_counter.get() + 1);
+                })));
+            },
+        );
+
+        #[cfg(target_os = "macos")]
+        {
+            let pages = view::subviews(rendered.view());
+            assert_eq!(pages.len(), 2);
+            let mut pushed_buttons = Vec::new();
+            collect_buttons(&pages[1], &mut pushed_buttons);
+            assert_eq!(pushed_buttons.len(), 1);
+            autoreleasepool(|_| click_button(&pushed_buttons[0]));
+            assert!(
+                pump_main_until(2.0, || path.is_empty()
+                    && view::subviews(rendered.view()).len() == 1),
+                "Dismiss on pushed page must pop without invoking outer Dismiss"
+            );
+            assert_eq!(outer_dismissed.get(), 0);
+
+            let pages = view::subviews(rendered.view());
+            let mut root_buttons = Vec::new();
+            collect_buttons(&pages[0], &mut root_buttons);
+            assert_eq!(root_buttons.len(), 1);
+            autoreleasepool(|_| click_button(&root_buttons[0]));
+            assert_eq!(
+                outer_dismissed.get(),
+                1,
+                "Dismiss on root page must invoke enclosing Dismiss"
+            );
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            let nav = find_nav_controller(rendered.view());
+            let controllers = nav.viewControllers();
+            assert_eq!(controllers.count(), 2);
+            let top_view = controllers
+                .objectAtIndex(1)
+                .view()
+                .expect("pushed controller view");
+            let mut pushed_buttons = Vec::new();
+            collect_buttons(&top_view, &mut pushed_buttons);
+            assert_eq!(pushed_buttons.len(), 1);
+            autoreleasepool(|_| click_button(&pushed_buttons[0]));
+            assert!(
+                pump_main_until(2.0, || path.is_empty()
+                    && nav.viewControllers().count() == 1),
+                "Dismiss on pushed page must pop without invoking outer Dismiss"
+            );
+            assert_eq!(outer_dismissed.get(), 0);
+
+            let root_view = nav
+                .viewControllers()
+                .objectAtIndex(0)
+                .view()
+                .expect("root controller view");
+            let mut root_buttons = Vec::new();
+            collect_buttons(&root_view, &mut root_buttons);
+            assert_eq!(root_buttons.len(), 1);
+            autoreleasepool(|_| click_button(&root_buttons[0]));
+            assert_eq!(
+                outer_dismissed.get(),
+                1,
+                "Dismiss on root page must invoke enclosing Dismiss"
+            );
+        }
+    }
+
+    fn anchored_overlay_dismiss_closes_overlay_and_shadows_pushed_page() {
+        let overlay_open = binding(true);
+        let overlay_for_view = overlay_open.clone();
+        let path = NavigationPath::from(vec![1_i32]);
+        let stack_path = path.clone();
+
+        let rendered = resolve::render(
+            NavigationStack::with_path(stack_path, NavigationView::new("Root", text("Root")))
+                .destination(move |_| {
+                    let overlay_open = overlay_for_view.clone();
+                    NavigationView::new(
+                        "Detail",
+                        vstack((
+                            button("Pop Page").action(|dismiss: Dismiss| dismiss.dismiss()),
+                            text("Anchor").anchored_overlay(
+                                AnchoredOverlay::new(&overlay_open, || {
+                                    button("Close Overlay")
+                                        .action(|dismiss: Dismiss| dismiss.dismiss())
+                                })
+                                .dismissal(Dismissal::Manual),
+                            ),
+                        )),
+                    )
+                }),
+        );
+
+        let window = leaf::attach(mtm(), rendered.view());
+        verify_overlay_dismiss(rendered.view(), &window, &overlay_open, &path);
+        drop(window);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn verify_overlay_dismiss(
+        rendered_view: &PlatformView,
+        _window: &cocoa_ui::appkit::Window,
+        overlay_open: &waterui::Binding<bool>,
+        path: &NavigationPath<i32>,
+    ) {
+        let parent = cocoa_ui::appkit::window_of(rendered_view).expect("parent NSWindow");
+        assert!(
+            pump_main_until(2.0, || autoreleasepool(|_| {
+                parent
+                    .childWindows()
+                    .is_some_and(|children| !children.is_empty())
+            })),
+            "AnchoredOverlay must present its NSPanel"
+        );
+        let panel = autoreleasepool(|_| parent.childWindows().unwrap().objectAtIndex(0));
+        let panel_content = panel.contentView().expect("overlay panel contentView");
+        let mut overlay_buttons = Vec::new();
+        collect_buttons(&panel_content, &mut overlay_buttons);
+        assert_eq!(overlay_buttons.len(), 1);
+        autoreleasepool(|_| click_button(&overlay_buttons[0]));
+        assert!(
+            pump_main_until(2.0, || !overlay_open.snapshot()),
+            "Dismiss inside AnchoredOverlay must close it"
+        );
+        assert_eq!(
+            path.len(),
+            1,
+            "closing AnchoredOverlay must not pop enclosing NavigationStack page"
+        );
+
+        let pages = view::subviews(rendered_view);
+        let mut pushed_buttons = Vec::new();
+        collect_buttons(&pages[1], &mut pushed_buttons);
+        assert_eq!(pushed_buttons.len(), 1);
+        autoreleasepool(|_| click_button(&pushed_buttons[0]));
+        assert!(
+            pump_main_until(2.0, || path.is_empty()),
+            "Dismiss on pushed page must pop the stack after overlay closes"
+        );
+    }
+
+    #[cfg(target_os = "ios")]
+    fn verify_overlay_dismiss(
+        rendered_view: &PlatformView,
+        window: &cocoa_ui::objc2_ui_kit::UIWindow,
+        overlay_open: &waterui::Binding<bool>,
+        path: &NavigationPath<i32>,
+    ) {
+        let window_view: &PlatformView = window;
+        let find_overlay_button = || {
+            view::subviews(window_view).into_iter().find_map(|sub| {
+                if std::ptr::eq(&raw const *sub, std::ptr::from_ref(rendered_view)) {
+                    return None;
+                }
+                let mut buttons = Vec::new();
+                collect_buttons(&sub, &mut buttons);
+                buttons.into_iter().next()
+            })
+        };
+        assert!(
+            pump_main_until(2.0, || autoreleasepool(|_| find_overlay_button().is_some())),
+            "AnchoredOverlay must present its button in passthrough host"
+        );
+        let overlay_btn = autoreleasepool(|_| find_overlay_button().unwrap());
+        autoreleasepool(|_| click_button(&overlay_btn));
+        assert!(
+            pump_main_until(2.0, || !overlay_open.snapshot()),
+            "Dismiss inside AnchoredOverlay must close it"
+        );
+        assert_eq!(
+            path.len(),
+            1,
+            "closing AnchoredOverlay must not pop enclosing NavigationStack page"
+        );
+
+        let nav = find_nav_controller(rendered_view);
+        let top_view = nav
+            .topViewController()
+            .and_then(|c| c.view())
+            .expect("pushed controller view");
+        let mut pushed_buttons = Vec::new();
+        collect_buttons(&top_view, &mut pushed_buttons);
+        assert_eq!(pushed_buttons.len(), 1);
+        autoreleasepool(|_| click_button(&pushed_buttons[0]));
+        assert!(
+            pump_main_until(2.0, || path.is_empty()),
+            "Dismiss on pushed page must pop the stack after overlay closes"
         );
     }
 }

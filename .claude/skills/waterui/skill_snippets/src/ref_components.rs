@@ -1613,6 +1613,7 @@ pub fn components_a11y_explicit_prose() {
 
     let _ = Divider.a11y_state(AccessibilityState::new().selected(true));
     let _ = Divider.a11y_children(AccessibilityChildren::ExcludeDescendants);
+    let _ = Divider.a11y_children(AccessibilityChildren::Combine);
     let _ = Divider.a11y_children(AccessibilityChildren::Automatic);
     let _ = Divider.a11y_geometry(AccessibilityGeometry::Allocation);
     let _ = Divider.a11y_geometry(AccessibilityGeometry::Region(Rect::new(
@@ -1651,7 +1652,7 @@ pub fn components_block_39() {
 // Block 40 — `Sheet` modal presentation
 // ---------------------------------------------------------------------------
 pub fn components_block_40() {
-    use waterui::sheet::{Sheet, SheetDetent, SheetDismiss};
+    use waterui::sheet::{Sheet, SheetDetent};
 
     let open = binding(false);
     let _ = button("Filters")
@@ -1663,7 +1664,7 @@ pub fn components_block_40() {
             Sheet::new(&open, || {
                 vstack((
                     text("Filter options"),
-                    button("Done").action(|sheet: SheetDismiss| sheet.dismiss()),
+                    button("Done").action(|dismiss: Dismiss| dismiss.dismiss()),
                 ))
             })
             .detents([SheetDetent::Medium, SheetDetent::Large])

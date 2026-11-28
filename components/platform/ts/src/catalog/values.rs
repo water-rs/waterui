@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 
 use nami::{Computed, Signal as _, SignalExt as _};
 use suiteki::Str;
+use waterui_accessibility::AccessibilityChildren;
 use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment};
 use waterui_core::{AnyView, Environment, flatten_signal};
 use waterui_graphics::WorkingColor;
@@ -1103,6 +1104,31 @@ pub enum ScrollAxis {
     Horizontal,
     /// Both axes.
     Both,
+}
+
+/// How descendant views contribute to a view's accessibility semantics,
+/// mirroring Rust's [`AccessibilityChildren`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, TsType)]
+#[non_exhaustive]
+pub enum A11yChildrenValue {
+    /// Let the backend choose the default child exposure behavior.
+    #[default]
+    Automatic,
+    /// Hide descendants and expose only this node.
+    ExcludeDescendants,
+    /// Merge descendants' labels in reading order and keep their actions on
+    /// this element, hiding the merged descendants as standalone children.
+    Combine,
+}
+
+impl From<A11yChildrenValue> for AccessibilityChildren {
+    fn from(value: A11yChildrenValue) -> Self {
+        match value {
+            A11yChildrenValue::Automatic => Self::Automatic,
+            A11yChildrenValue::ExcludeDescendants => Self::ExcludeDescendants,
+            A11yChildrenValue::Combine => Self::Combine,
+        }
+    }
 }
 
 /// What a [`JsAction`] is called with: the event's values as a tuple, in
