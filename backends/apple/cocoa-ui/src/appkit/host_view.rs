@@ -12,13 +12,14 @@ use std::fmt;
 use std::ptr;
 use std::rc::Rc;
 
+use block2::RcBlock;
 use objc2::AnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::{Bool, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAccessibility, NSAccessibilityCustomAction, NSDragOperation, NSDraggingInfo, NSEvent,
-    NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSAccessibility, NSAccessibilityCustomAction, NSButton, NSControl, NSDragOperation,
+    NSDraggingInfo, NSEvent, NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{
     NSArray, NSEdgeInsets, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -138,6 +139,10 @@ pub struct HostViewIvars {
     /// When set, an empty `accessibilityTitle` falls back to the combined
     /// text of visible descendant labels and accessible elements.
     combines_accessibility_title: Cell<bool>,
+    /// Whether the host merges its descendants' accessibility into itself —
+    /// `AccessibilityChildren::Combine` semantics for any role
+    /// (water-rs/waterui#4385).
+    combines_accessibility_children: Cell<bool>,
 }
 
 impl fmt::Debug for HostViewIvars {
@@ -195,6 +200,10 @@ impl fmt::Debug for HostViewIvars {
             .field(
                 "combines_accessibility_title",
                 &self.combines_accessibility_title.get(),
+            )
+            .field(
+                "combines_accessibility_children",
+                &self.combines_accessibility_children.get(),
             )
             .finish()
     }
@@ -674,6 +683,11 @@ define_class!(
                 if let Some(handler) = handler {
                     return handler(self);
                 }
+                if self.ivars().combines_accessibility_children.get()
+                    && let Some(target) = self.single_pressable_descendant()
+                {
+                    return Self::perform_descendant_press(&target);
+                }
                 // SAFETY: see the module safety note.
                 unsafe { msg_send![super(self), accessibilityPerformPress] }
             })
@@ -784,14 +798,17 @@ define_class!(
             })
         }
 
-        // SAFETY: see the module safety note. A retired or accessibility-hidden
-        // host reports no accessibility children.
+        // SAFETY: see the module safety note. A retired, accessibility-hidden,
+        // or child-combining host reports no standalone accessibility children.
         #[unsafe(method_id(accessibilityChildren))]
         fn accessibility_children_override(
             &self,
         ) -> Option<Retained<NSArray<objc2::runtime::AnyObject>>> {
             guarded("HostView accessibilityChildren", || {
-                if self.ivars().retired.get() || self.ivars().accessibility_hidden.get() {
+                if self.ivars().retired.get()
+                    || self.ivars().accessibility_hidden.get()
+                    || self.ivars().combines_accessibility_children.get()
+                {
                     return Some(NSArray::new());
                 }
                 // SAFETY: see the module safety note.
@@ -808,6 +825,42 @@ define_class!(
             }
             // SAFETY: see the module safety note.
             unsafe { msg_send![super(self), isAccessibilityElement] }
+        }
+
+        // SAFETY: see the module safety note. An explicit label set on the
+        // host wins; a combining host otherwise announces its descendants'
+        // labels merged in reading order.
+        #[unsafe(method_id(accessibilityLabel))]
+        fn accessibility_label_override(&self) -> Option<Retained<NSString>> {
+            guarded("HostView accessibilityLabel", || {
+                // SAFETY: see the module safety note.
+                let inherited: Option<Retained<NSString>> =
+                    unsafe { msg_send![super(self), accessibilityLabel] };
+                if !self.ivars().combines_accessibility_children.get()
+                    || inherited.as_ref().is_some_and(|label| !label.is_empty())
+                {
+                    return inherited;
+                }
+                self.combined_accessibility_label()
+            })
+        }
+
+        // SAFETY: see the module safety note. A combining host re-publishes
+        // its pressable descendants' actions as custom actions so nested
+        // controls remain reachable after the descendants are folded.
+        #[unsafe(method_id(accessibilityCustomActions))]
+        fn accessibility_custom_actions_override(
+            &self,
+        ) -> Option<Retained<NSArray<NSAccessibilityCustomAction>>> {
+            guarded("HostView accessibilityCustomActions", || {
+                // SAFETY: see the module safety note.
+                let inherited: Option<Retained<NSArray<NSAccessibilityCustomAction>>> =
+                    unsafe { msg_send![super(self), accessibilityCustomActions] };
+                if !self.ivars().combines_accessibility_children.get() {
+                    return inherited;
+                }
+                Some(self.merged_accessibility_custom_actions(inherited.as_deref()))
+            })
         }
 
         // SAFETY: see the module safety note. When combining descendant
@@ -853,14 +906,15 @@ define_class!(
 
         // SAFETY: see the module safety note. The override above puts
         // `AXPress` on every host that is an accessibility element; the
-        // action is allowed only while a press handler is installed, so a
-        // host that is an element for another reason (a role set through
-        // accessibility metadata) advertises no press it cannot perform.
+        // action is allowed only while a press handler is installed (or while
+        // combining children around a single pressable descendant), so a host
+        // that is an element for another reason advertises no press it cannot
+        // perform.
         #[unsafe(method(isAccessibilitySelectorAllowed:))]
         fn is_accessibility_selector_allowed_override(&self, selector: Sel) -> bool {
             guarded("HostView isAccessibilitySelectorAllowed:", || {
                 if selector == sel!(accessibilityPerformPress) {
-                    return self.ivars().accessibility_press.borrow().is_some();
+                    return self.has_accessibility_press_action();
                 }
                 if selector == sel!(accessibilityPerformIncrement) {
                     return self.ivars().accessibility_increment.borrow().is_some();
@@ -1318,6 +1372,175 @@ impl HostView {
     /// accessible elements whenever no explicit title was set on this host.
     pub(crate) fn set_combines_accessibility_title(&self, combines: bool) {
         self.ivars().combines_accessibility_title.set(combines);
+    }
+
+    /// Merges descendants' labels in reading order and re-publishes their
+    /// press actions on this host while hiding the merged descendants from
+    /// `accessibilityChildren` (`AccessibilityChildren::Combine`,
+    /// water-rs/waterui#4385).
+    pub fn set_combines_accessibility_children(&self, combines: bool) {
+        self.ivars().combines_accessibility_children.set(combines);
+    }
+
+    fn has_accessibility_press_action(&self) -> bool {
+        self.ivars().accessibility_press.borrow().is_some()
+            || (self.ivars().combines_accessibility_children.get()
+                && self.single_pressable_descendant().is_some())
+    }
+
+    /// The accessible descendant views this host flattens when combining
+    /// children, in reading order: hidden, retired, and accessibility-hidden
+    /// subtrees are skipped, `Label` leaves and accessibility elements are
+    /// collected, and transparent container views are descended into.
+    fn accessible_descendants(&self) -> Vec<Retained<NSView>> {
+        fn collect(view: &NSView, out: &mut Vec<Retained<NSView>>) {
+            for subview in &view.subviews() {
+                if subview.isHidden() {
+                    continue;
+                }
+                if let Some(host) = subview.downcast_ref::<HostView>()
+                    && (host.ivars().retired.get() || host.ivars().accessibility_hidden.get())
+                {
+                    continue;
+                }
+                if subview.downcast_ref::<super::Label>().is_some() {
+                    out.push(subview);
+                    continue;
+                }
+                let element = ProtocolObject::<dyn NSAccessibility>::from_ref(&*subview);
+                let empty_children = element
+                    .accessibilityChildren()
+                    .is_some_and(|children| children.is_empty());
+                if element.isAccessibilityElement() {
+                    let is_host_group = subview.downcast_ref::<HostView>().is_some_and(|host| {
+                        !host.ivars().combines_accessibility_children.get() && !empty_children
+                    });
+                    if is_host_group {
+                        if HostView::descendant_label(&subview).is_some()
+                            || HostView::is_pressable_descendant(&subview)
+                        {
+                            out.push(subview.clone());
+                        }
+                        collect(&subview, out);
+                    } else {
+                        out.push(subview);
+                    }
+                    continue;
+                }
+                collect(&subview, out);
+            }
+        }
+        let mut elements = Vec::new();
+        collect(self, &mut elements);
+        elements
+    }
+
+    fn descendant_label(subview: &NSView) -> Option<String> {
+        let element = ProtocolObject::<dyn NSAccessibility>::from_ref(subview);
+        if let Some(label) = element
+            .accessibilityLabel()
+            .filter(|value| !value.is_empty())
+        {
+            return Some(label.to_string());
+        }
+        if let Some(label) = subview.downcast_ref::<super::Label>() {
+            return label
+                .stripped_text()
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string());
+        }
+        element
+            .accessibilityTitle()
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+    }
+
+    fn is_pressable_descendant(subview: &NSView) -> bool {
+        if let Some(button) = subview.downcast_ref::<NSButton>() {
+            return button.isEnabled();
+        }
+        let element = ProtocolObject::<dyn NSAccessibility>::from_ref(subview);
+        if !element.isAccessibilityEnabled() {
+            return false;
+        }
+        if let Some(host) = subview.downcast_ref::<Self>() {
+            return host.has_accessibility_press_action();
+        }
+        if subview.downcast_ref::<super::Label>().is_some() {
+            return false;
+        }
+        // SAFETY: `isAccessibilitySelectorAllowed:` takes a selector and
+        // returns `BOOL`.
+        unsafe {
+            msg_send![subview, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)]
+        }
+    }
+
+    fn perform_descendant_press(target: &NSView) -> bool {
+        if let Some(button) = target.downcast_ref::<NSButton>() {
+            if !button.isEnabled() {
+                return false;
+            }
+            // SAFETY: `performClick:` invokes the button's target-action on the
+            // main thread.
+            unsafe { NSControl::performClick(button, None) };
+            return true;
+        }
+        // SAFETY: `target` answered `true` to
+        // `isAccessibilitySelectorAllowed:accessibilityPerformPress`.
+        unsafe { msg_send![target, accessibilityPerformPress] }
+    }
+
+    fn single_pressable_descendant(&self) -> Option<Retained<NSView>> {
+        let mut found: Option<Retained<NSView>> = None;
+        for element in self.accessible_descendants() {
+            if Self::is_pressable_descendant(&element) {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(element);
+            }
+        }
+        found
+    }
+
+    fn combined_accessibility_label(&self) -> Option<Retained<NSString>> {
+        let labels: Vec<String> = self
+            .accessible_descendants()
+            .iter()
+            .filter_map(|element| Self::descendant_label(element))
+            .collect();
+        (!labels.is_empty()).then(|| NSString::from_str(&labels.join(", ")))
+    }
+
+    fn merged_accessibility_custom_actions(
+        &self,
+        inherited: Option<&NSArray<NSAccessibilityCustomAction>>,
+    ) -> Retained<NSArray<NSAccessibilityCustomAction>> {
+        let mut actions: Vec<Retained<NSAccessibilityCustomAction>> = Vec::new();
+        for subview in self.accessible_descendants() {
+            if Self::is_pressable_descendant(&subview)
+                && let Some(name) = Self::descendant_label(&subview)
+            {
+                let target = subview.clone();
+                let block = RcBlock::new(move || -> Bool {
+                    Bool::new(Self::perform_descendant_press(&target))
+                });
+                actions.push(NSAccessibilityCustomAction::initWithName_handler(
+                    NSAccessibilityCustomAction::alloc(),
+                    &NSString::from_str(&name),
+                    Some(&*block),
+                ));
+            }
+            let element = ProtocolObject::<dyn NSAccessibility>::from_ref(&*subview);
+            if let Some(own) = element.accessibilityCustomActions() {
+                actions.extend(own.to_vec());
+            }
+        }
+        if let Some(inherited) = inherited {
+            actions.extend(inherited.to_vec());
+        }
+        NSArray::from_retained_slice(&actions)
     }
 
     fn combined_accessibility_title(&self) -> Option<Retained<NSString>> {

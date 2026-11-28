@@ -21,9 +21,10 @@ use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSMutableSet, NSObject, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
     NSObjectUIAccessibility, NSObjectUIAccessibilityAction, UIAccessibilityCustomAction,
-    UIAccessibilityTraitButton, UIAccessibilityTraitLink, UICommand, UIEdgeInsets, UIEvent,
-    UIGestureRecognizerState, UIHoverGestureRecognizer, UIKeyCommand, UIMenu, UIPress,
-    UIPressesEvent, UITraitDisplayScale, UITraitEnvironment, UIView,
+    UIAccessibilityTraitButton, UIAccessibilityTraitLink, UIAccessibilityTraitNotEnabled, UIButton,
+    UICommand, UIControlEvents, UIEdgeInsets, UIEvent, UIGestureRecognizerState,
+    UIHoverGestureRecognizer, UIKeyCommand, UIMenu, UIPress, UIPressesEvent, UITraitDisplayScale,
+    UITraitEnvironment, UIView,
 };
 
 use super::key_commands::{KeyCommandRegistry, KeyCommands};
@@ -540,6 +541,11 @@ define_class!(
                 let handler = self.ivars().accessibility_activate.borrow().clone();
                 if let Some(handler) = handler {
                     return handler(self);
+                }
+                if self.ivars().combines_accessibility_children.get()
+                    && let Some(target) = self.single_activatable_descendant()
+                {
+                    return Self::activate_descendant(&target, self.mtm());
                 }
                 // SAFETY: see the module safety note.
                 unsafe { msg_send![super(self), accessibilityActivate] }
@@ -1130,15 +1136,15 @@ impl HostView {
     }
 
     /// Whether the host merges its descendants' accessibility into itself —
-    /// `SwiftUI` `.accessibilityElement(children: .combine)` semantics for
-    /// the `Button`-trait element a tappable host becomes
-    /// (water-rs/waterui#2975).
+    /// `AccessibilityChildren::Combine` semantics for any role, as well as the
+    /// `Button`-trait element a tappable host becomes
+    /// (water-rs/waterui#2975, water-rs/waterui#4385).
     ///
-    /// `VoiceOver` treats a `Button` element as a leaf, so while set an
-    /// empty `accessibilityLabel` reads the descendants' labels joined
-    /// and `accessibilityCustomActions` re-publishes the descendants'
-    /// activatable elements, keeping nested controls reachable through
-    /// the `VoiceOver` actions rotor.
+    /// While set, an empty `accessibilityLabel` reads the descendants' labels
+    /// joined in reading order, `accessibilityCustomActions` re-publishes the
+    /// descendants' activatable elements, and when the host carries no
+    /// `accessibilityActivate` handler of its own, activating forwards to a
+    /// lone activatable descendant.
     ///
     /// Adjustable and text-input descendants cannot be merged — `UIKit`
     /// exposes no action that stands in for their interactions, so they
@@ -1148,13 +1154,13 @@ impl HostView {
     }
 
     /// The accessibility elements `view` flattens to for a combining
-    /// host, in `VoiceOver` order: subviews are walked in order, an
-    /// `accessibilityElementsHidden` subtree is skipped, an accessibility
+    /// host, in `VoiceOver` order: subviews are walked in order, hidden or
+    /// `accessibilityElementsHidden` subtrees are skipped, an accessibility
     /// element is a leaf, and any other view is descended into.
     fn accessible_descendants(&self) -> Vec<Retained<UIView>> {
         fn collect(view: &UIView, mtm: MainThreadMarker, out: &mut Vec<Retained<UIView>>) {
             for subview in &view.subviews() {
-                if subview.accessibilityElementsHidden(mtm) {
+                if subview.isHidden() || subview.accessibilityElementsHidden(mtm) {
                     continue;
                 }
                 if subview.isAccessibilityElement(mtm) {
@@ -1167,6 +1173,43 @@ impl HostView {
         let mut elements = Vec::new();
         collect(self, self.mtm(), &mut elements);
         elements
+    }
+
+    /// Activates an enabled descendant control (`UIButton` fires
+    /// `TouchUpInside`; custom elements run `accessibilityActivate`).
+    fn activate_descendant(target: &UIView, mtm: MainThreadMarker) -> bool {
+        if let Some(button) = target.downcast_ref::<UIButton>() {
+            if !button.isEnabled() {
+                return false;
+            }
+            button.sendActionsForControlEvents(UIControlEvents::TouchUpInside);
+            return true;
+        }
+        target.accessibilityActivate(mtm)
+    }
+
+    /// The lone enabled activatable descendant, when there is exactly one.
+    fn single_activatable_descendant(&self) -> Option<Retained<UIView>> {
+        let mtm = self.mtm();
+        // SAFETY: the trait constants are immutable `u64`s published by
+        // `UIKit`.
+        let (activatable, not_enabled) = unsafe {
+            (
+                UIAccessibilityTraitButton | UIAccessibilityTraitLink,
+                UIAccessibilityTraitNotEnabled,
+            )
+        };
+        let mut found: Option<Retained<UIView>> = None;
+        for element in self.accessible_descendants() {
+            let traits = element.accessibilityTraits(mtm);
+            if traits & activatable != 0 && traits & not_enabled == 0 {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(element);
+            }
+        }
+        found
     }
 
     /// The descendants' labels joined — what a combining host announces
@@ -1197,10 +1240,17 @@ impl HostView {
         let mtm = self.mtm();
         // SAFETY: the trait constants are immutable `u64`s published by
         // `UIKit`.
-        let activatable = unsafe { UIAccessibilityTraitButton | UIAccessibilityTraitLink };
+        let (activatable, not_enabled) = unsafe {
+            (
+                UIAccessibilityTraitButton | UIAccessibilityTraitLink,
+                UIAccessibilityTraitNotEnabled,
+            )
+        };
         let mut actions: Vec<Retained<UIAccessibilityCustomAction>> = Vec::new();
         for element in self.accessible_descendants() {
-            if element.accessibilityTraits(mtm) & activatable != 0
+            let traits = element.accessibilityTraits(mtm);
+            if traits & activatable != 0
+                && traits & not_enabled == 0
                 && let Some(name) = element
                     .accessibilityLabel(mtm)
                     .filter(|label| !label.is_empty())
@@ -1208,7 +1258,7 @@ impl HostView {
                 let element = element.clone();
                 let block = RcBlock::new(
                     move |_action: ptr::NonNull<UIAccessibilityCustomAction>| -> Bool {
-                        Bool::new(element.accessibilityActivate(mtm))
+                        Bool::new(Self::activate_descendant(&element, mtm))
                     },
                 );
                 // SAFETY: the action copies the handler block, whose copy

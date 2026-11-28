@@ -27,9 +27,9 @@ use waterui_ts::schema::TsType;
 use waterui_ts::JsViewBuilder;
 
 use super::values::{
-    BackgroundValue, BorderValue, ColorValue, HorizontalAlign, JsAction, PaddingValue,
-    PickerOption, ProgressStyleValue, ScrollAxis, ShadowValue, ShapeValue, StackAlign, TextContent,
-    UrlValue, VerticalAlign,
+    A11yChildrenValue, BackgroundValue, BorderValue, ColorValue, HorizontalAlign, JsAction,
+    PaddingValue, PickerOption, ProgressStyleValue, ScrollAxis, ShadowValue, ShapeValue,
+    StackAlign, TextContent, UrlValue, VerticalAlign,
 };
 
 /// `<VStack>`: children stacked top to bottom.
@@ -867,6 +867,8 @@ pub struct Modifiers {
     a11y_id: Str,
     /// Hides the view from assistive technology without hiding it visually.
     a11y_hidden: bool,
+    /// Controls how descendant views contribute to accessibility.
+    a11y_children: A11yChildrenValue,
 }
 
 impl Modifiers {
@@ -986,5 +988,11 @@ impl Modifiers {
     #[must_use]
     pub const fn a11y_hidden(&self) -> bool {
         self.a11y_hidden
+    }
+
+    /// Controls how descendant views contribute to accessibility.
+    #[must_use]
+    pub const fn a11y_children(&self) -> A11yChildrenValue {
+        self.a11y_children
     }
 }

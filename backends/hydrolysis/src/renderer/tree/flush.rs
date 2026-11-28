@@ -1152,7 +1152,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         }
                         if let Some(claim) = claim {
                             renderer.drain_claim_scope(claim.node_id, &claim.env);
-                            if claim.synthesized {
+                            if claim
+                                .env
+                                .get::<AccessibilityChildren>()
+                                .is_some_and(AccessibilityChildren::combines_descendants)
+                            {
+                                renderer.combine_accessibility_descendants(claim.node_id);
+                            } else if claim.synthesized {
                                 renderer.collapse_synthesized_claim(claim.node_id);
                             }
                         }

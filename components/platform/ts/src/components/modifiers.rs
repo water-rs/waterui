@@ -21,8 +21,8 @@
 use nami::{Computed, SignalExt as _};
 use suiteki::Str;
 use waterui_accessibility::{
-    AccessibilityHidden, AccessibilityIdentifier, AccessibilityLabel, AccessibilityState,
-    AccessibilityStateSignal, AccessibilityValue,
+    AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier, AccessibilityLabel,
+    AccessibilityState, AccessibilityStateSignal, AccessibilityValue,
 };
 use waterui_controls::theme::ForegroundOverride;
 use waterui_core::env::Installed;
@@ -44,8 +44,8 @@ use waterui_ts::engine::{JsError, JsValue};
 use waterui_ts::{Bridge, FromJs as _};
 
 use crate::catalog::{
-    BackgroundValue, BorderValue, JsAction, PaddingValue, ShadowValue, ShapeValue, TextContent,
-    color_of,
+    A11yChildrenValue, BackgroundValue, BorderValue, JsAction, PaddingValue, ShadowValue,
+    ShapeValue, TextContent, color_of,
 };
 
 struct DisabledScope(Computed<bool>);
@@ -146,6 +146,13 @@ pub fn apply(
             Ok(AnyView::new(Metadata::new(
                 view,
                 AccessibilityHidden::new(hidden),
+            )))
+        }
+        "a11yChildren" => {
+            let behavior = A11yChildrenValue::from_js(value, bridge)?;
+            Ok(AnyView::new(Metadata::new(
+                view,
+                AccessibilityChildren::from(behavior),
             )))
         }
         other => Err(JsError::conversion(format!(

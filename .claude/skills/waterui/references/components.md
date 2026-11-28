@@ -1002,8 +1002,10 @@ build it with `Label::new(semantic_text, || content)`, which does this for you.
 Three more modifiers carry explicit semantics. `.a11y_state(..)` accepts either a
 constant `AccessibilityState` or a reactive signal of one. `.a11y_children(
 AccessibilityChildren::ExcludeDescendants)` hides every descendant and exposes only this
-node (`Automatic`, the default, leaves it to the backend) — the one-modifier form of the
-hidden-inner idiom above. `.a11y_geometry(AccessibilityGeometry::Allocation)` reports the
+node, `.a11y_children(AccessibilityChildren::Combine)` merges descendants' labels in
+reading order (unless `.a11y_label(..)` overrides it) and keeps their actions on this
+element for any role while hiding the merged descendants as standalone children, and
+`Automatic` (the default) leaves child exposure to the backend. `.a11y_geometry(AccessibilityGeometry::Allocation)` reports the
 whole frame the parent assigned instead of the view's own rectangle (a canvas whose
 drawing fills it, a gap allocated to a spacer), and `AccessibilityGeometry::Region(rect)`
 an explicit `Rect`; the default is `Response`. Hit testing, focus and drawing are

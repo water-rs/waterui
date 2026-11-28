@@ -421,6 +421,7 @@ fn trials() -> Vec<Trial> {
     tests.extend(a11y_actions_modifiers::trials());
     #[cfg(feature = "highlight")]
     tests.extend(code::trials());
+    tests.extend(a11y_combine::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
@@ -20045,6 +20046,243 @@ mod a11y_actions_modifiers {
                 leaf.view().accessibilityDecrement(mtm());
                 assert_eq!(rating.snapshot(), start);
             }
+        }
+    }
+}
+
+/// `AccessibilityChildren::Combine` merges descendant labels in reading order
+/// and forwards descendant actions on any role, independent of tap gestures
+/// (water-rs/waterui#4385).
+mod a11y_combine {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use libtest_mimic::Trial;
+    use waterui::ViewExt as _;
+    use waterui::accessibility::{AccessibilityChildren, AccessibilityRole};
+    use waterui::component::{button, hstack, text};
+
+    use super::resolve;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "a11y_combine::merges_labels_and_hides_children_for_any_role",
+                || {
+                    merges_labels_and_hides_children_for_any_role();
+                    Ok(())
+                },
+            ),
+            Trial::test("a11y_combine::explicit_label_wins_over_descendants", || {
+                explicit_label_wins_over_descendants();
+                Ok(())
+            }),
+            Trial::test(
+                "a11y_combine::forwards_single_and_multiple_descendant_actions",
+                || {
+                    forwards_single_and_multiple_descendant_actions();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn merges_labels_and_hides_children_for_any_role() {
+        let leaf = resolve::render(
+            hstack((
+                text("Alice"),
+                text("Secret").a11y_hidden(true),
+                text("Hey there"),
+                text("2m"),
+            ))
+            .a11y_role(AccessibilityRole::ListItem)
+            .a11y_children(AccessibilityChildren::Combine),
+        );
+        let view = leaf.view();
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::ProtocolObject;
+            use cocoa_ui::objc2_app_kit::NSAccessibility;
+
+            let element = ProtocolObject::<dyn NSAccessibility>::from_ref(view);
+            assert!(element.isAccessibilityElement());
+            assert_eq!(
+                element.accessibilityLabel().map(|s| s.to_string()),
+                Some(String::from("Alice, Hey there, 2m"))
+            );
+            assert_eq!(
+                element
+                    .accessibilityChildren()
+                    .map_or(0, |items| items.len()),
+                0,
+                "combined host must not expose merged descendants as standalone children"
+            );
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+
+            let mtm = super::mtm();
+            assert!(view.isAccessibilityElement(mtm));
+            assert_eq!(
+                view.accessibilityLabel(mtm).map(|s| s.to_string()),
+                Some(String::from("Alice, Hey there, 2m"))
+            );
+        }
+    }
+
+    fn explicit_label_wins_over_descendants() {
+        let leaf = resolve::render(
+            hstack((text("Part A"), text("Part B")))
+                .a11y_label("Custom Summary")
+                .a11y_children(AccessibilityChildren::Combine),
+        );
+        let view = leaf.view();
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::ProtocolObject;
+            use cocoa_ui::objc2_app_kit::NSAccessibility;
+
+            let element = ProtocolObject::<dyn NSAccessibility>::from_ref(view);
+            assert_eq!(
+                element.accessibilityLabel().map(|s| s.to_string()),
+                Some(String::from("Custom Summary"))
+            );
+            assert_eq!(
+                element
+                    .accessibilityChildren()
+                    .map_or(0, |items| items.len()),
+                0
+            );
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+
+            let mtm = super::mtm();
+            assert!(view.isAccessibilityElement(mtm));
+            assert_eq!(
+                view.accessibilityLabel(mtm).map(|s| s.to_string()),
+                Some(String::from("Custom Summary"))
+            );
+        }
+    }
+
+    fn forwards_single_and_multiple_descendant_actions() {
+        let single_pressed = Rc::new(Cell::new(0u32));
+        let single_leaf = resolve::render({
+            let single_pressed = Rc::clone(&single_pressed);
+            hstack((
+                text("Notifications"),
+                button("Enable").action(move || single_pressed.set(single_pressed.get() + 1)),
+            ))
+            .a11y_children(AccessibilityChildren::Combine)
+        });
+
+        let replied = Rc::new(Cell::new(0u32));
+        let archived = Rc::new(Cell::new(0u32));
+        let multi_leaf = resolve::render({
+            let replied = Rc::clone(&replied);
+            let archived = Rc::clone(&archived);
+            hstack((
+                text("Alice"),
+                button("Reply").action(move || replied.set(replied.get() + 1)),
+                button("Archive").action(move || archived.set(archived.get() + 1)),
+            ))
+            .a11y_children(AccessibilityChildren::Combine)
+        });
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::{Bool, ProtocolObject};
+            use cocoa_ui::objc2::{msg_send, sel};
+            use cocoa_ui::objc2_app_kit::NSAccessibility;
+
+            let single_view = single_leaf.view();
+            let single_el = ProtocolObject::<dyn NSAccessibility>::from_ref(single_view);
+            assert_eq!(
+                single_el.accessibilityLabel().map(|s| s.to_string()),
+                Some(String::from("Notifications, Enable"))
+            );
+            // SAFETY: `isAccessibilitySelectorAllowed:` and
+            // `accessibilityPerformPress` are standard `NSAccessibility` selectors.
+            let allowed: bool = unsafe {
+                msg_send![single_view, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)]
+            };
+            assert!(allowed, "single-button combined host must allow AXPress");
+            // SAFETY: `accessibilityPerformPress` is a standard `NSAccessibility` selector returning `BOOL`.
+            let pressed: bool = unsafe { msg_send![single_view, accessibilityPerformPress] };
+            assert!(pressed);
+            assert_eq!(single_pressed.get(), 1);
+
+            let multi_view = multi_leaf.view();
+            let multi_el = ProtocolObject::<dyn NSAccessibility>::from_ref(multi_view);
+            assert_eq!(
+                multi_el.accessibilityLabel().map(|s| s.to_string()),
+                Some(String::from("Alice, Reply, Archive"))
+            );
+            let actions = multi_el
+                .accessibilityCustomActions()
+                .expect("multi-button combined host must expose custom actions");
+            let names: Vec<String> = actions.iter().map(|a| a.name().to_string()).collect();
+            assert_eq!(names, vec![String::from("Reply"), String::from("Archive")]);
+            for action in &actions {
+                let handler = action.handler();
+                assert!(
+                    !handler.is_null(),
+                    "custom action must carry a handler block"
+                );
+                // SAFETY: `handler` is a valid non-null `block2::DynBlock<dyn Fn() -> Bool>`
+                // owned by `action`.
+                let result: Bool = unsafe { (*handler).call(()) };
+                assert!(result.as_bool());
+            }
+            assert_eq!(replied.get(), 1);
+            assert_eq!(archived.get(), 1);
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::{
+                NSObjectUIAccessibility as _, NSObjectUIAccessibilityAction as _,
+            };
+
+            let mtm = super::mtm();
+            let single_view = single_leaf.view();
+            assert_eq!(
+                single_view.accessibilityLabel(mtm).map(|s| s.to_string()),
+                Some(String::from("Notifications, Enable"))
+            );
+            assert!(single_view.accessibilityActivate(mtm));
+            assert_eq!(single_pressed.get(), 1);
+
+            let multi_view = multi_leaf.view();
+            assert_eq!(
+                multi_view.accessibilityLabel(mtm).map(|s| s.to_string()),
+                Some(String::from("Alice, Reply, Archive"))
+            );
+            let actions = multi_view
+                .accessibilityCustomActions(mtm)
+                .expect("multi-button combined host must expose custom actions");
+            let names: Vec<String> = actions.iter().map(|a| a.name().to_string()).collect();
+            assert_eq!(names, vec![String::from("Reply"), String::from("Archive")]);
+            for action in &actions {
+                // SAFETY: `actionHandler` returns the action's handler block pointer.
+                let handler = unsafe { action.actionHandler() };
+                assert!(
+                    !handler.is_null(),
+                    "custom action must carry a handler block"
+                );
+                // SAFETY: `handler` is a valid non-null block owned by `action`.
+                let result = unsafe { (*handler).call((core::ptr::NonNull::from(&*action),)) };
+                assert!(result.as_bool());
+            }
+            assert_eq!(replied.get(), 1);
+            assert_eq!(archived.get(), 1);
         }
     }
 }

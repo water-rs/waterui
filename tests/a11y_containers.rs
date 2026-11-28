@@ -236,3 +236,54 @@ fn long_press_observer_preserves_a_plain_button_node(ui: UiBuilder) {
         .label("New tab")
         .assert_exists();
 }
+
+/// `AccessibilityChildren::Combine` merges descendants' labels in reading order
+/// into one element for any role and hides the merged descendants.
+#[waterui::test(viewport = (320, 200))]
+fn combine_merges_descendant_labels_and_hides_children_for_any_role(ui: UiBuilder) {
+    use waterui::component::hstack;
+
+    let mut app = ui.mount(|| {
+        hstack((text("Alice"), text("Hey there"), text("2m")))
+            .a11y_role(AccessibilityRole::ListItem)
+            .a11y_children(AccessibilityChildren::Combine)
+    });
+    app.query()
+        .role(Role::LIST_ITEM)
+        .label("Alice, Hey there, 2m")
+        .assert_exists();
+    app.query().role(Role::LABEL).assert_not_exists();
+}
+
+/// `AccessibilityChildren::Combine` works without an explicit role, respects
+/// explicit `.a11y_label` override, skips hidden descendants, and promotes a
+/// lone descendant button's action onto the combined element.
+#[waterui::test(viewport = (320, 200))]
+fn combine_promotes_single_action_and_respects_explicit_label_and_hidden(ui: UiBuilder) {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use waterui::component::hstack;
+
+    let replied = Rc::new(Cell::new(0u32));
+    let replied_action = Rc::clone(&replied);
+    let mut app = ui.mount(move || {
+        let replied_action = Rc::clone(&replied_action);
+        vstack((
+            hstack((
+                text("Alice"),
+                text("Secret").a11y_hidden(true),
+                button("Reply").action(move || replied_action.set(replied_action.get() + 1)),
+            ))
+            .a11y_children(AccessibilityChildren::Combine),
+            hstack((text("Part A"), text("Part B")))
+                .a11y_label("Custom Summary")
+                .a11y_children(AccessibilityChildren::Combine),
+        ))
+    });
+
+    app.query().label("Alice, Reply").tap();
+    assert_eq!(replied.get(), 1);
+    app.query().label("Custom Summary").assert_exists();
+    app.query().role(Role::BUTTON).assert_not_exists();
+    app.query().role(Role::LABEL).assert_not_exists();
+}
