@@ -1263,16 +1263,20 @@ pub mod components_block_32 {
         };
         let _ = {
             Picker::new(text!("Sort by"), options, &choice) // labels may be localized text!
-                .style(PickerStyle::Menu) // Automatic | Menu | Radio | Segmented
+                .style(PickerStyle::Menu) // Automatic | Menu | Radio | Segmented | Wheel
                 .hide_label()
         };
 
-        // The remaining style variants named in the trailing comment, and the
-        // `.segmented()` shorthand named in the prose.
+        // The remaining style variants, shorthands, and ambient `picker_style`.
         let _ = PickerStyle::Automatic;
         let _ = PickerStyle::Radio;
         let _ = PickerStyle::Segmented;
+        let _ = PickerStyle::Wheel;
+        let _ = Picker::new("Size", sizes(), &choice).menu();
+        let _ = Picker::new("Size", sizes(), &choice).radio();
         let _ = Picker::new("Size", sizes(), &choice).segmented();
+        let _ = Picker::new("Size", sizes(), &choice).wheel();
+        let _ = vstack((picker("Size", sizes(), &choice),)).picker_style(PickerStyle::Menu);
 
         // Keep the other picker imports live so they are proven to resolve.
         use waterui::component::label::TitleLabel;

@@ -3997,7 +3997,25 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     }
                 }
                 if let Some(node) = self.keyboard_focus_node() {
-                    let step_action = if step_forward {
+                    #[cfg(feature = "picker")]
+                    let wheel_node = matches!(
+                        self.accessibility.actions.get(&node),
+                        Some(AccessibilityActionTarget::PickerWheel { .. })
+                    );
+                    #[cfg(not(feature = "picker"))]
+                    let wheel_node = false;
+                    let step_action = if wheel_node {
+                        // On a vertical wheel drum, ArrowDown steps to the next
+                        // item (below) and ArrowUp steps to the previous item (above).
+                        if matches!(
+                            key,
+                            KeyCode::Named(value) if value == "ArrowDown" || value == "ArrowRight"
+                        ) {
+                            AccessibilityAction::Increment
+                        } else {
+                            AccessibilityAction::Decrement
+                        }
+                    } else if step_forward {
                         AccessibilityAction::Increment
                     } else {
                         AccessibilityAction::Decrement
@@ -5265,7 +5283,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 }
 
 impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
-    #[cfg(any(test, feature = "list"))]
+    #[cfg(any(test, feature = "list", feature = "picker"))]
     pub(crate) fn bind_interaction_target(
         &mut self,
         key: InteractionKey,

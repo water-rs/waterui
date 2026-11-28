@@ -393,12 +393,29 @@ fn trials() -> Vec<Trial> {
             tests.extend(capture_order::trials());
         }
     }
+    #[cfg(target_os = "macos")]
+    {
+        tests.push(Trial::test(
+            "resolve::a_wheel_picker_on_macos_renders_and_syncs_selection",
+            || {
+                resolve::a_wheel_picker_on_macos_renders_and_syncs_selection();
+                Ok(())
+            },
+        ));
+    }
     #[cfg(target_os = "ios")]
     {
         tests.push(Trial::test(
             "resolve::a_wheel_picker_spaces_rows_at_the_swiftui_pitch",
             || {
                 resolve::a_wheel_picker_spaces_rows_at_the_swiftui_pitch();
+                Ok(())
+            },
+        ));
+        tests.push(Trial::test(
+            "resolve::a_radio_picker_on_ios_renders_a_radio_group",
+            || {
+                resolve::a_radio_picker_on_ios_renders_a_radio_group();
                 Ok(())
             },
         ));
@@ -1656,7 +1673,7 @@ mod resolve {
         }
     }
 
-    /// water-rs/waterui#3596: the radio style's `UIPickerView` wheel asks
+    /// water-rs/waterui#3596: the wheel style's `UIPickerView` asks
     /// its delegate for the row height and gets `SwiftUI`'s wheel pitch,
     /// not `UIKit`'s 32 pt style default for a wheel this tall.
     #[cfg(target_os = "ios")]
@@ -1670,7 +1687,7 @@ mod resolve {
             waterui::text!("Two").tag(1),
             waterui::text!("Three").tag(2),
         ];
-        let leaf = render(picker("Mode", items, &selection).style(PickerStyle::Radio));
+        let leaf = render(picker("Mode", items, &selection).wheel());
         let size = leaf
             .layout()
             .measure(ProposalSize::new(Some(300.0), None))
@@ -1685,7 +1702,7 @@ mod resolve {
             .into_iter()
             .filter(|view| view.downcast_ref::<UIPickerView>().is_some())
             .collect();
-        assert_eq!(wheels.len(), 1, "the radio picker hosts one wheel");
+        assert_eq!(wheels.len(), 1, "the wheel picker hosts one UIPickerView");
         let wheel = wheels[0]
             .downcast_ref::<UIPickerView>()
             .expect("filtered to wheels above");
@@ -1694,6 +1711,115 @@ mod resolve {
             WHEEL_ROW_HEIGHT.to_bits(),
             "the wheel's row height"
         );
+    }
+
+    /// water-rs/waterui#4432: on iOS, `PickerStyle::Radio` renders a native
+    /// `UIKit` radio-button group (not a `UIPickerView` wheel) with one row per
+    /// option and reactive selection state.
+    #[cfg(target_os = "ios")]
+    pub fn a_radio_picker_on_ios_renders_a_radio_group() {
+        use cocoa_ui::objc2_ui_kit::{UIControl, UIPickerView};
+
+        let selection = binding(1_i32);
+        let items = vec![
+            waterui::text!("Low").tag(0),
+            waterui::text!("Medium").tag(1),
+            waterui::text!("High").tag(2),
+        ];
+        let leaf = render(picker("Priority", items, &selection).radio());
+        let size = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        assert!(size.width > 0.0 && size.height > 0.0);
+        let host = leaf.view();
+        cocoa_ui::view::set_frame(
+            host,
+            cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+        );
+        cocoa_ui::view::layout_immediately(host);
+        let subviews = cocoa_ui::view::subviews(host);
+        assert!(
+            subviews
+                .iter()
+                .all(|v| v.downcast_ref::<UIPickerView>().is_none()),
+            "Radio must not mount a UIPickerView on iOS"
+        );
+        let group = &subviews[0];
+        let rows = cocoa_ui::view::subviews(group);
+        assert_eq!(rows.len(), 3, "radio group mounts one row per item");
+        let row_controls: Vec<_> = rows
+            .iter()
+            .map(|r| {
+                r.downcast_ref::<UIControl>()
+                    .expect("radio row is a UIControl")
+            })
+            .collect();
+        assert!(!row_controls[0].isSelected());
+        assert!(row_controls[1].isSelected());
+        assert!(!row_controls[2].isSelected());
+
+        selection.set(2);
+        assert!(!row_controls[1].isSelected());
+        assert!(row_controls[2].isSelected());
+    }
+
+    /// water-rs/waterui#4432: on macOS, `PickerStyle::Wheel` (direct or via
+    /// ambient `ViewExt::picker_style`) renders a clipped native wheel drum
+    /// view with intrinsic height for its visible rows and syncs selection.
+    #[cfg(target_os = "macos")]
+    pub fn a_wheel_picker_on_macos_renders_and_syncs_selection() {
+        use cocoa_ui::objc2_app_kit::NSAccessibility;
+        use cocoa_ui::objc2_foundation::NSString;
+
+        let selection = binding(1_i32);
+        let items = || {
+            vec![
+                waterui::text!("Small").tag(0),
+                waterui::text!("Medium").tag(1),
+                waterui::text!("Large").tag(2),
+            ]
+        };
+        let leaf = render(picker("Unit", items(), &selection).wheel());
+        let size = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        assert!(
+            size.width >= 128.0 && size.height >= 100.0,
+            "wheel drum must measure a multi-row intrinsic size, got {size:?}"
+        );
+        let host = leaf.view();
+        cocoa_ui::view::set_frame(
+            host,
+            cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+        );
+        cocoa_ui::view::layout_immediately(host);
+        let subviews = cocoa_ui::view::subviews(host);
+        // Subviews on macOS: the wheel drum control and the leading label.
+        assert_eq!(subviews.len(), 2, "wheel picker mounts drum and label");
+        let wheel = &subviews[0];
+        // The wheel drum holds its highlight band plus one label per item.
+        assert_eq!(cocoa_ui::view::subviews(wheel).len(), 4);
+        assert_eq!(
+            wheel
+                .accessibilityValue()
+                .and_then(|v| v.downcast::<NSString>().ok())
+                .map(|s| s.to_string()),
+            Some(String::from("Medium"))
+        );
+
+        selection.set(2);
+        assert_eq!(
+            wheel
+                .accessibilityValue()
+                .and_then(|v| v.downcast::<NSString>().ok())
+                .map(|s| s.to_string()),
+            Some(String::from("Large"))
+        );
+
+        // Ambient `.picker_style(PickerStyle::Wheel)` produces the same drum.
+        let ambient_leaf =
+            render(picker("Unit", items(), &selection).picker_style(PickerStyle::Wheel));
+        let ambient_size = ambient_leaf
+            .layout()
+            .measure(ProposalSize::UNSPECIFIED)
+            .size;
+        assert_eq!(ambient_size.height.to_bits(), size.height.to_bits());
     }
 
     /// water-rs/waterui#1101: a semantic label leaves 8 pt between its

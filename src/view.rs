@@ -275,6 +275,17 @@ pub trait ViewExt: View + Sized {
         hook::Hooks::new(self, ToggleStyleHook::new(style.into_toggle_style()))
     }
 
+    /// Sets the default [`PickerStyle`](crate::form::picker::PickerStyle) for
+    /// [`Picker`](crate::form::picker::Picker) views in this subtree that did not
+    /// specify an explicit `.style(...)`.
+    #[cfg(feature = "picker")]
+    fn picker_style(
+        self,
+        style: crate::form::picker::PickerStyle,
+    ) -> Installed<Self, crate::form::picker::PickerStyle> {
+        Installed::new(self, style)
+    }
+
     /// Sets this view as the content of a navigation view with the specified title.
     ///
     /// # Arguments

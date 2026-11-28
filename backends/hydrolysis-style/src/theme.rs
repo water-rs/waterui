@@ -119,7 +119,10 @@ pub use menu::{MenuLayout, MenuLook, MenuPresentationMotion, MenuPresentationSam
 pub use navigation::{
     BarSurface, NavigationBarLook, NavigationMetrics, NavigationMotion, NavigationSpec,
 };
-pub use picker::{MenuPickerLayout, MenuPickerLook, PickerSpec, RadioGroupLook, RadioLayout};
+pub use picker::{
+    MenuPickerLayout, MenuPickerLook, PickerSpec, RadioGroupLook, RadioLayout, WheelPickerLayout,
+    WheelPickerLook, default_wheel_picker_look,
+};
 pub use progress::{
     IndicatorLayout, IndicatorLook, LinearLayout, LinearProgressLook, ProgressControl, ProgressSpec,
 };
