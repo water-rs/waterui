@@ -13314,6 +13314,7 @@ dependencies = [
  "tracing",
  "waterkit-dialog",
  "waterui",
+ "waterui-accessibility",
  "waterui-controls",
  "waterui-core",
  "waterui-form",

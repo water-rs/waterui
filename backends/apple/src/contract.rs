@@ -125,6 +125,10 @@ pub struct NativeLeaf {
     /// enclosing scope rendered around the same leaf must not apply its own,
     /// less specific state over it.
     accessibility_state_applied: bool,
+    /// The native control receiving accessibility state when this leaf's outer
+    /// `view` is a layout host wrapping a control (such as a `TextField`,
+    /// `Slider`, or `Stepper`). `None` targets `view` itself.
+    accessibility_target: Option<Retained<PlatformView>>,
     /// The clip shape carried by this leaf when wrapped in `.clip(...)` (and
     /// preserved across bounds-preserving wrappers), so an enclosing `.shadow(...)`
     /// follows the caster's clipped silhouette when no explicit override is set.
@@ -164,6 +168,7 @@ impl NativeLeaf {
             transition: None,
             handler_env: None,
             accessibility_state_applied: false,
+            accessibility_target: None,
             clip_shape: None,
             #[cfg(target_os = "ios")]
             attached_controllers: Vec::new(),
@@ -218,6 +223,20 @@ impl NativeLeaf {
     /// nothing.
     pub(crate) const fn claim_accessibility_state(&mut self) -> bool {
         !core::mem::replace(&mut self.accessibility_state_applied, true)
+    }
+
+    /// Names the inner native control that receives accessibility state (such
+    /// as invalid/error announcements) when this leaf's outer view is a layout
+    /// host wrapping a control.
+    pub(crate) fn set_accessibility_target<V: AsRef<PlatformView> + ?Sized>(&mut self, target: &V) {
+        self.accessibility_target = Some(retain_base(target));
+    }
+
+    /// The platform view that carries accessibility state for this leaf: the
+    /// named control target when set, otherwise `self.view()`.
+    #[must_use]
+    pub(crate) fn accessibility_target(&self) -> &PlatformView {
+        self.accessibility_target.as_deref().unwrap_or(&self.view)
     }
 
     /// The clip shape carried by this leaf, if wrapped in `.clip(...)` or a

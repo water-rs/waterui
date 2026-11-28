@@ -92,6 +92,34 @@ pub enum Checked {
     Mixed,
 }
 
+/// Formats the combined accessibility help/hint string from optional invalid
+/// error text, busy state, and any original platform help/hint. Returns `None`
+/// when neither `invalid` nor `busy` is active so callers restore the original
+/// string verbatim.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn state_announcement(invalid: Option<&str>, busy: bool, original: Option<&str>) -> Option<String> {
+    if invalid.is_none() && !busy {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if let Some(message) = invalid {
+        if message.is_empty() {
+            parts.push(String::from("Invalid"));
+        } else {
+            parts.push(format!("Invalid: {message}"));
+        }
+    }
+    if busy {
+        parts.push(String::from("Busy"));
+    }
+    if let Some(original) = original
+        && !original.is_empty()
+    {
+        parts.push(original.to_owned());
+    }
+    Some(parts.join(", "))
+}
+
 #[cfg(target_os = "ios")]
 mod imp {
     use objc2_foundation::NSString;
@@ -261,10 +289,10 @@ mod imp {
 
     /// Applies the dynamic accessibility state.
     ///
-    /// `disabled`, `selected`, `busy` toggle traits and the hint; `checked`
-    /// announces a value. When `checked` is `None` the value goes back to
-    /// `original_value`, but only once a check was actually announced —
-    /// a value an application set otherwise survives.
+    /// `disabled`, `selected`, `busy`, and `invalid` toggle traits and the
+    /// hint; `checked` announces a value. When `checked` is `None` the value
+    /// goes back to `original_value`, but only once a check was actually
+    /// announced — a value an application set otherwise survives.
     #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     pub fn apply_state(
         view: &UIView,
@@ -274,6 +302,7 @@ mod imp {
         checked_value_written: bool,
         original_value: Option<&NSString>,
         busy: bool,
+        invalid: Option<&str>,
         original_hint: Option<&NSString>,
     ) {
         let mtm = objc2::MainThreadMarker::from(view);
@@ -304,7 +333,15 @@ mod imp {
         } else if checked_value_written {
             view.setAccessibilityValue(original_value, mtm);
         }
-        set_busy(view, busy, original_hint);
+        let original_hint_text = original_hint.map(NSString::to_string);
+        if let Some(composed) =
+            super::state_announcement(invalid, busy, original_hint_text.as_deref())
+        {
+            let hint = NSString::from_str(&composed);
+            view.setAccessibilityHint(Some(&hint), mtm);
+        } else {
+            view.setAccessibilityHint(original_hint, mtm);
+        }
     }
 }
 
@@ -462,8 +499,17 @@ mod imp {
         element.setAccessibilityHelp(if busy { Some(&*busy_label) } else { None });
     }
 
+    /// The current accessibility help text, if any.
+    #[must_use]
+    pub fn help(
+        element: &ProtocolObject<dyn NSAccessibility>,
+    ) -> Option<objc2::rc::Retained<NSString>> {
+        element.accessibilityHelp()
+    }
+
     /// Applies the dynamic accessibility state: enabled, selected, checked,
-    /// expanded, busy.
+    /// expanded, busy, invalid.
+    #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     pub fn apply_state(
         element: &ProtocolObject<dyn NSAccessibility>,
         disabled: bool,
@@ -471,6 +517,8 @@ mod imp {
         checked: Option<Checked>,
         expanded: Option<bool>,
         busy: bool,
+        invalid: Option<&str>,
+        original_help: Option<&NSString>,
     ) {
         element.setAccessibilityElement(true);
         element.setAccessibilityEnabled(!disabled);
@@ -489,7 +537,19 @@ mod imp {
         if let Some(expanded) = expanded {
             element.setAccessibilityExpanded(expanded);
         }
-        set_busy(element, busy);
+        let original_help_text = original_help.map(NSString::to_string).filter(|help| {
+            element
+                .accessibilityLabel()
+                .is_none_or(|label| label.to_string() != *help)
+        });
+        if let Some(composed) =
+            super::state_announcement(invalid, busy, original_help_text.as_deref())
+        {
+            let help = NSString::from_str(&composed);
+            element.setAccessibilityHelp(Some(&help));
+        } else {
+            element.setAccessibilityHelp(original_help);
+        }
     }
 }
 

@@ -147,13 +147,18 @@ fn apply_state(
         checked_value_written,
         original_value,
         state.is_busy(),
+        state.error_message().map(waterui_core::Str::as_str),
         original_hint,
     );
 }
 
 /// Applies an `AccessibilityState` to the view — `applyState`.
 #[cfg(target_os = "macos")]
-fn apply_state(target: &PlatformView, state: &AccessibilityState) {
+fn apply_state(
+    target: &PlatformView,
+    state: &AccessibilityState,
+    original_help: Option<&NSString>,
+) {
     a11y::apply_state(
         target::of(target),
         state.is_disabled(),
@@ -161,6 +166,8 @@ fn apply_state(target: &PlatformView, state: &AccessibilityState) {
         state.checked_state().map(checked),
         state.expanded_state(),
         state.is_busy(),
+        state.error_message().map(waterui_core::Str::as_str),
+        original_help,
     );
 }
 
@@ -213,18 +220,20 @@ fn render_state(
     if !leaf.claim_accessibility_state() {
         return leaf;
     }
-    let target = view::retain_base(leaf.view());
-    leaf.keep(target.clone());
+    let state_target = view::retain_base(leaf.accessibility_target());
+    let hidden_target = view::retain_base(leaf.view());
+    leaf.keep(state_target.clone());
+    leaf.keep(hidden_target.clone());
     #[cfg(target_os = "ios")]
     {
         use core::cell::Cell;
         let wrote_checked = Cell::new(false);
-        let original_value = a11y::value(&target);
-        let original_hint = a11y::hint(&target);
-        let original_hidden = read_original_hidden(&target);
+        let original_value = a11y::value(&state_target);
+        let original_hint = a11y::hint(&state_target);
+        let original_hidden = read_original_hidden(&hidden_target);
         leaf.bind(&merged, move |state| {
             apply_state(
-                &target,
+                &state_target,
                 &state,
                 wrote_checked.get(),
                 original_value.as_deref(),
@@ -233,15 +242,16 @@ fn render_state(
             if state.checked_state().is_some() {
                 wrote_checked.set(true);
             }
-            apply_hidden(&target, state.is_hidden(), original_hidden);
+            apply_hidden(&hidden_target, state.is_hidden(), original_hidden);
         });
     }
     #[cfg(target_os = "macos")]
     {
-        let original_hidden = read_original_hidden(&target);
+        let original_help = a11y::help(target::of(&state_target));
+        let original_hidden = read_original_hidden(&hidden_target);
         leaf.bind(&merged, move |state| {
-            apply_state(&target, &state);
-            apply_hidden(&target, state.is_hidden(), original_hidden);
+            apply_state(&state_target, &state, original_help.as_deref());
+            apply_hidden(&hidden_target, state.is_hidden(), original_hidden);
         });
     }
     leaf

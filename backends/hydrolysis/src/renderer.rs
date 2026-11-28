@@ -290,7 +290,24 @@ const OFFSET_Y_ANIMATION_KEY: usize = 0x0100_0006;
 pub use accessibility::{
     AccessibilityActionTarget, AccessibilityActivation, NodePlacement,
     ScopedAccessibilitySemantics, accessibility_container_child_environment,
+    strip_control_accessibility_env,
 };
+
+/// Environment for an internal label or accessory sub-view owned by a control
+/// that already emits its own accessibility node, stripping control-scoped
+/// accessibility metadata (role, label, state, etc.) so it never duplicates on
+/// the sub-view.
+#[must_use]
+pub fn control_label_env(env: &Environment) -> std::borrow::Cow<'_, Environment> {
+    #[cfg(feature = "accessibility")]
+    {
+        std::borrow::Cow::Owned(strip_control_accessibility_env(env))
+    }
+    #[cfg(not(feature = "accessibility"))]
+    {
+        std::borrow::Cow::Borrowed(env)
+    }
+}
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub use input::{
     TextInputModel, TextInputTargetRegistration, TextSelectionSlot, clamp_to_char_boundary,

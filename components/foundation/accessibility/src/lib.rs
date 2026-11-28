@@ -380,6 +380,12 @@ impl AccessibilityChildren {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ValidityOverride {
+    Valid,
+    Invalid(Str),
+}
+
 /// Describes nuanced state transitions that assistive technologies use to keep
 /// users in sync with complex widgets.
 ///
@@ -396,6 +402,7 @@ pub struct AccessibilityState {
     expanded: Option<bool>,
     busy: Option<bool>,
     hidden: Option<bool>,
+    invalid: Option<ValidityOverride>,
 }
 
 impl MetadataKey for AccessibilityState {}
@@ -412,6 +419,7 @@ impl AccessibilityState {
             expanded: None,
             busy: None,
             hidden: None,
+            invalid: None,
         }
     }
 
@@ -468,21 +476,30 @@ impl AccessibilityState {
         self
     }
 
+    /// Marks whether the element's current value is invalid, carrying the
+    /// validation error message when `Some`, or explicitly marking it valid
+    /// when `None`.
+    #[must_use]
+    pub fn invalid(mut self, error: Option<impl Into<Str>>) -> Self {
+        self.invalid = Some(error.map_or(ValidityOverride::Valid, |message| {
+            ValidityOverride::Invalid(message.into())
+        }));
+        self
+    }
+
     /// Merges this state over `outer`, the state of an enclosing scope: each
     /// field this state sets wins, and each field it leaves unset takes
     /// `outer`'s.
     #[must_use]
-    pub const fn inheriting(self, outer: &Self) -> Self {
+    pub fn inheriting(self, outer: &Self) -> Self {
         Self {
-            disabled: or(self.disabled, outer.disabled),
-            selected: or(self.selected, outer.selected),
-            checked: match self.checked {
-                Some(checked) => Some(checked),
-                None => outer.checked,
-            },
-            expanded: or(self.expanded, outer.expanded),
-            busy: or(self.busy, outer.busy),
-            hidden: or(self.hidden, outer.hidden),
+            disabled: self.disabled.or(outer.disabled),
+            selected: self.selected.or(outer.selected),
+            checked: self.checked.or(outer.checked),
+            expanded: self.expanded.or(outer.expanded),
+            busy: self.busy.or(outer.busy),
+            hidden: self.hidden.or(outer.hidden),
+            invalid: self.invalid.or_else(|| outer.invalid.clone()),
         }
     }
 
@@ -522,6 +539,16 @@ impl AccessibilityState {
         self.hidden
     }
 
+    /// The invalid flag, or `None` when this state leaves it unset.
+    #[must_use]
+    pub const fn invalid_state(&self) -> Option<bool> {
+        match self.invalid {
+            None => None,
+            Some(ValidityOverride::Valid) => Some(false),
+            Some(ValidityOverride::Invalid(_)) => Some(true),
+        }
+    }
+
     /// Returns whether the element is disabled; an unset flag reads `false`.
     #[must_use]
     pub const fn is_disabled(&self) -> bool {
@@ -546,13 +573,22 @@ impl AccessibilityState {
     pub const fn is_hidden(&self) -> bool {
         matches!(self.hidden, Some(true))
     }
-}
 
-/// `Option::or` for `bool`, usable in a `const fn`.
-const fn or(inner: Option<bool>, outer: Option<bool>) -> Option<bool> {
-    match inner {
-        Some(value) => Some(value),
-        None => outer,
+    /// Returns whether the element is marked invalid; an unset or valid state
+    /// reads `false`.
+    #[must_use]
+    pub const fn is_invalid(&self) -> bool {
+        matches!(self.invalid, Some(ValidityOverride::Invalid(_)))
+    }
+
+    /// Returns the validation error message when this state marks the element
+    /// invalid, or `None` otherwise.
+    #[must_use]
+    pub const fn error_message(&self) -> Option<&Str> {
+        match &self.invalid {
+            Some(ValidityOverride::Invalid(message)) => Some(message),
+            Some(ValidityOverride::Valid) | None => None,
+        }
     }
 }
 
@@ -697,5 +733,30 @@ mod tests {
         assert!(!AccessibilityChildren::ExcludeDescendants.combines_descendants());
         assert!(!AccessibilityChildren::Combine.excludes_descendants());
         assert!(AccessibilityChildren::Combine.combines_descendants());
+    }
+
+    #[test]
+    fn accessibility_state_invalid_tracks_error_and_inherits() {
+        let outer = AccessibilityState::new().invalid(Some("Required"));
+        assert!(outer.is_invalid());
+        assert_eq!(
+            outer.error_message().map(super::Str::as_str),
+            Some("Required")
+        );
+
+        let inherited = AccessibilityState::new().disabled(true).inheriting(&outer);
+        assert!(inherited.is_disabled());
+        assert!(inherited.is_invalid());
+        assert_eq!(
+            inherited.error_message().map(super::Str::as_str),
+            Some("Required")
+        );
+
+        let cleared = AccessibilityState::new()
+            .invalid(None::<super::Str>)
+            .inheriting(&outer);
+        assert!(!cleared.is_invalid());
+        assert_eq!(cleared.invalid_state(), Some(false));
+        assert_eq!(cleared.error_message(), None);
     }
 }

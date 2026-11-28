@@ -292,7 +292,8 @@ impl FieldChrome {
         }
         self.label_font_set = font.is_some();
         *label_view = RetainedSubview::held(self.label_view(label.build_with_font(font)));
-        label_view.ensure_built(renderer, env);
+        let label_env = crate::renderer::control_label_env(env);
+        label_view.ensure_built(renderer, &label_env);
         renderer.context_mark_layout();
     }
 

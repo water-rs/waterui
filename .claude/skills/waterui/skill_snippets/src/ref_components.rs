@@ -1608,6 +1608,8 @@ pub fn components_a11y_explicit_prose() {
     };
 
     let _ = Divider.a11y_state(AccessibilityState::new().selected(true));
+    let _ = Divider.a11y_state(AccessibilityState::new().invalid(Some("Value is required.")));
+    let _ = Divider.a11y_state(AccessibilityState::new().invalid(None::<&str>));
     let _ = Divider.a11y_children(AccessibilityChildren::ExcludeDescendants);
     let _ = Divider.a11y_children(AccessibilityChildren::Combine);
     let _ = Divider.a11y_children(AccessibilityChildren::Automatic);
