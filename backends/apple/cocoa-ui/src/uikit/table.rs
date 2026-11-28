@@ -688,11 +688,13 @@ impl TableView {
     /// Creates a table styled `.insetGrouped` with fixed 16-point horizontal
     /// directional margins, `fromCellEdges` separator references, and the
     /// estimated heights a plain grouped row takes.
+    #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         Self::with_style(mtm, TableStyle::InsetGrouped)
     }
 
     /// Creates a table with the given presentation [`TableStyle`].
+    #[must_use]
     pub fn with_style(mtm: MainThreadMarker, style: TableStyle) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(TableViewIvars::new(mtm, style));
         // SAFETY: `initWithFrame:style:` is the designated initializer.
@@ -1425,18 +1427,10 @@ impl TableHeaderFooterView {
 
     /// Applies `text` as the header- or footer-styled content configuration.
     pub fn set_text(&self, text: &NSString, kind: SectionKind) {
-        self.set_text_for_style(text, kind, TableStyle::InsetGrouped);
-    }
-
-    /// Applies `text` using the content configuration matching `style`.
-    pub fn set_text_for_style(&self, text: &NSString, kind: SectionKind, style: TableStyle) {
         let mtm = self.mtm();
-        let configuration = match (kind, style) {
-            (SectionKind::Header, TableStyle::Sidebar) => {
-                UIListContentConfiguration::sidebarHeaderConfiguration(mtm)
-            }
-            (SectionKind::Header, _) => UIListContentConfiguration::headerConfiguration(mtm),
-            (SectionKind::Footer, _) => UIListContentConfiguration::footerConfiguration(mtm),
+        let configuration = match kind {
+            SectionKind::Header => UIListContentConfiguration::headerConfiguration(mtm),
+            SectionKind::Footer => UIListContentConfiguration::footerConfiguration(mtm),
         };
         configuration.setText(Some(text));
         self.setContentConfiguration(Some(ProtocolObject::from_ref(&*configuration)));

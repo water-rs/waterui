@@ -607,6 +607,7 @@ struct Shared {
     #[cfg(target_os = "macos")]
     flat_layout: Vec<FlatEntry>,
     /// The resolved presentation style of the list.
+    #[cfg(target_os = "macos")]
     style: ListStyle,
     /// Selection bookkeeping.
     selection: SelectionMode,
@@ -1838,7 +1839,7 @@ mod platform_impl {
 
         fn configure_header_footer(
             &self,
-            table: &TableView,
+            _table: &TableView,
             view: &TableHeaderFooterView,
             kind: SectionKind,
             section: usize,
@@ -1856,7 +1857,6 @@ mod platform_impl {
             let Some(signal) = computed else {
                 return false;
             };
-            let table_style = table.table_style();
             let weak = cocoa_ui::objc2::rc::Weak::new(view);
             let apply = move |styled: &StyledStr| {
                 let Some(view) = weak.load() else {
@@ -1864,11 +1864,7 @@ mod platform_impl {
                 };
                 crate::measure_memo::invalidate();
                 let plain = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
-                view.set_text_for_style(
-                    &objc2_foundation::NSString::from_str(&plain),
-                    kind,
-                    table_style,
-                );
+                view.set_text(&objc2_foundation::NSString::from_str(&plain), kind);
             };
             apply(&signal.snapshot());
             let guard = signal.watch(move |ctx| apply(ctx.value()));
@@ -2853,6 +2849,7 @@ fn render(config: &ListConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
         groups: Vec::new(),
         #[cfg(target_os = "macos")]
         flat_layout: Vec::new(),
+        #[cfg(target_os = "macos")]
         style,
         selection: match &config.selection() {
             ListSelection::None => SelectionMode::None,
