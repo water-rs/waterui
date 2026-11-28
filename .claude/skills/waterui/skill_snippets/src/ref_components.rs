@@ -454,6 +454,12 @@ pub fn components_block_14() {
         Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)
     };
     let _ = {
+        let all = Binding::new(false);
+        let some_selected = Binding::new(true);
+        // impl IntoComputed<bool>; dash indicator + mixed a11y, tap sets true
+        toggle("Select all", &all).checkbox().mixed(some_selected)
+    };
+    let _ = {
         slider("Volume", &level).range(0.0..=1.0) // &Binding<T: SliderValue>; range/step accept signals
     };
     let _ = {
@@ -629,7 +635,7 @@ pub fn components_custom_control_styles() {
             &self,
             configuration: ToggleStyleConfiguration<L>,
         ) -> impl View + use<L> {
-            let (label, is_on, _, _) = configuration.into_parts();
+            let (label, is_on, _, _, _) = configuration.into_parts();
             hstack((
                 label,
                 spacer(),

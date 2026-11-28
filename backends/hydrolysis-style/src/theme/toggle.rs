@@ -446,22 +446,42 @@ impl SwitchLook {
     }
 }
 
-/// How a checkbox looks and responds: its [`ToggleControl`].
+/// How a checkbox looks and responds: its [`ToggleControl`], and an optional
+/// [`ToggleControl`] drawn while the checkbox is in a mixed (indeterminate)
+/// state.
 #[derive(Debug, Clone)]
 pub struct CheckboxLook {
     control: ToggleControl,
+    mixed: Option<ToggleControl>,
 }
 
 impl CheckboxLook {
     /// A checkbox drawn as `control`.
     #[must_use]
     pub const fn new(control: ToggleControl) -> Self {
-        Self { control }
+        Self {
+            control,
+            mixed: None,
+        }
+    }
+
+    /// Supplies the control drawn while the checkbox is in a mixed
+    /// (indeterminate) state.
+    #[must_use]
+    pub fn with_mixed(mut self, mixed: ToggleControl) -> Self {
+        self.mixed = Some(mixed);
+        self
     }
 
     /// The checkbox's control.
     #[must_use]
     pub const fn control(&self) -> &ToggleControl {
         &self.control
+    }
+
+    /// The checkbox's mixed-state control, when the theme supplied one.
+    #[must_use]
+    pub const fn mixed_control(&self) -> Option<&ToggleControl> {
+        self.mixed.as_ref()
     }
 }

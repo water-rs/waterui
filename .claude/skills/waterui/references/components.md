@@ -333,6 +333,7 @@ button(text!("{edit_label}")).action(|| {}) // a text! satisfies IntoLabel: reac
 
 toggle("Wi-Fi", &enabled)                   // &Binding<bool>
 Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)     // Automatic | Switch | Checkbox; .switch() / .checkbox()
+toggle("Select all", &all).checkbox().mixed(some_selected)    // impl IntoComputed<bool>; dash indicator + mixed a11y, tap sets true
 slider("Volume", &level).range(0.0..=1.0)   // &Binding<T: SliderValue> (f32, f64, ints); range/step accept signals
 slider("Volume", &level).size(ControlSize::Large)      // sliders default ExtraSmall
     .value_formatter(|v| Str::from(format!("{v:.0}"))) // shown above the thumb while dragging
@@ -383,7 +384,9 @@ tests. `ToggleStyle::Automatic` reads the ambient `ToggleStyle` installed in the
 Hydrolysis and iOS, `Checkbox` on macOS AppKit). On Hydrolysis, `Role::toggle(ToggleStyle::Automatic)`
 maps to `Role::SWITCH`. A switch with a visible label fills the
 width it is offered (label leading, switch trailing); a checkbox and a toggle with a
-hidden label are content-sized.
+hidden label are content-sized. Chaining `.mixed(signal)` (`impl IntoComputed<bool>`) on a
+checkbox renders the indeterminate dash and reports `CheckedState::Mixed` while the signal
+is `true`, and activating it resolves the binding to `true`.
 
 ### Custom button and toggle styles
 
@@ -391,7 +394,7 @@ Implement `CustomButtonStyle`, `PrimitiveButtonStyle`, or `CustomToggleStyle`, a
 instance either to a single control with `.style(..)` or to an entire subtree with
 `.button_style(..)` / `.toggle_style(..)`. `CustomButtonStyle` and `CustomToggleStyle`
 receive the semantic `label()` / `into_label()`, interaction-state signals (`is_pressed()`,
-`is_hovered()`, `is_focused()`, `is_disabled()`, `interaction_state()`), `role()` / `is_on()`,
+`is_hovered()`, `is_focused()`, `is_disabled()`, `interaction_state()`), `role()` / `is_on()` / `mixed()`,
 and automatically preserve tap activation, disabled gating, and accessibility semantics;
 `PrimitiveButtonStyle` receives `trigger()` so the style owns its gesture.
 An explicit `.style(..)` on a control wins over an enclosing subtree hook, and an inner
