@@ -333,6 +333,16 @@ button("Save")                              // Button<_, NoAction>: not a View u
 
 button(text!("{edit_label}")).action(|| {}) // a text! satisfies IntoLabel: reactive button titles need no watch
 
+// Scope a ControlSize to every control in a subtree; explicit .size(..) overrides it:
+hstack((
+    button("Apply").action(|| {}),
+    toggle("Auto", &enabled),
+    stepper("Count", &count),
+    field("Tag", &address),
+    button("Primary").size(ControlSize::Large).action(|| {}),
+))
+.control_size(ControlSize::Small)
+
 toggle("Wi-Fi", &enabled)                   // &Binding<bool>
 Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)     // Automatic | Switch | Checkbox; .switch() / .checkbox()
 toggle("Select all", &all).checkbox().mixed(some_selected)    // impl IntoComputed<bool>; dash indicator + mixed a11y, tap sets true
@@ -343,7 +353,7 @@ slider("Volume", &level).step(0.1).min_value_label("Quiet").max_value_label("Lou
 stepper("Quantity", &count)                 // &Binding<T: StepperValue> (i32, u32, i64, usize, ...)
 stepper("Items", &count).range(0..=100).step(5)   // range and step accept signals
 stepper("Items", &count).value_formatter(|n| format!("{n} items"))   // inline value text; T: Into<StyledStr>
-field("Email", &address)                    // &Binding<Str>
+field("Email", &address)                    // &Binding<Str>; supports .size(ControlSize)
 field("Search", &query).on_submit(handler)  // Return in a line-limited field runs it
 TextField::new("Username", &name).prompt("Enter your username")   // placeholder ≠ label
 TextField::new("Notes", &notes).line_limit(None::<NonZeroUsize>) // multi-line: Return inserts a line break
@@ -379,7 +389,12 @@ link("Docs", "https://waterui.dev")         // a Link-style button that opens th
 Style shorthands on `Button` — `.plain()`, `.link()`, `.borderless()`, `.bordered()`,
 `.bordered_prominent()` — equal `.style(..)` and work before or after `.action(..)`.
 `.borderless()` is the idiomatic toolbar-button style; `Link` shows the
-pointing-hand cursor on pointer platforms. `TextField::line_limit(impl IntoComputed<Option<NonZeroUsize>>)` caps the
+pointing-hand cursor on pointer platforms. `.size(ControlSize)` is available on
+`Button`, `Toggle`, `Menu`, `Slider`, `Picker`, `Stepper`, `TextField`, and
+`DatePicker`; omitting it inherits the nearest ambient `.control_size(ControlSize)`
+from the surrounding subtree (`ControlSize` is a `Plugin` with concrete variants
+`ExtraSmall`..=`ExtraLarge`) before falling back to each control's default (`ExtraSmall`
+for `Slider`, `Small` for the other seven). `TextField::line_limit(impl IntoComputed<Option<NonZeroUsize>>)` caps the
 lines (pass `None` for unlimited multi-line input, or a signal to toggle it); `TextField::new(label, &value)` accepts both `&Binding<Str>` and `&Binding<StyledStr>` via `TextFieldValue`. `Switch` and `checkbox` map to different accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to
 tests. `ToggleStyle::Automatic` reads the ambient `ToggleStyle` installed in the environment
 (`.with(ToggleStyle::...)`) first, then the backend's platform default (`Switch` on

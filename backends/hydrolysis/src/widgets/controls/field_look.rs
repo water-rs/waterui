@@ -81,20 +81,26 @@ use crate::renderer::{InteractionKey, InteractionLayerHandles, PressSlot, Widget
 ))]
 use crate::theme::{Border, Chrome, Custom, Driven};
 use crate::theme::{SpecTint, TextFieldLook, TextFieldSpec, WidgetTheme};
+use waterui_controls::ControlSize;
 
-/// The spec of a field in `env`.
-pub fn field_spec(env: &Environment) -> TextFieldSpec {
+/// The spec of a field of `size` in `env`.
+pub fn field_spec(size: ControlSize, env: &Environment) -> TextFieldSpec {
     TextFieldSpec::new(
         waterui_core::layout::layout_direction(env).snapshot(),
         SpecTint::resolve(env),
     )
+    .with_size(size)
 }
 
-/// The look `theme` gives a field in `env`, for a measurement that holds
-/// none.
+/// The look `theme` gives a field of `size` in `env`, for a measurement that
+/// holds none.
 #[cfg(feature = "date-picker")]
-pub fn field_look(theme: &Rc<dyn WidgetTheme>, env: &Environment) -> TextFieldLook {
-    theme.text_field(&field_spec(env), env)
+pub fn field_look(
+    theme: &Rc<dyn WidgetTheme>,
+    size: ControlSize,
+    env: &Environment,
+) -> TextFieldLook {
+    theme.text_field(&field_spec(size, env), env)
 }
 
 /// The container's chrome with the look's active indicator drawn along its
@@ -297,14 +303,15 @@ impl FieldChrome {
         renderer.context_mark_layout();
     }
 
-    /// The look for the field's spec in `env`: the one already held when the
-    /// spec is unchanged, otherwise requested again.
+    /// The look for the field's spec of `size` in `env`: the one already held
+    /// when the spec is unchanged, otherwise requested again.
     pub(crate) fn look(
         &mut self,
         theme: &Rc<dyn WidgetTheme>,
+        size: ControlSize,
         env: &Environment,
     ) -> &TextFieldLook {
-        let spec = field_spec(env);
+        let spec = field_spec(size, env);
         if self.held.as_ref().is_none_or(|held| held.spec != spec) {
             let look = theme.text_field(&spec, env);
             let container = container_of(&look);
@@ -365,11 +372,16 @@ impl FieldChrome {
             .then(|| self.value_paint.clone())
     }
 
-    /// The look for the field's spec in `env` without holding it: the held
-    /// one, or a fresh one for a measurement ahead of the render that holds
-    /// it.
-    pub(crate) fn peek(&self, theme: &Rc<dyn WidgetTheme>, env: &Environment) -> TextFieldLook {
-        let spec = field_spec(env);
+    /// The look for the field's spec of `size` in `env` without holding it: the
+    /// held one, or a fresh one for a measurement ahead of the render that
+    /// holds it.
+    pub(crate) fn peek(
+        &self,
+        theme: &Rc<dyn WidgetTheme>,
+        size: ControlSize,
+        env: &Environment,
+    ) -> TextFieldLook {
+        let spec = field_spec(size, env);
         self.held
             .as_ref()
             .filter(|held| held.spec == spec)

@@ -8,7 +8,7 @@ use nami::signal::IntoComputed;
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Computed, Signal, SignalExt};
 use waterui_controls::label::{ControlLabel, Label, LabelKind};
-use waterui_controls::{IntoLabel, impl_label_style_methods};
+use waterui_controls::{ControlSize, IntoLabel, impl_label_style_methods};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::{AnyView, Environment, Native, NativeView, View, contract_violation};
 
@@ -52,6 +52,8 @@ pub struct DatePickerConfig<S> {
     range: Computed<RangeInclusive<DateTime>>,
     /// The type of date picker.
     ty: DatePickerType,
+    /// How large the date picker is drawn.
+    size: ControlSize,
 }
 
 impl<S> DatePickerConfig<S> {
@@ -97,6 +99,12 @@ impl<S> DatePickerConfig<S> {
     #[must_use]
     pub const fn ty(&self) -> DatePickerType {
         self.ty
+    }
+
+    /// How large the date picker is drawn.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
     }
 }
 
@@ -279,6 +287,7 @@ pub struct DatePicker<L, T = DateTime> {
     value: Binding<DateTime>,
     range: Computed<RangeInclusive<DateTime>>,
     ty: DatePickerType,
+    size: Option<ControlSize>,
     _bound: PhantomData<fn() -> T>,
 }
 
@@ -291,6 +300,7 @@ impl<L: LabelKind, T> DatePicker<L, T> {
             value: self.value,
             range: self.range,
             ty: self.ty,
+            size: self.size.unwrap_or(ControlSize::Small),
         }
     }
 }
@@ -303,6 +313,7 @@ impl<S: View> From<DatePickerConfig<S>> for DatePicker<ControlLabel<S>, DateTime
             value: value.value,
             range: value.range,
             ty: value.ty,
+            size: Some(value.size),
             _bound: PhantomData,
         }
     }
@@ -323,6 +334,7 @@ impl<S: 'static> MapSlots<S> for DatePickerConfig<S> {
             value: self.value,
             range: self.range,
             ty: self.ty,
+            size: self.size,
         }
     }
 }
@@ -334,6 +346,7 @@ impl<L: LabelKind, T> DatePicker<L, T> {
             value: self.value,
             range: self.range,
             ty: self.ty,
+            size: ControlSize::resolve(self.size, env, ControlSize::Small),
         }
     }
 }
@@ -352,6 +365,14 @@ impl<L, T> DatePicker<L, T> {
     pub(crate) const fn label_mut(&mut self) -> &mut Label<L> {
         &mut self.label
     }
+
+    /// Sets how large the date picker is drawn. When omitted, the picker
+    /// inherits the nearest ambient [`ControlSize`] or defaults to
+    /// [`ControlSize::Small`].
+    pub const fn size(mut self, size: ControlSize) -> Self {
+        self.size = Some(size);
+        self
+    }
 }
 
 impl<L, T: DatePickable> DatePicker<L, T> {
@@ -368,6 +389,7 @@ impl<L, T: DatePickable> DatePicker<L, T> {
             value: T::into_datetime_binding(value),
             range: Computed::constant(T::full_range()),
             ty: T::default_picker_type(),
+            size: None,
             _bound: PhantomData,
         }
     }
@@ -695,6 +717,39 @@ mod tests {
         assert_eq!(
             cfg.range().snapshot().start().date(),
             Date::constant(2025, 6, 20)
+        );
+    }
+
+    #[test]
+    fn date_picker_control_size_inherits_from_environment_and_explicit_size_wins() {
+        use waterui_core::plugin::Plugin as _;
+
+        let date = Binding::new(Date::constant(2025, 6, 15));
+        let base_env = Environment::new();
+        let mut ambient_env = Environment::new();
+        ControlSize::ExtraSmall.install(&mut ambient_env);
+
+        assert_eq!(
+            DatePicker::new("Due", &date)
+                .into_config::<AnyView>(&base_env)
+                .size(),
+            ControlSize::Small
+        );
+        assert_eq!(
+            DatePicker::new("Due", &date)
+                .into_config::<AnyView>(&ambient_env)
+                .size(),
+            ControlSize::ExtraSmall
+        );
+        let explicit = DatePicker::new("Due", &date)
+            .size(ControlSize::Large)
+            .into_config::<AnyView>(&ambient_env);
+        assert_eq!(explicit.size(), ControlSize::Large);
+        assert_eq!(
+            DatePicker::from(explicit)
+                .into_config::<AnyView>(&ambient_env)
+                .size(),
+            ControlSize::Large
         );
     }
 }

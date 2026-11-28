@@ -472,7 +472,7 @@ fn text_fields_share_a_340_row(app: &mut OffscreenApp) {
 /// In a 600-wide container the field answers the proposal and fills it.
 fn text_field_in_container_view() -> impl View {
     let value = Binding::new(Str::from(""));
-    field("Field", &value).size(600.0, 60.0)
+    field("Field", &value).width(600.0).height(60.0)
 }
 
 #[waterui::test(text_field_in_container_view, theme = TestStyle::new(), offscreen, viewport = (640, 120))]

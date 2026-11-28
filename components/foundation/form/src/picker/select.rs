@@ -177,7 +177,7 @@ pub struct Picker<L> {
     items: Computed<Vec<PickerItem<Id>>>,
     selection: Binding<Id>,
     style: Option<PickerStyle>,
-    size: ControlSize,
+    size: Option<ControlSize>,
 }
 
 impl<L> Picker<L> {
@@ -212,7 +212,7 @@ impl<L> Picker<L> {
             items,
             selection: mapping.binding(selection),
             style: None,
-            size: ControlSize::Small,
+            size: None,
         }
     }
 
@@ -226,12 +226,13 @@ impl<L> Picker<L> {
         self
     }
 
-    /// Sets how large the picker is drawn. A picker is
+    /// Sets how large the picker is drawn. When omitted, the picker inherits
+    /// the nearest ambient [`ControlSize`] or defaults to
     /// [`ControlSize::Small`], like a
-    /// [`Button`](waterui_controls::button::Button), when none is chosen; a
-    /// theme decides what each size changes.
+    /// [`Button`](waterui_controls::button::Button); a theme decides what each
+    /// size changes.
     pub const fn size(mut self, size: ControlSize) -> Self {
-        self.size = size;
+        self.size = Some(size);
         self
     }
 
@@ -268,7 +269,7 @@ impl<L: LabelKind> Picker<L> {
             items: self.items,
             selection: self.selection,
             style,
-            size: self.size,
+            size: ControlSize::resolve(self.size, env, ControlSize::Small),
         }
         .resolve(env)
     }
@@ -283,7 +284,7 @@ impl<L: LabelKind> Picker<L> {
             items: self.items,
             selection: self.selection,
             style: self.style.unwrap_or(PickerStyle::Automatic),
-            size: self.size,
+            size: self.size.unwrap_or(ControlSize::Small),
         }
     }
 }
@@ -296,7 +297,7 @@ impl<S: View> From<PickerConfig<S>> for Picker<ControlLabel<S>> {
             items: value.items,
             selection: value.selection,
             style: Some(value.style),
-            size: value.size,
+            size: Some(value.size),
         }
     }
 }
@@ -358,6 +359,42 @@ mod tests {
                 "{style:?} (payload)"
             );
         }
+    }
+
+    #[test]
+    fn picker_control_size_inherits_from_environment_and_explicit_size_wins() {
+        use waterui_controls::ControlSize;
+
+        let selection = Binding::new(0_i32);
+        let base_env = Environment::new();
+        let mut ambient_env = Environment::new();
+        ControlSize::ExtraSmall.install(&mut ambient_env);
+
+        let make = || {
+            Picker::new(
+                "Mode",
+                alloc::vec![TaggedView::new(0, Text::new("One"))],
+                &selection,
+            )
+        };
+        assert_eq!(
+            make().into_config::<AnyView>(&base_env).size(),
+            ControlSize::Small
+        );
+        assert_eq!(
+            make().into_config::<AnyView>(&ambient_env).size(),
+            ControlSize::ExtraSmall
+        );
+        let explicit = make()
+            .size(ControlSize::Large)
+            .into_config::<AnyView>(&ambient_env);
+        assert_eq!(explicit.size(), ControlSize::Large);
+        assert_eq!(
+            Picker::from(explicit)
+                .into_config::<AnyView>(&ambient_env)
+                .size(),
+            ControlSize::Large
+        );
     }
 
     #[test]

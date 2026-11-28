@@ -365,9 +365,10 @@ fn chrome_trials() -> Vec<Trial> {
     ]
 }
 
-fn trials() -> Vec<Trial> {
-    let mut tests = base_trials();
-    #[cfg(all(target_os = "macos", feature = "native-test"))]
+#[cfg(target_os = "macos")]
+fn macos_trials() -> Vec<Trial> {
+    let mut tests = Vec::new();
+    #[cfg(feature = "native-test")]
     {
         tests.extend([
             Trial::test("window::channel_connects_typed_declarations", || {
@@ -382,16 +383,13 @@ fn trials() -> Vec<Trial> {
         tests.extend(embedding_trials());
         tests.extend(navigation_trials());
         tests.extend(chrome_trials());
-        #[cfg(target_os = "macos")]
         tests.extend(material_reduce_transparency::trials());
         tests.extend(list_ax::trials());
         tests.extend(gesture_ax::trials());
         tests.extend(a11y_frame::trials());
         tests.extend(gesture_events::trials());
         tests.extend(transform_modifiers::trials());
-        #[cfg(target_os = "macos")]
         tests.extend(border_modifier::trials());
-        #[cfg(target_os = "macos")]
         tests.extend(shadow_modifier::trials());
         #[cfg(feature = "gpu_surface")]
         {
@@ -400,45 +398,66 @@ fn trials() -> Vec<Trial> {
             tests.extend(capture_order::trials());
         }
     }
-    #[cfg(target_os = "macos")]
-    {
-        tests.push(Trial::test(
-            "resolve::a_wheel_picker_on_macos_renders_and_syncs_selection",
-            || {
-                resolve::a_wheel_picker_on_macos_renders_and_syncs_selection();
-                Ok(())
-            },
-        ));
-    }
-    #[cfg(target_os = "ios")]
-    {
-        tests.push(Trial::test(
+    tests.push(Trial::test(
+        "resolve::a_wheel_picker_on_macos_renders_and_syncs_selection",
+        || {
+            resolve::a_wheel_picker_on_macos_renders_and_syncs_selection();
+            Ok(())
+        },
+    ));
+    tests.extend(row_major_table::trials());
+    #[cfg(all(
+        feature = "menu",
+        feature = "slider",
+        feature = "toggle",
+        feature = "picker",
+        feature = "stepper",
+        feature = "text_field",
+        feature = "date_picker"
+    ))]
+    tests.extend(control_size::trials());
+    tests
+}
+
+#[cfg(target_os = "ios")]
+fn ios_trials() -> Vec<Trial> {
+    let mut tests = vec![
+        Trial::test(
             "resolve::a_wheel_picker_spaces_rows_at_the_swiftui_pitch",
             || {
                 resolve::a_wheel_picker_spaces_rows_at_the_swiftui_pitch();
                 Ok(())
             },
-        ));
-        tests.push(Trial::test(
+        ),
+        Trial::test(
             "resolve::a_radio_picker_on_ios_renders_a_radio_group",
             || {
                 resolve::a_radio_picker_on_ios_renders_a_radio_group();
                 Ok(())
             },
-        ));
-        tests.extend(tabs::trials());
-        tests.extend(menus_ios::trials());
-        tests.extend(navigation::trials());
-        tests.extend(controller_bounds::trials());
-        // A Catalyst window carries no container bands, so the suite's
-        // mount precondition cannot hold there (#3556). Its own Catalyst
-        // title-bar case runs instead.
-        #[cfg(not(catalyst))]
-        tests.extend(safe_area::trials());
-        #[cfg(catalyst)]
-        tests.extend(safe_area::catalyst_trials());
-        tests.extend(offset::trials());
-    }
+        ),
+    ];
+    tests.extend(tabs::trials());
+    tests.extend(menus_ios::trials());
+    tests.extend(navigation::trials());
+    tests.extend(controller_bounds::trials());
+    // A Catalyst window carries no container bands, so the suite's
+    // mount precondition cannot hold there (#3556). Its own Catalyst
+    // title-bar case runs instead.
+    #[cfg(not(catalyst))]
+    tests.extend(safe_area::trials());
+    #[cfg(catalyst)]
+    tests.extend(safe_area::catalyst_trials());
+    tests.extend(offset::trials());
+    tests
+}
+
+fn trials() -> Vec<Trial> {
+    let mut tests = base_trials();
+    #[cfg(target_os = "macos")]
+    tests.extend(macos_trials());
+    #[cfg(target_os = "ios")]
+    tests.extend(ios_trials());
     tests.extend(migration::trials());
     tests.extend(transition::trials());
     tests.extend(dismiss::trials());
@@ -447,8 +466,6 @@ fn trials() -> Vec<Trial> {
     tests.extend(report_size::trials());
     tests.extend(list_scroll::trials());
     tests.extend(apple_content::trials());
-    #[cfg(target_os = "macos")]
-    tests.extend(row_major_table::trials());
     tests.extend(disclosure::trials());
     #[cfg(feature = "avatar")]
     tests.extend(avatar::trials());
@@ -7818,7 +7835,7 @@ mod safe_area {
         let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 560.0),
-            field("Message", &value).size(350.0, 44.0),
+            field("Message", &value).width(350.0).height(44.0),
             spacer().size(390.0, 380.0),
         ))));
         let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
@@ -7910,7 +7927,7 @@ mod safe_area {
         let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 560.0),
-            field("Message", &value).size(350.0, 44.0),
+            field("Message", &value).width(350.0).height(44.0),
             spacer().size(390.0, 380.0),
         ))));
         show_keyboard(&mount);
@@ -7951,7 +7968,7 @@ mod safe_area {
                     "Form",
                     scroll(vstack((
                         spacer().size(390.0, 560.0),
-                        field("Message", &value).size(350.0, 44.0),
+                        field("Message", &value).width(350.0).height(44.0),
                         spacer().size(390.0, 380.0),
                     ))),
                 ))),
@@ -8329,7 +8346,7 @@ mod safe_area {
             "Form",
             scroll(vstack((
                 spacer().size(390.0, 560.0),
-                field("Message", &value).size(350.0, 44.0),
+                field("Message", &value).width(350.0).height(44.0),
                 spacer().size(390.0, 380.0),
             )))
             .background(Color::new(Srgb::new(0.2, 0.4, 0.8))),
@@ -8745,7 +8762,7 @@ mod safe_area {
         let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 560.0),
-            field("Message", &value).size(350.0, 44.0),
+            field("Message", &value).width(350.0).height(44.0),
             spacer().size(390.0, 380.0),
         ))));
         show_keyboard(&mount);
@@ -8784,7 +8801,7 @@ mod safe_area {
         let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 560.0),
-            field("Message", &value).size(350.0, 44.0),
+            field("Message", &value).width(350.0).height(44.0),
             spacer().size(390.0, 380.0),
         ))));
         show_keyboard(&mount);
@@ -8805,7 +8822,7 @@ mod safe_area {
             spacer().size(390.0, 430.0),
             scroll(vstack((
                 spacer().size(350.0, 120.0),
-                field("Nested", &value).size(350.0, 44.0),
+                field("Nested", &value).width(350.0).height(44.0),
                 spacer().size(350.0, 300.0),
             )))
             .size(350.0, 200.0),
@@ -8854,7 +8871,7 @@ mod safe_area {
         let mount = mount(vstack((
             scroll(vstack((
                 spacer().size(390.0, 560.0),
-                field("Message", &value).size(350.0, 44.0),
+                field("Message", &value).width(350.0).height(44.0),
                 spacer().size(390.0, 380.0),
             ))),
             card("toolbar").size(390.0, 56.0),
@@ -8879,7 +8896,7 @@ mod safe_area {
             (0..40).map(SelfId::new).collect::<Vec<_>>(),
             move |item| {
                 if *item == field_row {
-                    waterui::OneOf2::A(field("Notes", &value).size(350.0, 44.0))
+                    waterui::OneOf2::A(field("Notes", &value).width(350.0).height(44.0))
                 } else {
                     waterui::OneOf2::B(text(format!("row-{}", *item)))
                 }
@@ -9272,7 +9289,7 @@ mod safe_area {
             "Form",
             scroll(vstack((
                 spacer().size(390.0, 560.0),
-                field("Message", &value).size(350.0, 44.0),
+                field("Message", &value).width(350.0).height(44.0),
                 spacer().size(390.0, 380.0),
             ))),
         ));
@@ -22070,5 +22087,283 @@ mod a11y_invalid {
             value.set(Str::from("ok@example.com"));
             assert_eq!(field.accessibilityHint(mtm), None);
         }
+    }
+}
+
+#[cfg(all(
+    target_os = "macos",
+    feature = "menu",
+    feature = "slider",
+    feature = "toggle",
+    feature = "picker",
+    feature = "stepper",
+    feature = "text_field",
+    feature = "date_picker"
+))]
+mod control_size {
+    use std::num::NonZeroI32;
+
+    use cocoa_ui::objc2::Message;
+    use cocoa_ui::objc2_app_kit::{
+        NSButton, NSControl, NSControlSize, NSDatePicker, NSPopUpButton, NSSegmentedControl,
+        NSSlider, NSStepper, NSSwitch, NSTextField,
+    };
+    use cocoa_ui::view::subviews;
+    use cocoa_ui::{PlatformView, Retained};
+    use libtest_mimic::Trial;
+    use waterui::ViewExt as _;
+    use waterui::component::form::picker::date::{Date, DatePicker};
+    use waterui::component::form::picker::{Picker, PickerItem, PickerStyle};
+    use waterui::component::menu::Menu;
+    use waterui::prelude::{ControlSize, Str, button, field, slider, stepper, toggle};
+    use waterui::reactive::binding;
+    use waterui_core::id::Id;
+
+    use super::resolve;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "control_size::ambient_control_size_propagates_to_all_eight_controls",
+                || {
+                    ambient_control_size_propagates_to_all_eight_controls();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "control_size::explicit_size_overrides_ambient_control_size_on_all_eight_controls",
+                || {
+                    explicit_size_overrides_ambient_control_size_on_all_eight_controls();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn id(raw: i32) -> Id {
+        Id::from(NonZeroI32::new(raw).expect("non-zero test id"))
+    }
+
+    fn find_control<T: Message + cocoa_ui::objc2::DowncastTarget + 'static>(
+        root: &PlatformView,
+    ) -> Option<Retained<T>> {
+        if let Some(found) = root.downcast_ref::<T>() {
+            return Some(Message::retain(found));
+        }
+        for sub in subviews(root) {
+            if let Some(found) = find_control::<T>(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn find_editable_text_field(root: &PlatformView) -> Option<Retained<NSTextField>> {
+        if let Some(field) = root.downcast_ref::<NSTextField>()
+            && field.isEditable()
+        {
+            return Some(Message::retain(field));
+        }
+        for sub in subviews(root) {
+            if let Some(found) = find_editable_text_field(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn picker_items() -> Vec<PickerItem<Id>> {
+        vec![
+            PickerItem::new(id(1), "One".into()),
+            PickerItem::new(id(2), "Two".into()),
+        ]
+    }
+
+    fn ambient_control_size_propagates_to_all_eight_controls() {
+        let on = binding(false);
+        let slider_val = binding(0.5_f64);
+        let choice = binding(id(1));
+        let step = binding(1_i32);
+        let text_val = binding(Str::from_static("hello"));
+        let date = binding(Date::new(2025, 6, 15).expect("valid test date"));
+
+        // Small-default controls under ambient ExtraSmall map to AppKit Small.
+        let btn_leaf = resolve::render(
+            button("Save")
+                .action(|| {})
+                .control_size(ControlSize::ExtraSmall),
+        );
+        let btn = find_control::<NSButton>(btn_leaf.view()).expect("Button mounts NSButton");
+        assert_eq!(NSControl::controlSize(&btn), NSControlSize::Small);
+
+        let toggle_leaf = resolve::render(
+            toggle("Enable", &on)
+                .switch()
+                .control_size(ControlSize::ExtraSmall),
+        );
+        let sw =
+            find_control::<NSSwitch>(toggle_leaf.view()).expect("Switch Toggle mounts NSSwitch");
+        assert_eq!(NSControl::controlSize(&sw), NSControlSize::Small);
+
+        let checkbox_leaf = resolve::render(
+            toggle("Agree", &on)
+                .checkbox()
+                .control_size(ControlSize::ExtraSmall),
+        );
+        let cb = find_control::<NSButton>(checkbox_leaf.view())
+            .expect("Checkbox Toggle mounts NSButton");
+        assert_eq!(NSControl::controlSize(&cb), NSControlSize::Small);
+
+        let menu_leaf = resolve::render(
+            Menu::new("Actions", (button("Ping").action(|| {}),))
+                .control_size(ControlSize::ExtraSmall),
+        );
+        let menu_btn =
+            find_control::<NSPopUpButton>(menu_leaf.view()).expect("Menu mounts NSPopUpButton");
+        assert_eq!(NSControl::controlSize(&menu_btn), NSControlSize::Small);
+
+        let picker_menu_leaf = resolve::render(
+            Picker::new("Choice", picker_items(), &choice)
+                .style(PickerStyle::Menu)
+                .control_size(ControlSize::ExtraSmall),
+        );
+        let popup = find_control::<NSPopUpButton>(picker_menu_leaf.view())
+            .expect("Menu Picker mounts NSPopUpButton");
+        assert_eq!(NSControl::controlSize(&popup), NSControlSize::Small);
+
+        let picker_seg_leaf = resolve::render(
+            Picker::new("Mode", picker_items(), &choice)
+                .style(PickerStyle::Segmented)
+                .control_size(ControlSize::ExtraSmall),
+        );
+        let seg = find_control::<NSSegmentedControl>(picker_seg_leaf.view())
+            .expect("Segmented Picker mounts NSSegmentedControl");
+        assert_eq!(NSControl::controlSize(&seg), NSControlSize::Small);
+
+        let stepper_leaf =
+            resolve::render(stepper("Count", &step).control_size(ControlSize::ExtraSmall));
+        let st = find_control::<NSStepper>(stepper_leaf.view()).expect("Stepper mounts NSStepper");
+        assert_eq!(NSControl::controlSize(&st), NSControlSize::Small);
+
+        let tf_leaf =
+            resolve::render(field("Email", &text_val).control_size(ControlSize::ExtraSmall));
+        let tf = find_editable_text_field(tf_leaf.view())
+            .expect("TextField mounts editable NSTextField");
+        assert_eq!(NSControl::controlSize(&tf), NSControlSize::Small);
+
+        let dp_leaf =
+            resolve::render(DatePicker::new("Date", &date).control_size(ControlSize::ExtraSmall));
+        let dp =
+            find_control::<NSDatePicker>(dp_leaf.view()).expect("DatePicker mounts NSDatePicker");
+        assert_eq!(NSControl::controlSize(&dp), NSControlSize::Small);
+
+        // Slider's default is ExtraSmall, so ambient Large maps to AppKit Large.
+        let slider_leaf =
+            resolve::render(slider("Volume", &slider_val).control_size(ControlSize::Large));
+        let sl = find_control::<NSSlider>(slider_leaf.view()).expect("Slider mounts NSSlider");
+        assert_eq!(NSControl::controlSize(&sl), NSControlSize::Large);
+    }
+
+    fn explicit_size_overrides_ambient_control_size_on_all_eight_controls() {
+        let on = binding(false);
+        let slider_val = binding(0.5_f64);
+        let choice = binding(id(1));
+        let step = binding(1_i32);
+        let text_val = binding(Str::from_static("hello"));
+        let date = binding(Date::new(2025, 6, 15).expect("valid test date"));
+
+        // Explicit Large overrides ambient ExtraSmall on all Small-default controls.
+        let btn_leaf = resolve::render(
+            button("Save")
+                .size(ControlSize::Large)
+                .action(|| {})
+                .control_size(ControlSize::ExtraSmall),
+        );
+        let btn = find_control::<NSButton>(btn_leaf.view()).expect("Button mounts NSButton");
+        assert_eq!(NSControl::controlSize(&btn), NSControlSize::Large);
+
+        let toggle_leaf = resolve::render(
+            toggle("Enable", &on)
+                .switch()
+                .size(ControlSize::Large)
+                .control_size(ControlSize::ExtraSmall),
+        );
+        let sw =
+            find_control::<NSSwitch>(toggle_leaf.view()).expect("Switch Toggle mounts NSSwitch");
+        assert_eq!(NSControl::controlSize(&sw), NSControlSize::Large);
+
+        let checkbox_leaf = resolve::render(
+            toggle("Agree", &on)
+                .checkbox()
+                .size(ControlSize::Large)
+                .control_size(ControlSize::ExtraSmall),
+        );
+        let cb = find_control::<NSButton>(checkbox_leaf.view())
+            .expect("Checkbox Toggle mounts NSButton");
+        assert_eq!(NSControl::controlSize(&cb), NSControlSize::Large);
+
+        let menu_leaf = resolve::render(
+            Menu::new("Actions", (button("Ping").action(|| {}),))
+                .size(ControlSize::Large)
+                .control_size(ControlSize::ExtraSmall),
+        );
+        let menu_btn =
+            find_control::<NSPopUpButton>(menu_leaf.view()).expect("Menu mounts NSPopUpButton");
+        assert_eq!(NSControl::controlSize(&menu_btn), NSControlSize::Large);
+
+        let picker_menu_leaf = resolve::render(
+            Picker::new("Choice", picker_items(), &choice)
+                .style(PickerStyle::Menu)
+                .size(ControlSize::Large)
+                .control_size(ControlSize::ExtraSmall),
+        );
+        let popup = find_control::<NSPopUpButton>(picker_menu_leaf.view())
+            .expect("Menu Picker mounts NSPopUpButton");
+        assert_eq!(NSControl::controlSize(&popup), NSControlSize::Large);
+
+        let picker_seg_leaf = resolve::render(
+            Picker::new("Mode", picker_items(), &choice)
+                .style(PickerStyle::Segmented)
+                .size(ControlSize::Large)
+                .control_size(ControlSize::ExtraSmall),
+        );
+        let seg = find_control::<NSSegmentedControl>(picker_seg_leaf.view())
+            .expect("Segmented Picker mounts NSSegmentedControl");
+        assert_eq!(NSControl::controlSize(&seg), NSControlSize::Large);
+
+        let stepper_leaf = resolve::render(
+            stepper("Count", &step)
+                .size(ControlSize::Large)
+                .control_size(ControlSize::ExtraSmall),
+        );
+        let st = find_control::<NSStepper>(stepper_leaf.view()).expect("Stepper mounts NSStepper");
+        assert_eq!(NSControl::controlSize(&st), NSControlSize::Large);
+
+        let tf_leaf = resolve::render(
+            field("Email", &text_val)
+                .size(ControlSize::Large)
+                .control_size(ControlSize::ExtraSmall),
+        );
+        let tf = find_editable_text_field(tf_leaf.view())
+            .expect("TextField mounts editable NSTextField");
+        assert_eq!(NSControl::controlSize(&tf), NSControlSize::Large);
+
+        let dp_leaf = resolve::render(
+            DatePicker::new("Date", &date)
+                .size(ControlSize::Large)
+                .control_size(ControlSize::ExtraSmall),
+        );
+        let dp =
+            find_control::<NSDatePicker>(dp_leaf.view()).expect("DatePicker mounts NSDatePicker");
+        assert_eq!(NSControl::controlSize(&dp), NSControlSize::Large);
+
+        // Explicit ExtraSmall overrides ambient Large on Slider -> Regular.
+        let slider_leaf = resolve::render(
+            slider("Volume", &slider_val)
+                .size(ControlSize::ExtraSmall)
+                .control_size(ControlSize::Large),
+        );
+        let sl = find_control::<NSSlider>(slider_leaf.view()).expect("Slider mounts NSSlider");
+        assert_eq!(NSControl::controlSize(&sl), NSControlSize::Regular);
     }
 }

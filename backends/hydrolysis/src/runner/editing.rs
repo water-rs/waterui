@@ -1092,7 +1092,7 @@ mod tests {
     /// already synced.
     fn focused_field(initial: &str) -> (HeadlessRuntime, Binding<Str>, EditingSession, u64) {
         let value = Binding::new(Str::from(initial.to_owned()));
-        let view = AnyView::new(field("Name", &value).size(300.0, 60.0));
+        let view = AnyView::new(field("Name", &value).width(300.0).height(60.0));
         let mut runtime = runtime_with(view);
         let start = Instant::now();
         settled(&mut runtime, start);
@@ -1397,7 +1397,8 @@ mod tests {
             let submitted_for_action = submitted.clone();
             field("Name", &value)
                 .on_submit(move || submitted_for_action.set(true))
-                .size(300.0, 60.0)
+                .width(300.0)
+                .height(60.0)
         });
         let mut runtime = runtime_with(view);
         let start = Instant::now();
@@ -1489,16 +1490,19 @@ mod tests {
         let view = AnyView::new(waterui_layout::stack::vstack((
             field("Email", &email_val)
                 .content_type(ContentType::EmailAddress)
-                .size(300.0, 60.0),
+                .width(300.0)
+                .height(60.0),
             field("Price", &price_val)
                 .keyboard(KeyboardType::Decimal)
                 .submit_label(SubmitLabel::Done)
-                .size(300.0, 60.0),
+                .width(300.0)
+                .height(60.0),
             field("Name", &name_val)
                 .autocapitalization(Capitalization::Words)
                 .autocorrect(false)
                 .submit_label(SubmitLabel::Next)
-                .size(300.0, 60.0),
+                .width(300.0)
+                .height(60.0),
         )));
         let mut runtime = runtime_with(view);
         let start = Instant::now();

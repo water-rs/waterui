@@ -17,6 +17,7 @@ use core::ops::RangeInclusive;
 
 use cocoa_ui::{PlatformView, Rect, Retained, view};
 use nami::{Binding, Computed, Signal};
+use waterui_controls::ControlSize;
 use waterui_controls::stepper::{StepperConfig, clamp_value_to_range};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
@@ -25,6 +26,7 @@ use waterui_core::layout::{
 use waterui_interaction::interaction::Disabled;
 use waterui_text::{StyledStr, TextConfig};
 
+use crate::components::control_size::platform_control_size;
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
@@ -297,8 +299,9 @@ pub fn realize_stepper_config(config: StepperConfig<Held>, ctx: &RenderContext<'
     let mtm = ctx.mtm();
     let stretch = waterui_core::NativeView::stretch_axis(&config);
     let host = HostView::new(mtm, Rect::ZERO);
-    let (value, step, label, value_formatter, range) = config.into_parts();
+    let (value, step, label, value_formatter, range, size) = config.into_parts();
     let stepper = Stepper::new(mtm);
+    stepper.set_control_size(platform_control_size(size, ControlSize::Small));
     let initial_range = range.snapshot();
     stepper.set_range(
         i64_to_f64(*initial_range.start()),

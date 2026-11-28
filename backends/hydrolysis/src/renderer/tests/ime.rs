@@ -224,7 +224,9 @@ fn form_runtime_on(
         let value_for_view = value.clone();
         let submitted_for_action = submitted.clone();
         AnyView::new(vstack((
-            field("Name", &value_for_view).size(FIELD_WIDTH, FIELD_HEIGHT),
+            field("Name", &value_for_view)
+                .width(FIELD_WIDTH)
+                .height(FIELD_HEIGHT),
             button("Submit").action(move || submitted_for_action.set(true)),
         )))
     };
@@ -509,14 +511,11 @@ fn replay_against_text_field(loaded: &LoadedFixture, multiline: bool) {
             field_view
         };
         AnyView::new(vstack((
-            field_view.size(
-                FIELD_WIDTH,
-                if multiline {
-                    EDITOR_HEIGHT
-                } else {
-                    FIELD_HEIGHT
-                },
-            ),
+            field_view.width(FIELD_WIDTH).height(if multiline {
+                EDITOR_HEIGHT
+            } else {
+                FIELD_HEIGHT
+            }),
             button("Submit").action(move || submitted_for_action.set(true)),
         )))
     };
@@ -903,8 +902,12 @@ fn focus_move_or_window_unfocus_cancels_the_composition() {
         )]
         let second_for_view = second.clone();
         AnyView::new(vstack((
-            field("First", &first_for_view).size(FIELD_WIDTH, FIELD_HEIGHT),
-            field("Second", &second_for_view).size(FIELD_WIDTH, FIELD_HEIGHT),
+            field("First", &first_for_view)
+                .width(FIELD_WIDTH)
+                .height(FIELD_HEIGHT),
+            field("Second", &second_for_view)
+                .width(FIELD_WIDTH)
+                .height(FIELD_HEIGHT),
         )))
     };
     let mut runtime = runtime_with(view);
@@ -1139,8 +1142,7 @@ fn keys_after_a_composition_commit_in_one_batch_are_ordinary_input() {
             } else {
                 field_view
             };
-            AnyView::new(vstack((field_view.size(
-                FIELD_WIDTH,
+            AnyView::new(vstack((field_view.width(FIELD_WIDTH).height(
                 if multiline {
                     EDITOR_HEIGHT
                 } else {
@@ -1217,8 +1219,7 @@ fn a_key_between_direct_commits_stays_ordinary_input() {
             } else {
                 field_view
             };
-            AnyView::new(vstack((field_view.size(
-                FIELD_WIDTH,
+            AnyView::new(vstack((field_view.width(FIELD_WIDTH).height(
                 if multiline {
                     EDITOR_HEIGHT
                 } else {

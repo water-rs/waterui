@@ -15,6 +15,7 @@
 //! change or the label floating moves live operands and records nothing.
 
 use cherenkov_record::Paint;
+use waterui_controls::ControlSize;
 use waterui_core::layout::LayoutDirection;
 use waterui_graphics::color::Color;
 
@@ -29,15 +30,35 @@ use super::{Border, Chrome, Driven, InputFieldMetrics, Label, TextCaretMotion, V
 /// look through its [`Driven`] values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextFieldSpec {
+    size: ControlSize,
     direction: LayoutDirection,
     tint: SpecTint,
 }
 
 impl TextFieldSpec {
-    /// The spec of a field laid out `direction`, drawn with `tint`.
+    /// The spec of a field laid out `direction`, drawn with `tint` at its
+    /// default [`ControlSize::Small`]. Chain [`Self::with_size`] for another
+    /// size.
     #[must_use]
     pub const fn new(direction: LayoutDirection, tint: SpecTint) -> Self {
-        Self { direction, tint }
+        Self {
+            size: ControlSize::Small,
+            direction,
+            tint,
+        }
+    }
+
+    /// Sets the field's control size.
+    #[must_use]
+    pub const fn with_size(mut self, size: ControlSize) -> Self {
+        self.size = size;
+        self
+    }
+
+    /// The field's control size.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
     }
 
     /// The layout direction the field is laid out in.

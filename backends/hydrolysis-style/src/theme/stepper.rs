@@ -14,6 +14,7 @@
 //! live operands and records nothing.
 
 use kurbo::Size;
+use waterui_controls::ControlSize;
 use waterui_core::layout::LayoutDirection;
 use waterui_graphics::color::Color;
 
@@ -27,15 +28,35 @@ use super::look::SpecTint;
 /// through its [`Driven`](super::Driven) values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepperSpec {
+    size: ControlSize,
     direction: LayoutDirection,
     tint: SpecTint,
 }
 
 impl StepperSpec {
-    /// The spec of a stepper laid out `direction`, drawn with `tint`.
+    /// The spec of a stepper laid out `direction`, drawn with `tint` at its
+    /// default [`ControlSize::Small`]. Chain [`Self::with_size`] for another
+    /// size.
     #[must_use]
     pub const fn new(direction: LayoutDirection, tint: SpecTint) -> Self {
-        Self { direction, tint }
+        Self {
+            size: ControlSize::Small,
+            direction,
+            tint,
+        }
+    }
+
+    /// Sets the stepper's control size.
+    #[must_use]
+    pub const fn with_size(mut self, size: ControlSize) -> Self {
+        self.size = size;
+        self
+    }
+
+    /// The stepper's control size.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
     }
 
     /// The layout direction the stepper is laid out in. The decrement end

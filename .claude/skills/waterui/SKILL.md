@@ -419,7 +419,7 @@ or capturing into closures; for reactive branching on a `Binding` or `Computed`,
 
 ```rust
 .padding() / .padding_with(16.0) / .padding_with(EdgeInsets::vertical(8.0).with_horizontal(16.0)) / .padding_horizontal(16.0)
-.background(color) / .foreground(color) / .tint(color) / .overlay(view)
+.background(color) / .foreground(color) / .tint(color) / .control_size(size) / .overlay(view)
 .size(w, h) / .width(w) / .height(h) / .min_width(w) / .max_width(w) / .min_size(..) / .max_size(..)
 .scale(factor) / .scale_xy(x, y) / .rotation(angle) / .offset(x, y)
 .border(color, width) / .shadow(shadow) / .clip(shape)

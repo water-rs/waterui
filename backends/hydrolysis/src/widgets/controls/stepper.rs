@@ -125,7 +125,7 @@ impl<E: crate::text::TextEngine> StepperRenderState<E> {
     /// The look for the stepper's spec in `env`: the one already held when
     /// the spec is unchanged, otherwise requested again.
     fn look(&mut self, theme: &Rc<dyn WidgetTheme>, env: &Environment) -> &StepperLook {
-        let spec = stepper_spec(env);
+        let spec = stepper_spec(self.config.size(), env);
         if self.held(&spec).is_none() {
             let look = theme.stepper(&spec, env);
             self.look = Some((spec, look));
@@ -144,19 +144,20 @@ impl<E: crate::text::TextEngine> StepperRenderState<E> {
     /// one, or a fresh one for a measurement ahead of the render that holds
     /// it.
     fn peek(&self, theme: &Rc<dyn WidgetTheme>, env: &Environment) -> StepperLook {
-        let spec = stepper_spec(env);
+        let spec = stepper_spec(self.config.size(), env);
         self.held(&spec)
             .cloned()
             .unwrap_or_else(|| theme.stepper(&spec, env))
     }
 }
 
-/// The spec of a stepper in `env`.
-fn stepper_spec(env: &Environment) -> StepperSpec {
+/// The spec of a stepper of `size` in `env`.
+fn stepper_spec(size: waterui_controls::ControlSize, env: &Environment) -> StepperSpec {
     StepperSpec::new(
         waterui_core::layout::layout_direction(env).snapshot(),
         SpecTint::resolve(env),
     )
+    .with_size(size)
 }
 
 /// Emits a stepper's accessibility node from its config. Shared by the dispatch

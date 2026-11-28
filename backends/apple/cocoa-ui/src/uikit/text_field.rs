@@ -302,6 +302,9 @@ impl TextField {
         self.setEnabled(enabled);
     }
 
+    /// `UIKit` has no text-field size classes; accepted for platform parity with `AppKit`.
+    pub const fn set_control_size(&self, _size: crate::slider::ControlSize) {}
+
     /// The height the input wants at `width` — the control's `sizeThatFits:`
     /// answer floored at its intrinsic height.
     #[must_use]
@@ -584,6 +587,9 @@ impl SecureField {
     pub fn set_enabled(&self, enabled: bool) {
         self.setEnabled(enabled);
     }
+
+    /// `UIKit` has no text-field size classes; accepted for platform parity with `AppKit`.
+    pub const fn set_control_size(&self, _size: crate::slider::ControlSize) {}
 
     /// The height the input wants at `width` — see [`TextField::measured_height`].
     #[must_use]

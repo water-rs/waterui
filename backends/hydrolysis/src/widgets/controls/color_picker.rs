@@ -187,7 +187,10 @@ pub fn measure_color_picker_node<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    let input_metrics = render_state.field.peek(theme, env).metrics();
+    let input_metrics = render_state
+        .field
+        .peek(theme, waterui_controls::ControlSize::Small, env)
+        .metrics();
     let label_size = render_state.label_view.measure_built(state, env, theme);
     let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
         label_size.height.max(input_metrics.label_height)
@@ -234,7 +237,10 @@ pub fn render_color_picker_parts<E: crate::text::TextEngine>(
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = ctx.theme();
     let mut state = state.borrow_mut();
-    let input_metrics = state.field.look(&theme, env).metrics();
+    let input_metrics = state
+        .field
+        .look(&theme, waterui_controls::ControlSize::Small, env)
+        .metrics();
     // The value/options are read from the retained config; the label is a retained
     // node sub-view re-flushed at its rect (reactive content stays live).
     let (value_binding, support_alpha, support_hdr) = {

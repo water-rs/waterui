@@ -90,6 +90,9 @@ impl Stepper {
         self.setEnabled(enabled);
     }
 
+    /// `UIKit` has no stepper size classes; accepted for platform parity with `AppKit`.
+    pub const fn set_control_size(&self, _size: crate::slider::ControlSize) {}
+
     /// Calls `handler` with the new value each time the user steps. The
     /// returned target must be kept for as long as the control should
     /// respond; dropping it detaches the target.

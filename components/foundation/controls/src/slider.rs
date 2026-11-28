@@ -519,7 +519,7 @@ pub struct Slider<L, Min, Max, T = f64> {
     max_value_label: Max,
     range: Computed<RangeInclusive<f64>>,
     value: Binding<f64>,
-    size: ControlSize,
+    size: Option<ControlSize>,
     value_formatter: Option<ValueFormatter>,
     step: Computed<Option<f64>>,
     _value: PhantomData<fn() -> T>,
@@ -539,7 +539,7 @@ impl<L, T: SliderValue> Slider<L, (), (), T> {
             max_value_label: (),
             range: Computed::constant(0.0..=1.0),
             value: T::into_f64_binding(value),
-            size: ControlSize::ExtraSmall,
+            size: None,
             value_formatter: None,
             step: Computed::constant(None),
             _value: PhantomData,
@@ -560,10 +560,11 @@ impl<L, Min, Max, T> Slider<L, Min, Max, T> {
         &mut self.value
     }
 
-    /// Sets how large the slider is drawn. Sliders default to
+    /// Sets how large the slider is drawn. When omitted, the slider inherits
+    /// the nearest ambient [`ControlSize`] or defaults to
     /// [`ControlSize::ExtraSmall`], the thinnest track.
     pub const fn size(mut self, size: ControlSize) -> Self {
-        self.size = size;
+        self.size = Some(size);
         self
     }
 
@@ -660,7 +661,7 @@ impl<L: LabelKind, Min: View, Max: View, T> Slider<L, Min, Max, T> {
             max_value_label: S::from_view(self.max_value_label),
             range: self.range,
             value: self.value,
-            size: self.size,
+            size: ControlSize::resolve(self.size, env, ControlSize::ExtraSmall),
             value_formatter: self.value_formatter,
             step: self.step,
         }
@@ -676,7 +677,7 @@ impl<S: View> From<SliderConfig<S>> for Slider<ControlLabel<S>, S, S, f64> {
             max_value_label: value.max_value_label,
             range: value.range,
             value: value.value,
-            size: value.size,
+            size: Some(value.size),
             value_formatter: value.value_formatter,
             step: value.step,
             _value: PhantomData,
@@ -781,5 +782,39 @@ mod tests {
             .into_config::<AnyView>(&env);
         u32_cfg.value().set(3.0);
         assert_eq!(rating.snapshot(), 3);
+    }
+
+    #[test]
+    fn slider_control_size_inherits_from_environment_and_explicit_size_wins() {
+        use crate::size::ControlSize;
+        use waterui_core::plugin::Plugin as _;
+
+        let value = Binding::new(0.5_f64);
+        let base_env = Environment::new();
+        let mut ambient_env = Environment::new();
+        ControlSize::Small.install(&mut ambient_env);
+
+        assert_eq!(
+            slider("Volume", &value)
+                .into_config::<AnyView>(&base_env)
+                .size(),
+            ControlSize::ExtraSmall
+        );
+        assert_eq!(
+            slider("Volume", &value)
+                .into_config::<AnyView>(&ambient_env)
+                .size(),
+            ControlSize::Small
+        );
+        let explicit = slider("Volume", &value)
+            .size(ControlSize::Large)
+            .into_config::<AnyView>(&ambient_env);
+        assert_eq!(explicit.size(), ControlSize::Large);
+        assert_eq!(
+            super::Slider::from(explicit)
+                .into_config::<AnyView>(&ambient_env)
+                .size(),
+            ControlSize::Large
+        );
     }
 }

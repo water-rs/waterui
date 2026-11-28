@@ -29,6 +29,7 @@ use nami::{Binding, Signal};
 use objc2::rc::Weak;
 use objc2_foundation::{NSRange, NSString};
 use waterui_backend_core::Environment;
+use waterui_controls::ControlSize;
 #[cfg(target_os = "ios")]
 use waterui_controls::input::{Capitalization, KeyboardType};
 use waterui_controls::menu::ResolvedMenuItem;
@@ -53,6 +54,9 @@ use super::field_input::{
 };
 #[cfg(target_os = "macos")]
 use super::font::platform_font;
+#[cfg(target_os = "macos")]
+use crate::components::control_size::control_font;
+use crate::components::control_size::platform_control_size;
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
@@ -385,6 +389,8 @@ pub fn realize_text_field_config(
     #[cfg(target_os = "macos")]
     let field = TextField::new(mtm, config.line_limit().snapshot().map(NonZeroUsize::get));
 
+    let control_size = platform_control_size(config.size(), ControlSize::Small);
+    field.set_control_size(control_size);
     configure_input_traits(&field, &config);
 
     let field_view: &PlatformView = &field;
@@ -473,6 +479,7 @@ pub fn realize_text_field_config(
         let field = field.clone();
         move |font| {
             crate::measure_memo::invalidate();
+            let font = control_font(font, control_size);
             field.set_font(&platform_font(mtm, &font, false));
         }
     });

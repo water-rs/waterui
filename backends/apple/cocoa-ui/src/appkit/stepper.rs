@@ -11,7 +11,7 @@ use std::fmt;
 
 use objc2::rc::{Retained, Weak};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSAccessibility, NSControl, NSStepper};
+use objc2_app_kit::{NSAccessibility, NSControl, NSControlSize, NSStepper};
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSObjectProtocol, NSString};
 
@@ -86,6 +86,17 @@ impl Stepper {
     /// Whether the stepper responds to input.
     pub fn set_enabled(&self, enabled: bool) {
         self.setEnabled(enabled);
+    }
+
+    /// How large the stepper is drawn (`NSControl.controlSize`).
+    pub fn set_control_size(&self, size: crate::slider::ControlSize) {
+        let size = match size {
+            crate::slider::ControlSize::Mini => NSControlSize::Mini,
+            crate::slider::ControlSize::Small => NSControlSize::Small,
+            crate::slider::ControlSize::Regular => NSControlSize::Regular,
+            crate::slider::ControlSize::Large => NSControlSize::Large,
+        };
+        self.setControlSize(size);
     }
 
     /// Calls `handler` with the new value each time the user steps. The

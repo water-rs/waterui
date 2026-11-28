@@ -397,9 +397,9 @@ fn a_second_field_in_a_navigation_stack_still_clears_the_keyboard() {
                 ScrollView::new(
                     Axis::Vertical,
                     vstack((
-                        field("First", &first).size(350.0, 44.0),
+                        field("First", &first).width(350.0).height(44.0),
                         spacer().size(390.0, 400.0),
-                        field("Second", &second).size(350.0, 44.0),
+                        field("Second", &second).width(350.0).height(44.0),
                         spacer().size(390.0, 300.0),
                     )),
                 ),
@@ -714,7 +714,7 @@ fn a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard() {
                 Axis::Vertical,
                 vstack((
                     spacer().size(390.0, 560.0),
-                    field("Message", &value).size(350.0, 44.0),
+                    field("Message", &value).width(350.0).height(44.0),
                     spacer().size(390.0, 380.0),
                 )),
             )
@@ -769,7 +769,7 @@ fn a_focused_field_clears_to_the_surface_frame_above_a_toolbar() {
                     Axis::Vertical,
                     vstack((
                         spacer().size(390.0, 560.0),
-                        field("Message", &value).size(350.0, 44.0),
+                        field("Message", &value).width(350.0).height(44.0),
                         spacer().size(390.0, 380.0),
                     )),
                 ),
@@ -1064,7 +1064,7 @@ fn navigation_hosted_form_clears_the_focused_field(scale: f64) {
                         Axis::Vertical,
                         vstack((
                             spacer().size(390.0, 560.0),
-                            field("Message", &value).size(350.0, 44.0),
+                            field("Message", &value).width(350.0).height(44.0),
                             spacer().size(390.0, 380.0),
                         )),
                     ),
@@ -1415,7 +1415,7 @@ fn a_keyboard_inset_change_clears_the_field_on_that_frame() {
                 Axis::Vertical,
                 vstack((
                     spacer().size(390.0, 560.0),
-                    field("Message", &value).size(350.0, 44.0),
+                    field("Message", &value).width(350.0).height(44.0),
                     spacer().size(390.0, 380.0),
                 )),
             )
@@ -1463,7 +1463,7 @@ fn a_field_in_a_nested_scroll_is_cleared_once() {
                         Axis::Vertical,
                         vstack((
                             spacer().size(350.0, 80.0),
-                            field("Message", &value).size(350.0, 44.0),
+                            field("Message", &value).width(350.0).height(44.0),
                             spacer().size(350.0, 300.0),
                         )),
                     )
@@ -1575,7 +1575,7 @@ fn a_tab_bar_stays_docked_under_the_keyboard() {
                                 zstack((
                                     scroll(vstack((
                                         spacer().size(390.0, 560.0),
-                                        field("Message", &value).size(350.0, 44.0),
+                                        field("Message", &value).width(350.0).height(44.0),
                                         spacer().size(390.0, 380.0),
                                     )))
                                     .a11y_label("tab-page"),

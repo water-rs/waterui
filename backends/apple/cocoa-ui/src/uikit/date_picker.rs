@@ -102,6 +102,9 @@ impl DatePicker {
         self.setEnabled(enabled);
     }
 
+    /// `UIKit` has no date-picker size classes; accepted for platform parity with `AppKit`.
+    pub const fn set_control_size(&self, _size: crate::slider::ControlSize) {}
+
     /// Calls `handler` each time the user edits the picker's value. The
     /// returned target must be kept for as long as the control should
     /// respond; dropping it detaches the target.

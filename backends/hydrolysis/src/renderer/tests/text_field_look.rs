@@ -445,7 +445,7 @@ fn a_spec_change_follows_the_looks_label_font() {
     let own = width(&mut view, renderer, &env_with(Color::srgb(0, 0, 0)));
 
     let red = env_with(Color::srgb(200, 0, 0));
-    field.look(&theme, &red);
+    field.look(&theme, waterui_controls::ControlSize::Small, &red);
     field.apply_label_font(&mut view, &label, renderer, &red);
     let large = width(&mut view, renderer, &red);
     assert!(
@@ -455,7 +455,7 @@ fn a_spec_change_follows_the_looks_label_font() {
 
     size.set(Some(20.0));
     let blue = env_with(Color::srgb(0, 0, 200));
-    field.look(&theme, &blue);
+    field.look(&theme, waterui_controls::ControlSize::Small, &blue);
     field.apply_label_font(&mut view, &label, renderer, &blue);
     let smaller = width(&mut view, renderer, &blue);
     assert!(
@@ -465,7 +465,7 @@ fn a_spec_change_follows_the_looks_label_font() {
 
     size.set(None);
     let green = env_with(Color::srgb(0, 200, 0));
-    field.look(&theme, &green);
+    field.look(&theme, waterui_controls::ControlSize::Small, &green);
     field.apply_label_font(&mut view, &label, renderer, &green);
     let restored = width(&mut view, renderer, &green);
     assert!(

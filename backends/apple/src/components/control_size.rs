@@ -24,6 +24,37 @@ pub const fn platform_control_size(size: WuiControlSize, default: WuiControlSize
     }
 }
 
+/// Converts a kit [`ControlSize`] to `AppKit`'s `NSControlSize`.
+#[cfg(target_os = "macos")]
+pub const fn ns_control_size(size: ControlSize) -> cocoa_ui::objc2_app_kit::NSControlSize {
+    use cocoa_ui::objc2_app_kit::NSControlSize;
+    match size {
+        ControlSize::Mini => NSControlSize::Mini,
+        ControlSize::Small => NSControlSize::Small,
+        ControlSize::Regular => NSControlSize::Regular,
+        ControlSize::Large => NSControlSize::Large,
+    }
+}
+
+/// Adapts a resolved `Body` font to `size` on `AppKit`: non-regular control
+/// sizes adopt `NSFont::systemFontSizeForControlSize` so the control's text
+/// scales with its bezel, while `Regular` keeps the theme's resolved size.
+#[cfg(target_os = "macos")]
+pub fn control_font(
+    mut font: waterui_text::font::ResolvedFont,
+    size: ControlSize,
+) -> waterui_text::font::ResolvedFont {
+    if size != ControlSize::Regular {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "ResolvedFont is f32; AppKit's control-size point sizes are small exact values"
+        )]
+        let points = cocoa_ui::font::system_size_for_control_size(ns_control_size(size)) as f32;
+        font.set_size(points);
+    }
+    font
+}
+
 /// A `ControlSize`'s position on the five-step scale.
 const fn ordinal(size: WuiControlSize) -> i8 {
     match size {
