@@ -425,7 +425,8 @@ or capturing into closures; for reactive branching on a `Binding` or `Computed`,
 .border(color, width) / .shadow(shadow) / .clip(shape)
 .opacity(signal) / .visible(signal) / .disabled(signal)
 .blur(signal) / .brightness(..) / .contrast(..) / .saturation(..) / .grayscale(..) / .hue_rotation(..)
-.a11y_label(..) / .a11y_value(..) / .a11y_id("settings.wifi") / .a11y_role(..)
+.a11y_label(..) / .a11y_value(..) / .a11y_hint(..) / .a11y_id("settings.wifi") / .a11y_role(..)
+.a11y_action("Archive", handler) / .a11y_adjustable(increment, decrement)
 .on_appear(..) / .on_change(&signal, ..) / .on_tap(..) / .gesture(g, handler) / .context_menu(items)
 .cursor(style) / .ignore_safe_area(EdgeSet::ALL) / .floating() / .secure()   // .secure(): no screenshots
 .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM))   // regions × edges
@@ -494,7 +495,9 @@ optional decoration — it drives screen readers *and* it is what `waterui-testi
 queries. To hide a label visually while keeping it in the tree, use the display-mode API,
 never drop the label: `.hide_label()` on any labeled control, `.label_style(
 LabelDisplayMode::IconOnly)` for icon buttons, `.install(LabelDisplayMode::IconOnly)` for
-a whole toolbar. Beyond label, value, role and id, `.a11y_geometry(AccessibilityGeometry)`
+a whole toolbar. Beyond label, value, hint, role and id, `.a11y_action(name, handler)`
+(chainable in declaration order for swipe/drag/long-press actions), `.a11y_adjustable(
+increment, decrement)` (custom VoiceOver/TalkBack adjustable controls), `.a11y_geometry(AccessibilityGeometry)`
 (the rectangle the element reports: the view's own response rectangle by default,
 `Allocation` for the whole assigned frame, or `Region(rect)`), `.a11y_children(
 AccessibilityChildren)` (how descendants contribute semantics), `.a11y_hidden(hidden)` (static `bool` or reactive signal) and

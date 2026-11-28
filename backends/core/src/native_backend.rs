@@ -983,12 +983,18 @@ native_backend! {
         gesture_observer: waterui_interaction::gesture::GestureObserver,
         /// Selection state.
         selected: waterui_interaction::interaction::Selected,
+        /// Adjustable increment and decrement accessibility actions.
+        accessibility_adjustable: waterui_accessibility::AccessibilityAdjustable,
         /// The accessibility children.
         accessibility_children: waterui_accessibility::AccessibilityChildren,
+        /// Named custom accessibility actions.
+        accessibility_custom_actions: waterui_accessibility::AccessibilityCustomActions,
         /// The accessibility geometry.
         accessibility_geometry: waterui_accessibility::AccessibilityGeometry,
         /// Hidden from accessibility.
         accessibility_hidden: waterui_accessibility::AccessibilityHidden,
+        /// An accessibility hint.
+        accessibility_hint: waterui_accessibility::AccessibilityHint,
         /// An accessibility identifier.
         accessibility_identifier: waterui_accessibility::AccessibilityIdentifier,
         /// An accessibility label.

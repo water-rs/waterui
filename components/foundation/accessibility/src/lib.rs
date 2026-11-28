@@ -13,11 +13,15 @@
 extern crate alloc;
 
 use alloc::rc::Rc;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::cell::RefCell;
 use core::fmt;
 
 use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoComputed, zip::zip};
 use suiteki::Str;
 
+use waterui_core::handler::{BoxedAction, ExtractionError, Handler, boxed_action};
 use waterui_core::layout::{PlacedGeometry, Rect};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Environment, Metadata, OneOf2, View};
@@ -125,6 +129,220 @@ impl AccessibilityValue {
     #[must_use]
     pub fn resolve(&self, env: &Environment) -> Computed<Str> {
         self.0.resolve(env)
+    }
+}
+
+/// Supplemental usage hint announced after the label and value.
+///
+/// A hint describes the result of acting on a view when its label and role
+/// alone do not make the outcome obvious (for example, `"Opens the thread"`).
+/// The hint is reactive and resolves against the surrounding [`Environment`]
+/// so localized text tracks the active translation catalog and locale without
+/// rebuilding the subtree.
+#[derive(Debug, Clone)]
+pub struct AccessibilityHint(TextResolver);
+
+impl MetadataKey for AccessibilityHint {}
+
+impl AccessibilityHint {
+    /// Creates a hint announced by assistive technologies after the label and
+    /// value.
+    ///
+    /// Accepts a constant or any signal of [`Str`].
+    ///
+    /// ```
+    /// # use waterui_accessibility::AccessibilityHint;
+    /// let hint = AccessibilityHint::new("Opens the thread");
+    /// ```
+    pub fn new(hint: impl IntoComputed<Str>) -> Self {
+        Self(TextResolver::Signal(hint.into_computed()))
+    }
+
+    /// Creates a hint resolved against the surrounding [`Environment`] at
+    /// realization time (for example, localized text).
+    pub fn resolved(resolver: impl Fn(&Environment) -> Computed<Str> + 'static) -> Self {
+        Self(TextResolver::Resolved(Rc::new(resolver)))
+    }
+
+    /// Resolves the reactive hint signal against `env`.
+    #[must_use]
+    pub fn resolve(&self, env: &Environment) -> Computed<Str> {
+        self.0.resolve(env)
+    }
+}
+
+/// A named custom action exposed to assistive technologies (such as `VoiceOver`'s
+/// actions rotor or `TalkBack`'s local context menu).
+///
+/// Use custom actions to expose interactions that otherwise depend on gestures
+/// like swipe, drag, or long press.
+#[derive(Clone)]
+pub struct AccessibilityCustomAction {
+    name: TextResolver,
+    action: Rc<RefCell<BoxedAction<()>>>,
+}
+
+impl fmt::Debug for AccessibilityCustomAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AccessibilityCustomAction")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AccessibilityCustomAction {
+    /// Creates a custom action with a static or reactive [`Str`] name.
+    pub fn new<H, Args>(name: impl IntoComputed<Str>, action: H) -> Self
+    where
+        H: Handler<Args, ()>,
+    {
+        Self {
+            name: TextResolver::Signal(name.into_computed()),
+            action: Rc::new(RefCell::new(boxed_action(action))),
+        }
+    }
+
+    /// Creates a custom action whose name resolves against the surrounding
+    /// [`Environment`] at realization time (for example, localized text).
+    pub fn resolved<H, Args>(
+        resolver: impl Fn(&Environment) -> Computed<Str> + 'static,
+        action: H,
+    ) -> Self
+    where
+        H: Handler<Args, ()>,
+    {
+        Self {
+            name: TextResolver::Resolved(Rc::new(resolver)),
+            action: Rc::new(RefCell::new(boxed_action(action))),
+        }
+    }
+
+    /// Resolves the action's reactive name signal against `env`.
+    #[must_use]
+    pub fn resolve_name(&self, env: &Environment) -> Computed<Str> {
+        self.name.resolve(env)
+    }
+
+    /// Invokes the action's handler against `env`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ExtractionError`] when one of the handler's extractor
+    /// parameters is missing from `env`.
+    pub fn invoke(&self, env: &Environment) -> Result<(), ExtractionError> {
+        (self.action.borrow_mut())(env)
+    }
+}
+
+/// An ordered list of named custom accessibility actions attached to a view.
+///
+/// Chaining multiple `.a11y_action(...)` modifiers merges them through
+/// [`install`](Self::install) in declaration order (inner actions first, outer
+/// actions after) rather than overwriting earlier actions.
+#[derive(Debug, Clone, Default)]
+pub struct AccessibilityCustomActions(Vec<AccessibilityCustomAction>);
+
+impl MetadataKey for AccessibilityCustomActions {}
+
+impl AccessibilityCustomActions {
+    /// Creates an empty custom-action list.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Creates a custom-action list containing a single action.
+    #[must_use]
+    pub fn single(action: AccessibilityCustomAction) -> Self {
+        Self(vec![action])
+    }
+
+    /// Appends a custom action to this list.
+    #[must_use]
+    pub fn with_action(mut self, action: AccessibilityCustomAction) -> Self {
+        self.0.push(action);
+        self
+    }
+
+    /// The custom actions in declaration order.
+    #[must_use]
+    pub fn actions(&self) -> &[AccessibilityCustomAction] {
+        &self.0
+    }
+
+    /// Whether no custom actions are registered.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Merges `inner` ahead of any actions already scoped in `env` and stores
+    /// the combined list in `env`.
+    ///
+    /// In a modifier chain `view.a11y_action("First", a).a11y_action("Second", b)`,
+    /// backends visit the outer wrapper (`"Second"`) before the inner wrapper
+    /// (`"First"`), so prepending the inner actions preserves declaration order
+    /// (`["First", "Second"]`).
+    pub fn install(env: &mut Environment, inner: &Self) {
+        let mut combined =
+            Vec::with_capacity(inner.0.len() + env.get::<Self>().map_or(0, |outer| outer.0.len()));
+        combined.extend(inner.0.iter().cloned());
+        if let Some(outer) = env.get::<Self>() {
+            combined.extend(outer.0.iter().cloned());
+        }
+        env.insert(Self(combined));
+    }
+}
+
+/// Increment and decrement accessibility actions for custom adjustable controls
+/// (such as star ratings or custom steppers).
+#[derive(Clone)]
+pub struct AccessibilityAdjustable {
+    increment: Rc<RefCell<BoxedAction<()>>>,
+    decrement: Rc<RefCell<BoxedAction<()>>>,
+}
+
+impl MetadataKey for AccessibilityAdjustable {}
+
+impl fmt::Debug for AccessibilityAdjustable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AccessibilityAdjustable")
+            .finish_non_exhaustive()
+    }
+}
+
+impl AccessibilityAdjustable {
+    /// Creates an adjustable action pair with `increment` and `decrement`
+    /// handlers.
+    pub fn new<Inc, IncArgs, Dec, DecArgs>(increment: Inc, decrement: Dec) -> Self
+    where
+        Inc: Handler<IncArgs, ()>,
+        Dec: Handler<DecArgs, ()>,
+    {
+        Self {
+            increment: Rc::new(RefCell::new(boxed_action(increment))),
+            decrement: Rc::new(RefCell::new(boxed_action(decrement))),
+        }
+    }
+
+    /// Invokes the increment handler against `env`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ExtractionError`] when one of the handler's extractor
+    /// parameters is missing from `env`.
+    pub fn increment(&self, env: &Environment) -> Result<(), ExtractionError> {
+        (self.increment.borrow_mut())(env)
+    }
+
+    /// Invokes the decrement handler against `env`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ExtractionError`] when one of the handler's extractor
+    /// parameters is missing from `env`.
+    pub fn decrement(&self, env: &Environment) -> Result<(), ExtractionError> {
+        (self.decrement.borrow_mut())(env)
     }
 }
 
@@ -675,5 +893,91 @@ mod tests {
             Some(super::AccessibilityChecked::True)
         );
         assert_eq!(state.expanded_state(), Some(false));
+    }
+
+    #[test]
+    fn accessibility_hint_tracks_reactive_signal() {
+        let hint = nami::Binding::new(suiteki::Str::from_static("Opens thread"));
+        let metadata = super::AccessibilityHint::new(hint.clone());
+        let env = Environment::new();
+        let resolved = metadata.resolve(&env);
+        assert_eq!(resolved.snapshot(), "Opens thread");
+
+        hint.set(suiteki::Str::from_static("Opens archived thread"));
+        assert_eq!(resolved.snapshot(), "Opens archived thread");
+    }
+
+    #[test]
+    fn custom_actions_install_preserves_declaration_order() {
+        use alloc::rc::Rc;
+        use alloc::vec::Vec;
+        use core::cell::RefCell;
+
+        let log = Rc::new(RefCell::new(Vec::<&'static str>::new()));
+        let first_log = Rc::clone(&log);
+        let second_log = Rc::clone(&log);
+        let third_log = Rc::clone(&log);
+
+        // Chained as `.a11y_action("Archive", ..).a11y_action("Pin", ..).a11y_action("Mute", ..)`:
+        // backends visit outermost ("Mute") first, then "Pin", then innermost ("Archive").
+        let outer = super::AccessibilityCustomActions::single(
+            super::AccessibilityCustomAction::new("Mute", move || {
+                third_log.borrow_mut().push("mute");
+            }),
+        );
+        let middle = super::AccessibilityCustomActions::single(
+            super::AccessibilityCustomAction::new("Pin", move || {
+                second_log.borrow_mut().push("pin");
+            }),
+        );
+        let inner = super::AccessibilityCustomActions::single(
+            super::AccessibilityCustomAction::new("Archive", move || {
+                first_log.borrow_mut().push("archive");
+            }),
+        );
+
+        let mut env = Environment::new();
+        super::AccessibilityCustomActions::install(&mut env, &outer);
+        super::AccessibilityCustomActions::install(&mut env, &middle);
+        super::AccessibilityCustomActions::install(&mut env, &inner);
+
+        let actions = env
+            .get::<super::AccessibilityCustomActions>()
+            .expect("custom actions installed")
+            .actions();
+        let names: Vec<_> = actions
+            .iter()
+            .map(|action| action.resolve_name(&env).snapshot())
+            .collect();
+        assert_eq!(names, ["Archive", "Pin", "Mute"]);
+
+        for action in actions {
+            action.invoke(&env).expect("handler invocation succeeds");
+        }
+        assert_eq!(*log.borrow(), ["archive", "pin", "mute"]);
+    }
+
+    #[test]
+    fn adjustable_actions_invoke_increment_and_decrement_with_extractors() {
+        let counter = nami::Binding::new(3_i32);
+        let adjustable = super::AccessibilityAdjustable::new(
+            |waterui_core::extract::State(c): waterui_core::extract::State<nami::Binding<i32>>| {
+                c.set(c.snapshot() + 1);
+            },
+            |waterui_core::extract::State(c): waterui_core::extract::State<nami::Binding<i32>>| {
+                c.set(c.snapshot() - 1);
+            },
+        );
+        let mut env = Environment::new();
+        env.insert(waterui_core::extract::State(counter.clone()));
+
+        adjustable.increment(&env).expect("increment succeeds");
+        assert_eq!(counter.snapshot(), 4);
+
+        adjustable.decrement(&env).expect("decrement succeeds");
+        adjustable
+            .decrement(&env)
+            .expect("second decrement succeeds");
+        assert_eq!(counter.snapshot(), 2);
     }
 }

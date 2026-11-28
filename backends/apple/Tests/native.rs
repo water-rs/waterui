@@ -409,6 +409,7 @@ fn trials() -> Vec<Trial> {
     tests.extend(link::trials());
     tests.extend(markdown_a11y::trials());
     tests.extend(icon_a11y::trials());
+    tests.extend(a11y_actions_modifiers::trials());
     #[cfg(feature = "highlight")]
     tests.extend(code::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
@@ -19427,5 +19428,287 @@ mod code {
             1,
             "activating native Copy button must invoke OnCopied"
         );
+    }
+}
+
+mod a11y_actions_modifiers {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use libtest_mimic::Trial;
+    use nami::{Binding, Signal as _, SignalExt as _};
+    use waterui::accessibility::{AccessibilityRole, AccessibilityState};
+    use waterui::component::text;
+    use waterui::layout::stack::vstack;
+    use waterui::{Str, ViewExt as _};
+
+    #[cfg(target_os = "ios")]
+    use super::mtm;
+    use super::resolve;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "a11y_actions_modifiers::hint_and_busy_compose_reactively",
+                || {
+                    hint_and_busy_compose_reactively();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "a11y_actions_modifiers::custom_actions_preserve_order_and_invoke",
+                || {
+                    custom_actions_preserve_order_and_invoke();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "a11y_actions_modifiers::adjustable_advertises_and_dispatches_on_host_and_leaf",
+                || {
+                    adjustable_advertises_and_dispatches_on_host_and_leaf();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn hint_and_busy_compose_reactively() {
+        let hint = Binding::new(Str::from_static("Opens the thread"));
+        let busy = Binding::new(false);
+        let state = busy.map(|b| AccessibilityState::new().busy(b));
+
+        // Hint inner, state outer.
+        let leaf_a = resolve::render(
+            text("Item")
+                .a11y_hint(hint.clone())
+                .a11y_state(state.clone()),
+        );
+        // State inner, hint outer.
+        let leaf_b = resolve::render(text("Item").a11y_state(state).a11y_hint(hint.clone()));
+
+        let read_hint = |view: &cocoa_ui::PlatformView| -> Option<String> {
+            #[cfg(target_os = "macos")]
+            {
+                use cocoa_ui::objc2::runtime::ProtocolObject;
+                use cocoa_ui::objc2_app_kit::NSAccessibility;
+                ProtocolObject::<dyn NSAccessibility>::from_ref(view)
+                    .accessibilityHelp()
+                    .map(|s| s.to_string())
+            }
+            #[cfg(target_os = "ios")]
+            {
+                use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+                view.accessibilityHint(mtm()).map(|s| s.to_string())
+            }
+        };
+
+        assert_eq!(
+            read_hint(leaf_a.view()).as_deref(),
+            Some("Opens the thread")
+        );
+        assert_eq!(
+            read_hint(leaf_b.view()).as_deref(),
+            Some("Opens the thread")
+        );
+
+        busy.set(true);
+        assert_eq!(
+            read_hint(leaf_a.view()).as_deref(),
+            Some("Busy, Opens the thread")
+        );
+        assert_eq!(
+            read_hint(leaf_b.view()).as_deref(),
+            Some("Busy, Opens the thread")
+        );
+
+        hint.set(Str::from_static("Opens archive"));
+        assert_eq!(
+            read_hint(leaf_a.view()).as_deref(),
+            Some("Busy, Opens archive")
+        );
+        assert_eq!(
+            read_hint(leaf_b.view()).as_deref(),
+            Some("Busy, Opens archive")
+        );
+
+        busy.set(false);
+        assert_eq!(read_hint(leaf_a.view()).as_deref(), Some("Opens archive"));
+        assert_eq!(read_hint(leaf_b.view()).as_deref(), Some("Opens archive"));
+    }
+
+    fn custom_actions_preserve_order_and_invoke() {
+        let log = Rc::new(RefCell::new(Vec::<&'static str>::new()));
+        let archive_log = Rc::clone(&log);
+        let pin_log = Rc::clone(&log);
+        let pin_name = Binding::new(Str::from_static("Pin"));
+
+        let leaf = resolve::render(
+            vstack((text("Thread"),))
+                .a11y_label("Thread row")
+                .a11y_action("Archive", move || archive_log.borrow_mut().push("archive"))
+                .a11y_action(pin_name.clone(), move || pin_log.borrow_mut().push("pin")),
+        );
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::ProtocolObject;
+            use cocoa_ui::objc2_app_kit::NSAccessibility;
+
+            let element = ProtocolObject::<dyn NSAccessibility>::from_ref(leaf.view());
+            let actions = element
+                .accessibilityCustomActions()
+                .expect("custom actions must be installed");
+            let names: Vec<String> = actions.iter().map(|a| a.name().to_string()).collect();
+            assert_eq!(names, ["Archive", "Pin"]);
+
+            for action in actions.to_vec().into_iter().rev() {
+                let block = action.handler();
+                assert!(!block.is_null(), "custom action must carry a handler block");
+                // SAFETY: `NSAccessibilityCustomAction::handler` returns a valid
+                // `BOOL (^)(void)` block installed by `cocoa-ui`.
+                let handled = unsafe { (*block).call(()) };
+                assert!(handled.as_bool());
+            }
+            assert_eq!(*log.borrow(), ["pin", "archive"]);
+
+            pin_name.set(Str::from_static("Unpin"));
+            let refreshed = element
+                .accessibilityCustomActions()
+                .expect("custom actions must stay installed after rename");
+            let refreshed_names: Vec<String> =
+                refreshed.iter().map(|a| a.name().to_string()).collect();
+            assert_eq!(refreshed_names, ["Archive", "Unpin"]);
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+            use core::ptr::NonNull;
+
+            let actions = leaf
+                .view()
+                .accessibilityCustomActions(mtm())
+                .expect("custom actions must be installed");
+            let names: Vec<String> = actions.iter().map(|a| a.name().to_string()).collect();
+            assert_eq!(names, ["Archive", "Pin"]);
+
+            for action in actions.to_vec().into_iter().rev() {
+                // SAFETY: `UIAccessibilityCustomAction::actionHandler` returns the
+                // block installed by `cocoa-ui`.
+                let block = unsafe { action.actionHandler() };
+                assert!(!block.is_null(), "custom action must carry a handler block");
+                // SAFETY: valid block pointer taking the action itself.
+                let handled = unsafe { (*block).call((NonNull::from(&*action),)) };
+                assert!(handled.as_bool());
+            }
+            assert_eq!(*log.borrow(), ["pin", "archive"]);
+
+            pin_name.set(Str::from_static("Unpin"));
+            let refreshed = leaf
+                .view()
+                .accessibilityCustomActions(mtm())
+                .expect("custom actions must stay installed after rename");
+            let refreshed_names: Vec<String> =
+                refreshed.iter().map(|a| a.name().to_string()).collect();
+            assert_eq!(refreshed_names, ["Archive", "Unpin"]);
+        }
+    }
+
+    fn adjustable_advertises_and_dispatches_on_host_and_leaf() {
+        let container_rating = Binding::new(2_i32);
+        let inc_c = container_rating.clone();
+        let dec_c = container_rating.clone();
+        let host_leaf = resolve::render(
+            vstack((text("Stars"),))
+                .a11y_label("Container rating")
+                .a11y_adjustable(
+                    move || inc_c.set(inc_c.snapshot() + 1),
+                    move || dec_c.set(dec_c.snapshot() - 1),
+                )
+                .a11y_role(AccessibilityRole::Group),
+        );
+
+        let text_rating = Binding::new(4_i32);
+        let inc_t = text_rating.clone();
+        let dec_t = text_rating.clone();
+        let text_leaf = resolve::render(
+            text("4 stars")
+                .a11y_label("Text rating")
+                .a11y_value("4 of 5")
+                .a11y_adjustable(
+                    move || inc_t.set(inc_t.snapshot() + 1),
+                    move || dec_t.set(dec_t.snapshot() - 1),
+                ),
+        );
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::ProtocolObject;
+            use cocoa_ui::objc2::sel;
+            use cocoa_ui::objc2_app_kit::NSAccessibility;
+
+            for (leaf, rating, expected_label) in [
+                (&host_leaf, &container_rating, "Container rating"),
+                (&text_leaf, &text_rating, "Text rating"),
+            ] {
+                let element = ProtocolObject::<dyn NSAccessibility>::from_ref(leaf.view());
+                assert!(element.isAccessibilityElement());
+                assert_eq!(
+                    element
+                        .accessibilityLabel()
+                        .map(|l| l.to_string())
+                        .as_deref(),
+                    Some(expected_label)
+                );
+                // SAFETY: querying standard `NSAccessibility` selectors on a main-thread view.
+                unsafe {
+                    assert!(
+                        element.isAccessibilitySelectorAllowed(sel!(accessibilityPerformIncrement))
+                    );
+                    assert!(
+                        element.isAccessibilitySelectorAllowed(sel!(accessibilityPerformDecrement))
+                    );
+                }
+                let start = rating.snapshot();
+                assert!(element.accessibilityPerformIncrement());
+                assert_eq!(rating.snapshot(), start + 1);
+                assert!(element.accessibilityPerformDecrement());
+                assert_eq!(rating.snapshot(), start);
+            }
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::{
+                NSObjectUIAccessibility as _, NSObjectUIAccessibilityAction as _,
+                UIAccessibilityTraitAdjustable,
+            };
+
+            // SAFETY: immutable UIKit trait constant.
+            let adjustable_trait = unsafe { UIAccessibilityTraitAdjustable };
+            for (leaf, rating, expected_label) in [
+                (&host_leaf, &container_rating, "Container rating"),
+                (&text_leaf, &text_rating, "Text rating"),
+            ] {
+                assert!(leaf.view().isAccessibilityElement(mtm()));
+                assert_ne!(
+                    leaf.view().accessibilityTraits(mtm()) & adjustable_trait,
+                    0,
+                    "adjustable trait must remain set even with explicit role"
+                );
+                assert_eq!(
+                    leaf.view()
+                        .accessibilityLabel(mtm())
+                        .map(|l| l.to_string())
+                        .as_deref(),
+                    Some(expected_label)
+                );
+                let start = rating.snapshot();
+                leaf.view().accessibilityIncrement(mtm());
+                assert_eq!(rating.snapshot(), start + 1);
+                leaf.view().accessibilityDecrement(mtm());
+                assert_eq!(rating.snapshot(), start);
+            }
+        }
     }
 }

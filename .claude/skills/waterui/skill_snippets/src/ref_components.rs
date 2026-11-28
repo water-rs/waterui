@@ -1557,12 +1557,19 @@ pub fn components_table_prose() {
 // ---------------------------------------------------------------------------
 pub fn components_block_38() {
     let active = Binding::new(true);
+    let archive = || {};
+    let increment = || {};
+    let decrement = || {};
 
     use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 
     let view = Divider;
     let _ = {
         view.a11y_label("Delete message") // override the derived label
+    };
+    let view = Divider;
+    let _ = {
+        view.a11y_hint("Opens the thread") // supplemental outcome hint (IntoText)
     };
     let view = Divider;
     let _ = {
@@ -1576,6 +1583,14 @@ pub fn components_block_38() {
     };
     let view = Divider;
     let _ = { view.a11y_state(active.map(|a| AccessibilityState::new().selected(a))) };
+    let view = Divider;
+    let _ = {
+        view.a11y_action("Archive", archive) // chainable named actions in declaration order
+    };
+    let view = Divider;
+    let _ = {
+        view.a11y_adjustable(increment, decrement) // VoiceOver / TalkBack increment & decrement
+    };
 }
 
 // ---------------------------------------------------------------------------

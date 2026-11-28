@@ -17,8 +17,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{Bool, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAccessibility, NSDragOperation, NSDraggingInfo, NSEvent, NSScreen, NSTrackingArea,
-    NSTrackingAreaOptions, NSView,
+    NSAccessibility, NSAccessibilityCustomAction, NSDragOperation, NSDraggingInfo, NSEvent,
+    NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{
     NSArray, NSEdgeInsets, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -94,6 +94,14 @@ pub struct HostViewIvars {
     /// `accessibilityPerformPress` — installed when the mounted content is
     /// operable through an assistive client's press action.
     accessibility_press: RefCell<Option<AccessibilityPressHandler>>,
+    /// `accessibilityPerformIncrement` — installed by `.a11y_adjustable(...)`.
+    accessibility_increment: RefCell<Option<AccessibilityPressHandler>>,
+    /// `accessibilityPerformDecrement` — installed by `.a11y_adjustable(...)`.
+    accessibility_decrement: RefCell<Option<AccessibilityPressHandler>>,
+    /// When set, unset accessibility properties (`accessibilityLabel`,
+    /// `accessibilityValue`, `accessibilityHelp`, `accessibilityCustomActions`)
+    /// fall back to `primary_content`.
+    delegates_accessibility_to_primary: Cell<bool>,
     /// `viewDidChangeBackingProperties` subscribers — backing-scale changes.
     backing_changed: RefCell<Option<WindowHandler>>,
     /// How the parent layout placed this view, and the response
@@ -167,6 +175,18 @@ impl fmt::Debug for HostViewIvars {
             .field(
                 "accessibility_press",
                 &self.accessibility_press.borrow().is_some(),
+            )
+            .field(
+                "accessibility_increment",
+                &self.accessibility_increment.borrow().is_some(),
+            )
+            .field(
+                "accessibility_decrement",
+                &self.accessibility_decrement.borrow().is_some(),
+            )
+            .field(
+                "delegates_accessibility_to_primary",
+                &self.delegates_accessibility_to_primary.get(),
             )
             .field("capturable", &self.capturable.get().is_some())
             .field("emitter", &self.emitter)
@@ -659,6 +679,111 @@ define_class!(
             })
         }
 
+        // SAFETY: see the module safety note. Advertised via
+        // `isAccessibilitySelectorAllowed:` only when an increment handler is
+        // installed.
+        #[unsafe(method(accessibilityPerformIncrement))]
+        fn accessibility_perform_increment_override(&self) -> bool {
+            guarded("HostView accessibilityPerformIncrement", || {
+                let handler = self.ivars().accessibility_increment.borrow().clone();
+                if let Some(handler) = handler {
+                    return handler(self);
+                }
+                // SAFETY: see the module safety note.
+                unsafe { msg_send![super(self), accessibilityPerformIncrement] }
+            })
+        }
+
+        // SAFETY: see the module safety note. Advertised via
+        // `isAccessibilitySelectorAllowed:` only when a decrement handler is
+        // installed.
+        #[unsafe(method(accessibilityPerformDecrement))]
+        fn accessibility_perform_decrement_override(&self) -> bool {
+            guarded("HostView accessibilityPerformDecrement", || {
+                let handler = self.ivars().accessibility_decrement.borrow().clone();
+                if let Some(handler) = handler {
+                    return handler(self);
+                }
+                // SAFETY: see the module safety note.
+                unsafe { msg_send![super(self), accessibilityPerformDecrement] }
+            })
+        }
+
+        // SAFETY: see the module safety note. When wrapping a non-`HostView`
+        // leaf for `.a11y_adjustable(...)`, forward unset label/value/help/
+        // custom-actions queries to the wrapped primary view so inner
+        // modifiers remain live on the host element.
+        #[unsafe(method_id(accessibilityLabel))]
+        fn accessibility_label_override(&self) -> Option<Retained<NSString>> {
+            guarded("HostView accessibilityLabel", || {
+                // SAFETY: see the module safety note.
+                let inherited: Option<Retained<NSString>> =
+                    unsafe { msg_send![super(self), accessibilityLabel] };
+                if !self.ivars().delegates_accessibility_to_primary.get()
+                    || inherited.as_ref().is_some_and(|label| !label.is_empty())
+                {
+                    return inherited;
+                }
+                self.primary_accessibility_target()
+                    .and_then(|child| ProtocolObject::<dyn NSAccessibility>::from_ref(&*child).accessibilityLabel())
+                    .or(inherited)
+            })
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(accessibilityValue))]
+        fn accessibility_value_override(&self) -> Option<Retained<objc2::runtime::AnyObject>> {
+            guarded("HostView accessibilityValue", || {
+                // SAFETY: see the module safety note.
+                let inherited: Option<Retained<objc2::runtime::AnyObject>> =
+                    unsafe { msg_send![super(self), accessibilityValue] };
+                if !self.ivars().delegates_accessibility_to_primary.get() || inherited.is_some() {
+                    return inherited;
+                }
+                self.primary_accessibility_target()
+                    .and_then(|child| ProtocolObject::<dyn NSAccessibility>::from_ref(&*child).accessibilityValue())
+            })
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(accessibilityHelp))]
+        fn accessibility_help_override(&self) -> Option<Retained<NSString>> {
+            guarded("HostView accessibilityHelp", || {
+                // SAFETY: see the module safety note.
+                let inherited: Option<Retained<NSString>> =
+                    unsafe { msg_send![super(self), accessibilityHelp] };
+                if !self.ivars().delegates_accessibility_to_primary.get()
+                    || inherited.as_ref().is_some_and(|help| !help.is_empty())
+                {
+                    return inherited;
+                }
+                self.primary_accessibility_target()
+                    .and_then(|child| ProtocolObject::<dyn NSAccessibility>::from_ref(&*child).accessibilityHelp())
+                    .or(inherited)
+            })
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(accessibilityCustomActions))]
+        fn accessibility_custom_actions_override(
+            &self,
+        ) -> Option<Retained<NSArray<NSAccessibilityCustomAction>>> {
+            guarded("HostView accessibilityCustomActions", || {
+                // SAFETY: see the module safety note.
+                let inherited: Option<Retained<NSArray<NSAccessibilityCustomAction>>> =
+                    unsafe { msg_send![super(self), accessibilityCustomActions] };
+                if !self.ivars().delegates_accessibility_to_primary.get()
+                    || inherited.as_ref().is_some_and(|actions| !actions.is_empty())
+                {
+                    return inherited;
+                }
+                self.primary_accessibility_target().and_then(|child| {
+                    ProtocolObject::<dyn NSAccessibility>::from_ref(&*child)
+                        .accessibilityCustomActions()
+                })
+            })
+        }
+
         // SAFETY: see the module safety note. A retired or accessibility-hidden
         // host reports no accessibility children.
         #[unsafe(method_id(accessibilityChildren))]
@@ -736,6 +861,12 @@ define_class!(
             guarded("HostView isAccessibilitySelectorAllowed:", || {
                 if selector == sel!(accessibilityPerformPress) {
                     return self.ivars().accessibility_press.borrow().is_some();
+                }
+                if selector == sel!(accessibilityPerformIncrement) {
+                    return self.ivars().accessibility_increment.borrow().is_some();
+                }
+                if selector == sel!(accessibilityPerformDecrement) {
+                    return self.ivars().accessibility_decrement.borrow().is_some();
                 }
                 // SAFETY: see the module safety note.
                 unsafe { msg_send![super(self), isAccessibilitySelectorAllowed: selector] }
@@ -895,6 +1026,36 @@ impl HostView {
             .replace(Some(Rc::new(handler)));
     }
 
+    /// Installs `accessibilityPerformIncrement` and
+    /// `accessibilityPerformDecrement` handlers for `.a11y_adjustable(...)`.
+    pub fn set_accessibility_adjustable_handlers(
+        &self,
+        increment: impl Fn(&Self) -> bool + 'static,
+        decrement: impl Fn(&Self) -> bool + 'static,
+    ) {
+        let ivars = self.ivars();
+        ivars
+            .accessibility_increment
+            .replace(Some(Rc::new(increment)));
+        ivars
+            .accessibility_decrement
+            .replace(Some(Rc::new(decrement)));
+    }
+
+    /// Forwards unset `accessibilityLabel`, `accessibilityValue`,
+    /// `accessibilityHelp` and `accessibilityCustomActions` queries to the
+    /// installed primary content view.
+    pub fn set_delegates_accessibility_to_primary(&self, delegates: bool) {
+        self.ivars()
+            .delegates_accessibility_to_primary
+            .set(delegates);
+    }
+
+    fn primary_accessibility_target(&self) -> Option<Retained<NSView>> {
+        let handler = self.ivars().primary_content.borrow().clone();
+        handler.and_then(|handler| handler(self))
+    }
+
     /// Lets `handler` answer the view's intrinsic measurements,
     /// `fittingSize` and `intrinsicContentSize`, for a layout container.
     pub fn set_measure_handler(&self, handler: impl Fn(&Self, MeasureProposal) -> Size + 'static) {
@@ -940,6 +1101,8 @@ impl HostView {
         ivars.key.replace(None);
         ivars.right_mouse.replace(None);
         ivars.accessibility_press.replace(None);
+        ivars.accessibility_increment.replace(None);
+        ivars.accessibility_decrement.replace(None);
         ivars.backing_changed.replace(None);
         ivars.geometry.clear();
     }
