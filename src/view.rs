@@ -79,7 +79,7 @@ use crate::{
     },
     floating::Floating,
     prelude::Shadow,
-    shape::{ClipShape, Shape},
+    shape::{ClipShape, Mask, MaskView, Shape},
     style::{Anchor, Offset, Rotation, Scale},
 };
 use waterui_controls::button::{ButtonStyleHook, IntoButtonStyle};
@@ -1305,6 +1305,28 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn clip(self, shape: impl Shape) -> Metadata<ClipShape, Self> {
         Metadata::new(self, ClipShape::new(shape))
+    }
+
+    /// Masks this view with the alpha channel of `mask`.
+    ///
+    /// This view determines layout size, stretch axis, and priority; `mask` is
+    /// measured against this view's bounds and centered within them. Opaque
+    /// regions of `mask` reveal this view and transparent regions hide it.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// let gradient_title = Gradient::linear(
+    ///     [Color::srgb_hex("#38BDF8"), Color::srgb_hex("#A855F7")],
+    ///     UnitPoint::LEADING,
+    ///     UnitPoint::TRAILING,
+    /// )
+    /// .mask(text("Title").title());
+    /// ```
+    fn mask<M: View>(self, mask: M) -> MaskView<Self, M> {
+        MaskView::new(self, Mask::new(mask))
     }
 
     /// Attaches a context menu to this view.
