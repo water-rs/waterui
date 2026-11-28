@@ -740,6 +740,9 @@ fn covering_pixels(pixels: f64) -> f64 {
 pub fn hide_from_accessibility(view: &PlatformView) {
     use objc2_app_kit::NSAccessibility;
     use objc2_foundation::NSArray;
+    if let Some(host) = view.downcast_ref::<crate::appkit::HostView>() {
+        host.set_accessibility_hidden(true);
+    }
     view.setAccessibilityElement(false);
     // SAFETY: installing an empty children array on a live view is the
     // documented way to strip its accessibility subtree.

@@ -505,3 +505,40 @@ pub fn realize_sheet_metadata(
 
     leaf
 }
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use waterui::sheet::Sheet;
+    use waterui_core::extract::Extractor as _;
+    use waterui_core::reactive::{Signal as _, binding};
+    use waterui_core::{Dismiss, Environment, State};
+
+    #[test]
+    fn sheet_content_env_installs_innermost_dismiss_and_closes_sheet() {
+        let outer_called = Rc::new(Cell::new(false));
+        let outer_flag = Rc::clone(&outer_called);
+
+        let is_presented = binding(true);
+        let sheet = Sheet::new(&is_presented, || ());
+
+        let mut base = Environment::new();
+        base.insert(State(Dismiss::new(move || outer_flag.set(true))));
+
+        let content_env = base.extending(State(sheet.dismiss_handle()));
+        let extracted =
+            Dismiss::extract(&content_env).expect("sheet content environment must carry Dismiss");
+        extracted.dismiss();
+
+        assert!(
+            !is_presented.snapshot(),
+            "Dismiss must set Sheet binding false"
+        );
+        assert!(
+            !outer_called.get(),
+            "Sheet Dismiss must shadow any outer Dismiss"
+        );
+    }
+}

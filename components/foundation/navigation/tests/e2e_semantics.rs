@@ -7,9 +7,10 @@ use std::time::Duration;
 use waterui::ViewExt as _;
 use waterui::component::button;
 use waterui::layout::stack::vstack;
-use waterui::reactive::SignalExt as _;
+use waterui::reactive::{Signal as _, SignalExt as _};
+use waterui::sheet::Sheet;
 use waterui::text::{Text, text};
-use waterui::{Binding, OneOf2, View};
+use waterui::{Binding, Dismiss, OneOf2, View};
 use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{
     NavigationLink, NavigationPath, NavigationSplitView, NavigationStack, NavigationView,
@@ -586,4 +587,223 @@ fn path_signal_drives_on_change_and_derived_visibility(ui: UiBuilder) {
         .assert_exists_within(Duration::from_millis(200));
 
     assert_eq!(*observed.borrow(), vec![vec![TestRoute::First], vec![]]);
+}
+
+#[waterui::test()]
+fn dismiss_is_absent_on_root_and_pops_pushed_closure_link_page(ui: UiBuilder) {
+    let root_had_dismiss = Rc::new(Cell::new(None::<bool>));
+    let root_probe = Rc::clone(&root_had_dismiss);
+    let mut app = ui.mount(move || {
+        let root_probe = Rc::clone(&root_probe);
+        NavigationStack::new(NavigationView::new(
+            "Root",
+            vstack((
+                button("Probe Root").action(move |dismiss: Option<Dismiss>| {
+                    root_probe.set(Some(dismiss.is_some()));
+                }),
+                NavigationLink::new("Open Detail", || {
+                    NavigationView::new(
+                        "Detail",
+                        vstack((button("Dismiss Detail").action(|dismiss: Dismiss| {
+                            dismiss.dismiss();
+                        }),)),
+                    )
+                }),
+            )),
+        ))
+    });
+
+    app.query().role(Role::BUTTON).label("Probe Root").tap();
+    assert_eq!(root_had_dismiss.get(), Some(false));
+
+    app.query().role(Role::BUTTON).label("Open Detail").tap();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Dismiss Detail")
+        .assert_exists_within(Duration::from_millis(200));
+
+    app.query().role(Role::BUTTON).label("Dismiss Detail").tap();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Open Detail")
+        .assert_exists_within(Duration::from_millis(200));
+}
+
+#[waterui::test()]
+fn dismiss_pops_path_driven_pushed_page_and_updates_path(ui: UiBuilder) {
+    let path = NavigationPath::<TestRoute>::new();
+    let observed_path = path.clone();
+    let mut app = ui.mount(move || {
+        NavigationStack::with_path(
+            path.clone(),
+            NavigationView::new(
+                "Root",
+                vstack((NavigationLink::value("Open First", TestRoute::First),)),
+            ),
+        )
+        .destination(|route| match route {
+            TestRoute::First => NavigationView::new(
+                "First",
+                OneOf2::A(vstack((
+                    NavigationLink::value("Open Second", TestRoute::Second),
+                    button("Dismiss First").action(|dismiss: Dismiss| dismiss.dismiss()),
+                ))),
+            ),
+            TestRoute::Second => NavigationView::new(
+                "Second",
+                OneOf2::B(button("Dismiss Second").action(|dismiss: Dismiss| dismiss.dismiss())),
+            ),
+        })
+    });
+
+    app.query().role(Role::BUTTON).label("Open First").tap();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Open Second")
+        .assert_exists_within(Duration::from_millis(200));
+
+    app.query().role(Role::BUTTON).label("Open Second").tap();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Dismiss Second")
+        .assert_exists_within(Duration::from_millis(200));
+    assert_eq!(observed_path.len(), 2);
+
+    app.query().role(Role::BUTTON).label("Dismiss Second").tap();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Dismiss First")
+        .assert_exists_within(Duration::from_millis(200));
+    assert_eq!(observed_path.len(), 1);
+
+    app.query().role(Role::BUTTON).label("Dismiss First").tap();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Open First")
+        .assert_exists_within(Duration::from_millis(200));
+    assert!(observed_path.is_empty());
+}
+
+#[waterui::test()]
+fn dismiss_closes_sheet_inside_pushed_navigation_page_before_popping(ui: UiBuilder) {
+    let sheet_open = Binding::new(false);
+    let sheet_for_ui = sheet_open.clone();
+
+    let mut app = ui.mount(move || {
+        let sheet_for_page = sheet_for_ui.clone();
+        NavigationStack::new(NavigationView::new(
+            "Stack Root",
+            NavigationLink::new("Push Detail", move || {
+                let sheet_for_sheet = sheet_for_page.clone();
+                let sheet_trigger = sheet_for_page.clone();
+                NavigationView::new(
+                    "Detail",
+                    vstack((
+                        button("Open Sheet").action(move || sheet_trigger.set(true)),
+                        button("Pop Detail").action(|dismiss: Dismiss| dismiss.dismiss()),
+                    ))
+                    .sheet(Sheet::new(&sheet_for_sheet, || {
+                        button("Close Sheet").action(|dismiss: Dismiss| dismiss.dismiss())
+                    })),
+                )
+            }),
+        ))
+    });
+
+    app.query().role(Role::BUTTON).label("Push Detail").tap();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Open Sheet")
+        .assert_exists_within(Duration::from_millis(200));
+
+    app.query().role(Role::BUTTON).label("Open Sheet").tap();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Close Sheet")
+        .assert_exists_within(Duration::from_millis(200));
+    assert!(sheet_open.snapshot());
+
+    // Dismiss inside the sheet closes only the sheet, leaving the pushed page on top.
+    app.query().role(Role::BUTTON).label("Close Sheet").tap();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Pop Detail")
+        .assert_exists_within(Duration::from_millis(200));
+    assert!(!sheet_open.snapshot());
+
+    // Dismiss on the pushed page pops back to the stack root.
+    app.query().role(Role::BUTTON).label("Pop Detail").tap();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Push Detail")
+        .assert_exists_within(Duration::from_millis(200));
+}
+
+#[waterui::test()]
+fn dismiss_inside_navigation_stack_nested_in_sheet_pops_before_closing_sheet(ui: UiBuilder) {
+    let outer_sheet = Binding::new(false);
+    let outer_for_ui = outer_sheet.clone();
+
+    let mut app = ui.mount(move || {
+        let outer = outer_for_ui.clone();
+        let outer_button = outer_for_ui.clone();
+        vstack((button("Present Outer Sheet").action(move || outer_button.set(true)),)).sheet(
+            Sheet::new(&outer, move || {
+                NavigationStack::new(NavigationView::new(
+                    "Sheet Root",
+                    vstack((
+                        button("Dismiss From Root").action(|dismiss: Dismiss| dismiss.dismiss()),
+                        NavigationLink::new("Push Inside Sheet", || {
+                            NavigationView::new(
+                                "Pushed Inside Sheet",
+                                button("Pop Pushed Page")
+                                    .action(|dismiss: Dismiss| dismiss.dismiss()),
+                            )
+                        }),
+                    )),
+                ))
+            }),
+        )
+    });
+
+    app.query()
+        .role(Role::BUTTON)
+        .label("Present Outer Sheet")
+        .tap();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Push Inside Sheet")
+        .assert_exists_within(Duration::from_millis(200));
+
+    app.query()
+        .role(Role::BUTTON)
+        .label("Push Inside Sheet")
+        .tap();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Pop Pushed Page")
+        .assert_exists_within(Duration::from_millis(200));
+    assert!(outer_sheet.snapshot());
+
+    // Dismiss on the pushed page pops the stack back to root without closing the sheet.
+    app.query()
+        .role(Role::BUTTON)
+        .label("Pop Pushed Page")
+        .tap();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Dismiss From Root")
+        .assert_exists_within(Duration::from_millis(200));
+    assert!(outer_sheet.snapshot());
+
+    // Dismiss on the stack's root page inherits the enclosing sheet's Dismiss and closes it.
+    app.query()
+        .role(Role::BUTTON)
+        .label("Dismiss From Root")
+        .tap();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Present Outer Sheet")
+        .assert_exists_within(Duration::from_millis(200));
+    assert!(!outer_sheet.snapshot());
 }

@@ -254,8 +254,9 @@ the top and bottom edges and top/bottom along the leading and trailing edges. Un
 `.context_menu`, the overlay takes a `move ||` builder producing arbitrary `impl View`
 content — every presentation calls it, so state shared between presentations lives in
 `Binding`s the caller owns and the builder captures. `placed_edge` lets the content grow
-out of, or point at, the anchor from the right side after a flip. This is the popover and
-tooltip primitive.
+out of, or point at, the anchor from the right side after a flip, and handlers inside
+the overlay can extract `Dismiss` (`|dismiss: Dismiss| dismiss.dismiss()`) to close it.
+This is the popover and tooltip primitive.
 
 ## Scrolling
 
@@ -1014,8 +1015,10 @@ build it with `Label::new(semantic_text, || content)`, which does this for you.
 Three more modifiers carry explicit semantics. `.a11y_state(..)` accepts either a
 constant `AccessibilityState` or a reactive signal of one. `.a11y_children(
 AccessibilityChildren::ExcludeDescendants)` hides every descendant and exposes only this
-node (`Automatic`, the default, leaves it to the backend) — the one-modifier form of the
-hidden-inner idiom above. `.a11y_geometry(AccessibilityGeometry::Allocation)` reports the
+node, `.a11y_children(AccessibilityChildren::Combine)` merges descendants' labels in
+reading order (unless `.a11y_label(..)` overrides it) and keeps their actions on this
+element for any role while hiding the merged descendants as standalone children, and
+`Automatic` (the default) leaves child exposure to the backend. `.a11y_geometry(AccessibilityGeometry::Allocation)` reports the
 whole frame the parent assigned instead of the view's own rectangle (a canvas whose
 drawing fills it, a gap allocated to a spacer), and `AccessibilityGeometry::Region(rect)`
 an explicit `Rect`; the default is `Response`. Hit testing, focus and drawing are
@@ -1067,11 +1070,12 @@ assistive technology; focus enters the sheet on present and returns to the previ
 focused control on dismiss. Configure heights with `.detents(...)` (`SheetDetent::Medium`,
 `Large`, `Fraction(f32)`, `Height(f32)`, `FullScreen`), opt out of user dismissal with
 `.dismissible(false)`, and handle Escape / back / scrim / swipe dismissal with
-`.on_dismiss(...)`. Handlers inside the sheet extract `SheetDismiss` to close it
-programmatically.
+`.on_dismiss(...)`. Handlers inside the sheet extract `Dismiss` to close it
+programmatically (the same `Dismiss` extractor published by `AnchoredOverlay` and pushed
+`NavigationStack` pages, always closing the innermost presentation).
 
 ```rust
-use waterui::sheet::{Sheet, SheetDetent, SheetDismiss};
+use waterui::sheet::{Sheet, SheetDetent};
 
 let open = binding(false);
 button("Filters")
@@ -1080,7 +1084,7 @@ button("Filters")
         Sheet::new(&open, || {
             vstack((
                 text("Filter options"),
-                button("Done").action(|sheet: SheetDismiss| sheet.dismiss()),
+                button("Done").action(|dismiss: Dismiss| dismiss.dismiss()),
             ))
         })
         .detents([SheetDetent::Medium, SheetDetent::Large])

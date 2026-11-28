@@ -63,10 +63,10 @@ pub use attributes::{
 pub(crate) use values::ResolvedTextPart;
 pub use values::color_of;
 pub use values::{
-    ActionArguments, BackgroundValue, BorderValue, ColorValue, EdgeValues, HorizontalAlign,
-    JsAction, LocalizedArgs, PaddingValue, PickerOption, ProgressStyleValue, RoundedShape,
-    ScrollAxis, ShadowValue, ShapeName, ShapeValue, StackAlign, TextContent, UrlValue,
-    VerticalAlign,
+    A11yChildrenValue, ActionArguments, BackgroundValue, BorderValue, ColorValue, EdgeValues,
+    HorizontalAlign, JsAction, LocalizedArgs, PaddingValue, PickerOption, ProgressStyleValue,
+    RoundedShape, ScrollAxis, ShadowValue, ShapeName, ShapeValue, StackAlign, TextContent,
+    UrlValue, VerticalAlign,
 };
 
 /// The whole vocabulary.
@@ -240,7 +240,7 @@ const fn with(extra: ComponentSchema) -> [ComponentSchema; CORE.len() + 1] {
 }
 
 /// The modifiers, which apply to every component because `ViewExt` does.
-const MODIFIERS: [ModifierSchema; 19] = [
+const MODIFIERS: [ModifierSchema; 20] = [
     modifier(
         "padding",
         "Insets the view, in written order with the rest of the chain.",
@@ -263,6 +263,10 @@ const MODIFIERS: [ModifierSchema; 19] = [
     modifier("a11yValue", "The view's value, for assistive technology."),
     modifier("a11yId", "A stable identifier for tests and tooling."),
     modifier("a11yHidden", "Hides the view from assistive technology."),
+    modifier(
+        "a11yChildren",
+        "Controls how descendant views contribute to accessibility.",
+    ),
 ];
 
 /// One component entry, taking its attributes from the struct that reads them.

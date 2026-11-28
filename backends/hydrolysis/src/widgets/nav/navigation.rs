@@ -53,7 +53,7 @@ use waterui_structural_transition::{ReduceMotion, TransitionProperties};
 use waterui_text::font::Body;
 
 #[derive(Clone, Copy)]
-struct NavigationLeadingReserve(f64);
+pub struct NavigationLeadingReserve(pub(crate) f64);
 
 fn navigation_leading_reserve(env: &Environment) -> f64 {
     env.get::<NavigationLeadingReserve>()
@@ -246,24 +246,56 @@ fn navigation_title_horizontal_span(
 }
 
 /// The environment a page is presented under: `base`, plus the stack's
-/// back-button reserve for any pushed destination. The reserve is a
-/// property of the page, not of the stack's current depth — a pushed page
-/// always shows the back chrome, the root never does — so a departing or
-/// landing page's cached scene is validated and re-recorded against *its*
-/// env, not the current top's (water-rs/hydrolysis#325).
-fn presented_page_env(
+/// back-button reserve and `State(Dismiss)` for any pushed destination.
+/// The reserve is a property of the page, not of the stack's current depth —
+/// a pushed page always shows the back chrome, the root never does — so a
+/// departing or landing page's cached scene is validated and re-recorded
+/// against *its* env, not the current top's (water-rs/hydrolysis#325).
+fn presented_page_env<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    slot_key: &crate::renderer::NavigationKey,
     base: &Environment,
     identity: u64,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
+    theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
 ) -> Environment {
-    let mut env = base.clone();
-    if identity != 0 {
-        let metrics = navigation_look(theme, base).metrics();
-        env.insert(NavigationLeadingReserve(back_button_title_reserve(
-            &metrics,
-        )));
+    if identity == ROOT_NAVIGATION_IDENTITY {
+        return base.clone();
     }
-    env
+    let reserve = theme.map(|theme| {
+        let metrics = navigation_look(theme, base).metrics();
+        back_button_title_reserve(&metrics)
+    });
+    let slot = renderer
+        .navigation
+        .slots
+        .get_mut(slot_key)
+        .expect("Hydrolysis navigation slot missing");
+    if let Some(entry) = slot
+        .entries
+        .borrow_mut()
+        .iter_mut()
+        .find(|entry| entry.identity == identity)
+    {
+        return entry.page_env(base, reserve);
+    }
+    if let Some(entry) = slot
+        .pending_removed
+        .borrow_mut()
+        .iter_mut()
+        .find(|entry| entry.identity == identity)
+    {
+        return entry.page_env(base, reserve);
+    }
+    for event in slot.events.borrow_mut().iter_mut() {
+        if let Some(entry) = event
+            .removed
+            .iter_mut()
+            .find(|entry| entry.identity == identity)
+        {
+            return entry.page_env(base, reserve);
+        }
+    }
+    panic!("Hydrolysis navigation entry identity {identity} is not retained");
 }
 
 struct SearchSuggestionsOverlay<E: crate::text::TextEngine> {
@@ -2252,7 +2284,7 @@ fn moving_page_transition<E: crate::text::TextEngine>(
     identity: u64,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> Option<waterui_structural_transition::TransitionSpec> {
-    let env = presented_page_env(stack_env, identity, theme);
+    let env = presented_page_env(renderer, slot_key, stack_env, identity, Some(theme));
     if identity == ROOT_NAVIGATION_IDENTITY {
         let mut state = state.borrow_mut();
         let root = state.root_mut();
@@ -2866,7 +2898,7 @@ fn present_navigation_pages<E: TextEngine>(
         size,
     };
     let Some((style, direction, progress, from, to, page, pair)) = presentation else {
-        let env = presented_page_env(stack_env, active_identity, &theme);
+        let env = presented_page_env(renderer, slot_key, stack_env, active_identity, Some(&theme));
         pages.record(
             renderer,
             active_identity,
@@ -2884,8 +2916,8 @@ fn present_navigation_pages<E: TextEngine>(
         );
         return;
     };
-    let from_env = presented_page_env(stack_env, from.identity, &theme);
-    let to_env = presented_page_env(stack_env, to.identity, &theme);
+    let from_env = presented_page_env(renderer, slot_key, stack_env, from.identity, Some(&theme));
+    let to_env = presented_page_env(renderer, slot_key, stack_env, to.identity, Some(&theme));
     let frame = PageTransitionFrame {
         transform,
         bounds,
@@ -3130,7 +3162,13 @@ pub fn render_navigation_stack_parts<E: crate::text::TextEngine>(
     } else {
         navigation_entry_identity(&entries, depth - 1)
     };
-    let local_env = presented_page_env(&stack_env, active_identity, &ctx.theme());
+    let local_env = presented_page_env(
+        ctx.renderer_mut(),
+        &slot_key,
+        &stack_env,
+        active_identity,
+        Some(&theme),
+    );
 
     // Pages are recorded in their own local space and replayed at the stack's
     // transform; the hit targets and accessibility bounds a page registers
@@ -3759,17 +3797,18 @@ pub fn emit_navigation_stack_accessibility<E: crate::text::TextEngine>(
     } else {
         navigation_entry_identity(&entries, depth - 1)
     };
-    renderer.apply_navigation_events(&slot_key, active_identity, &local_env);
-    renderer.activate_navigation_root_if_needed(&slot_key, &local_env);
+    let page_env = presented_page_env(renderer, &slot_key, &local_env, active_identity, None);
+    renderer.apply_navigation_events(&slot_key, active_identity, &page_env);
+    renderer.activate_navigation_root_if_needed(&slot_key, &page_env);
     // A semantic emit completes the transaction in place — there is no
     // scene transition to await, so `popped`/`appeared` and the controller
     // acknowledgement fire with the emit that shows the result.
-    renderer.complete_navigation_transaction(&slot_key, &local_env);
+    renderer.complete_navigation_transaction(&slot_key, &page_env);
     if depth == 0 {
         state
             .borrow_mut()
             .root_mut()
-            .emit_accessibility(renderer, &local_env);
+            .emit_accessibility(renderer, &page_env);
     } else {
         let mut entries = entries.borrow_mut();
         let entry = entries
@@ -3778,7 +3817,7 @@ pub fn emit_navigation_stack_accessibility<E: crate::text::TextEngine>(
             .unwrap_or_else(|| {
                 panic!("Hydrolysis navigation entry identity {active_identity} is not retained")
             });
-        entry.content.emit_accessibility(renderer, &local_env);
+        entry.content.emit_accessibility(renderer, &page_env);
     }
     if hidden {
         renderer.pop_accessibility_suppression();

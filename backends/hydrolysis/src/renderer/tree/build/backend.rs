@@ -949,6 +949,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
+        let dismiss = value.dismiss_handle();
         let AnchoredOverlay {
             content: overlay_builder,
             is_presented,
@@ -964,6 +965,8 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
                 placed_edge,
                 placement,
                 dismissal,
+                dismiss,
+                cached_env: RefCell::new(None),
                 marker: Rc::new(()),
             }),
             content,

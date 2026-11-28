@@ -2,10 +2,11 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use hydrolysis_m3::Material3;
+use waterui::Dismiss;
 use waterui::ViewExt as _;
 use waterui::component::{button, text, vstack};
 use waterui::reactive::{Signal as _, binding};
-use waterui::sheet::{Sheet, SheetDetent, SheetDismiss};
+use waterui::sheet::{Sheet, SheetDetent};
 
 use crate::{Role, ui};
 
@@ -27,7 +28,7 @@ fn sheet_makes_underlying_content_inert_and_dismiss_handle_closes() {
                 builds_sheet.set(builds_sheet.get() + 1);
                 vstack((
                     text("Sheet Body"),
-                    button("Done").action(|sheet: SheetDismiss| sheet.dismiss()),
+                    button("Done").action(|dismiss: Dismiss| dismiss.dismiss()),
                 ))
             })
             .label("Settings Sheet")
@@ -65,7 +66,7 @@ fn sheet_makes_underlying_content_inert_and_dismiss_handle_closes() {
     assert_eq!(
         dismiss_calls.get(),
         0,
-        "SheetDismiss::dismiss closes programmatically without running on_dismiss"
+        "Dismiss::dismiss closes programmatically without running on_dismiss"
     );
     app.query()
         .role(Role::BUTTON)
@@ -301,4 +302,56 @@ fn non_dismissible_full_screen_sheet_ignores_escape_and_scrim_taps() {
         .role(Role::BUTTON)
         .label("Underneath")
         .assert_exists();
+}
+
+#[test]
+fn sheet_dismiss_closes_sheet_before_enclosing_anchored_overlay() {
+    use waterui::metadata::anchored_overlay::{AnchoredOverlay, Dismissal};
+
+    let overlay_open = binding(true);
+    let sheet_open = binding(false);
+
+    let overlay_for_ui = overlay_open.clone();
+    let sheet_for_ui = sheet_open.clone();
+
+    let mut app = ui()
+        .theme(Material3::defaults())
+        .viewport(400, 600)
+        .mount_offscreen(move || {
+            let overlay_open = overlay_for_ui.clone();
+            let sheet_open = sheet_for_ui.clone();
+            vstack((
+                waterui::layout::spacer(),
+                text("Base").anchored_overlay(
+                    AnchoredOverlay::new(&overlay_open, move || {
+                        let sheet_open = sheet_open.clone();
+                        let open_sheet = sheet_open.clone();
+                        vstack((
+                            button("Open Sheet").action(move || open_sheet.set(true)),
+                            button("Close Overlay").action(|dismiss: Dismiss| dismiss.dismiss()),
+                        ))
+                        .sheet(Sheet::new(&sheet_open, || {
+                            button("Close Sheet").action(|dismiss: Dismiss| dismiss.dismiss())
+                        }))
+                    })
+                    .dismissal(Dismissal::Manual),
+                ),
+                waterui::layout::spacer(),
+            ))
+        });
+    app.settle();
+
+    app.query().role(Role::BUTTON).label("Open Sheet").tap();
+    app.settle();
+    assert!(sheet_open.snapshot());
+    assert!(overlay_open.snapshot());
+
+    app.query().role(Role::BUTTON).label("Close Sheet").tap();
+    app.settle();
+    assert!(!sheet_open.snapshot());
+    assert!(overlay_open.snapshot());
+
+    app.query().role(Role::BUTTON).label("Close Overlay").tap();
+    app.settle();
+    assert!(!overlay_open.snapshot());
 }
