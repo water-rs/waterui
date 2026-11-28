@@ -945,6 +945,35 @@ impl IntoJs for UrlValue {
     }
 }
 
+/// Which presentation a `<Picker>` takes, mirroring Rust's `PickerStyle`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, TsType)]
+#[non_exhaustive]
+pub enum PickerStyleValue {
+    /// Platform default picker style.
+    #[default]
+    Automatic,
+    /// Dropdown menu picker.
+    Menu,
+    /// Vertical radio button group.
+    Radio,
+    /// Horizontal segmented control.
+    Segmented,
+    /// Scrollable vertical wheel drum.
+    Wheel,
+}
+
+impl From<PickerStyleValue> for waterui_form::picker::PickerStyle {
+    fn from(value: PickerStyleValue) -> Self {
+        match value {
+            PickerStyleValue::Automatic => Self::Automatic,
+            PickerStyleValue::Menu => Self::Menu,
+            PickerStyleValue::Radio => Self::Radio,
+            PickerStyleValue::Segmented => Self::Segmented,
+            PickerStyleValue::Wheel => Self::Wheel,
+        }
+    }
+}
+
 /// Which shape a `<Progress>` takes, mirroring Rust's `ProgressStyle`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, TsType)]
 #[non_exhaustive]

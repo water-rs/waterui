@@ -865,6 +865,50 @@ fn measure_radio_picker_intrinsic<E: crate::text::TextEngine>(
     )
 }
 
+/// The intrinsic size of a wheel picker drum: `visible_rows` rows at the
+/// look's `row_height`, wide enough for the widest item label inside its
+/// horizontal insets, with any visible heading stacked above.
+#[cfg(feature = "picker")]
+fn measure_wheel_picker_intrinsic<E: crate::text::TextEngine>(
+    look: &crate::theme::WheelPickerLook,
+    items: &[waterui_form::picker::PickerItem<waterui_core::id::Id>],
+    label_size: LayoutSize,
+    state: &mut HydroState<E>,
+    env: &Environment,
+) -> LayoutSize {
+    let layout = look.layout();
+    let mut max_item_width: f64 = 0.0;
+    for item in items {
+        let base = resolved_text_styled(&item.content, env, state);
+        let selected =
+            crate::widgets::controls::button::label_styled(look.get_selected_label(), base.clone());
+        let unselected =
+            crate::widgets::controls::button::label_styled(look.get_unselected_label(), base);
+        let selected_size = HydrolysisRenderer::measure_text_intrinsic_size(state, selected, env);
+        let unselected_size =
+            HydrolysisRenderer::measure_text_intrinsic_size(state, unselected, env);
+        max_item_width = max_item_width
+            .max(f64::from(selected_size.width))
+            .max(f64::from(unselected_size.width));
+    }
+    let width = f64::from(layout.horizontal_inset)
+        .mul_add(2.0, max_item_width)
+        .max(f64::from(label_size.width))
+        .max(f64::from(layout.min_width));
+    let visible_rows = layout.visible_rows.max(1);
+    let drum_height = f64::from(layout.row_height) * crate::num_cast::usize_as_f64(visible_rows);
+    let height = drum_height
+        + if label_size.height > 0.0 {
+            f64::from(label_size.height) + f64::from(layout.label_spacing)
+        } else {
+            0.0
+        };
+    LayoutSize::new(
+        crate::num_cast::f64_as_f32(width),
+        crate::num_cast::f64_as_f32(height),
+    )
+}
+
 /// Measures a picker's intrinsic size from the label size measured from its
 /// built [`crate::renderer::RetainedSubview`], so layout and the in-field
 /// label render agree on the label height.
@@ -904,6 +948,13 @@ pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine, S>(
             let spec = crate::widgets::controls::picker::segmented_spec(picker, item_count, env);
             let look = theme.segmented_picker(&spec, env);
             measure_segmented_intrinsic(&look, &items, label_size, state, env)
+        }
+        PickerStyle::Wheel => {
+            let look = theme.wheel_picker(
+                &crate::widgets::controls::picker::picker_spec(picker, env),
+                env,
+            );
+            measure_wheel_picker_intrinsic(&look, &items, label_size, state, env)
         }
         other => {
             contract_violation!(

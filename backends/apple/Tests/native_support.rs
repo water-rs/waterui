@@ -1331,6 +1331,13 @@ pub fn render_environment() -> Environment {
     waterui_controls::theme::install_color_signal::<
         waterui_controls::theme::color::SelectionForeground,
     >(&mut env, black());
+    waterui_controls::theme::install_color_signal::<
+        waterui_controls::theme::color::SelectionContainer,
+    >(&mut env, black());
+    waterui_controls::theme::install_color_signal::<waterui_controls::theme::color::Border>(
+        &mut env,
+        black(),
+    );
     waterui_controls::theme::install_font_signal::<Body>(
         &mut env,
         binding(Body::DEFAULT).computed(),

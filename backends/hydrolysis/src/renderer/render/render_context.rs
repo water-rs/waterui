@@ -257,6 +257,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         feature = "text-field",
         feature = "secure-field",
         feature = "navigation",
+        feature = "picker",
         feature = "slider",
         feature = "stepper",
         feature = "toggle"
@@ -284,7 +285,8 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
     #[cfg(any(
         feature = "text-field",
         feature = "secure-field",
-        feature = "navigation"
+        feature = "navigation",
+        feature = "picker"
     ))]
     pub(crate) fn with_scope(
         &mut self,

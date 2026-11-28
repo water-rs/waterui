@@ -28,8 +28,8 @@ use waterui_ts::JsViewBuilder;
 
 use super::values::{
     BackgroundValue, BorderValue, ColorValue, HorizontalAlign, JsAction, PaddingValue,
-    PickerOption, ProgressStyleValue, ScrollAxis, ShadowValue, ShapeValue, StackAlign, TextContent,
-    UrlValue, VerticalAlign,
+    PickerOption, PickerStyleValue, ProgressStyleValue, ScrollAxis, ShadowValue, ShapeValue,
+    StackAlign, TextContent, UrlValue, VerticalAlign,
 };
 
 /// `<VStack>`: children stacked top to bottom.
@@ -347,6 +347,8 @@ pub struct PickerAttributes {
     value: Binding<Str>,
     /// The options to choose from.
     options: Computed<Vec<PickerOption>>,
+    /// The visual style of the picker.
+    style: Option<PickerStyleValue>,
     /// The label, when it is not the children.
     label: Option<AnyView>,
 }
@@ -362,6 +364,12 @@ impl PickerAttributes {
     #[must_use]
     pub const fn options(&self) -> &Computed<Vec<PickerOption>> {
         &self.options
+    }
+
+    /// The visual style of the picker, when explicitly set.
+    #[must_use]
+    pub const fn style(&self) -> Option<PickerStyleValue> {
+        self.style
     }
 
     /// The label, when it is not the children.
@@ -867,6 +875,8 @@ pub struct Modifiers {
     a11y_id: Str,
     /// Hides the view from assistive technology without hiding it visually.
     a11y_hidden: bool,
+    /// Sets the default picker style for pickers in this subtree.
+    picker_style: PickerStyleValue,
 }
 
 impl Modifiers {
@@ -986,5 +996,11 @@ impl Modifiers {
     #[must_use]
     pub const fn a11y_hidden(&self) -> bool {
         self.a11y_hidden
+    }
+
+    /// Sets the default picker style for pickers in this subtree.
+    #[must_use]
+    pub const fn picker_style(&self) -> PickerStyleValue {
+        self.picker_style
     }
 }

@@ -44,8 +44,8 @@ use waterui_ts::engine::{JsError, JsValue};
 use waterui_ts::{Bridge, FromJs as _};
 
 use crate::catalog::{
-    BackgroundValue, BorderValue, JsAction, PaddingValue, ShadowValue, ShapeValue, TextContent,
-    color_of,
+    BackgroundValue, BorderValue, JsAction, PaddingValue, PickerStyleValue, ShadowValue,
+    ShapeValue, TextContent, color_of,
 };
 
 struct DisabledScope(Computed<bool>);
@@ -146,6 +146,13 @@ pub fn apply(
             Ok(AnyView::new(Metadata::new(
                 view,
                 AccessibilityHidden::new(hidden),
+            )))
+        }
+        "pickerStyle" => {
+            let style = PickerStyleValue::from_js(value, bridge)?;
+            Ok(AnyView::new(Installed::new(
+                view,
+                waterui_form::picker::PickerStyle::from(style),
             )))
         }
         other => Err(JsError::conversion(format!(

@@ -540,6 +540,59 @@ fn ts_picker_is_a_picker() {
             &choice,
         ),
     );
+    assert_same(
+        "Picker, wheel",
+        &stateful(
+            r#"globalThis.choice = waterui.createSignal("alpha");"#,
+            r#"waterui.jsx("Picker", {
+                value: globalThis.choice,
+                style: "wheel",
+                options: [
+                    { value: "alpha", label: "Alpha" },
+                    { value: "beta", label: "Beta" },
+                ],
+                children: "Variant",
+            })"#,
+        ),
+        Picker::new(
+            "Variant",
+            vec![
+                PickerItem::new(Str::from("alpha"), text("Alpha")),
+                PickerItem::new(Str::from("beta"), text("Beta")),
+            ],
+            &choice,
+        )
+        .wheel(),
+    );
+    assert_same(
+        "Picker with ambient pickerStyle",
+        &stateful(
+            r#"globalThis.choice = waterui.createSignal("alpha");"#,
+            r#"waterui.jsx("VStack", {
+                pickerStyle: "radio",
+                children: waterui.jsx("Picker", {
+                    value: globalThis.choice,
+                    options: [
+                        { value: "alpha", label: "Alpha" },
+                        { value: "beta", label: "Beta" },
+                    ],
+                    children: "Variant",
+                }),
+            })"#,
+        ),
+        vstack(
+            HorizontalAlignment::Center,
+            vec![AnyView::new(Picker::new(
+                "Variant",
+                vec![
+                    PickerItem::new(Str::from("alpha"), text("Alpha")),
+                    PickerItem::new(Str::from("beta"), text("Beta")),
+                ],
+                &choice,
+            ))],
+        )
+        .picker_style(waterui::form::picker::PickerStyle::Radio),
+    );
 }
 
 #[test]

@@ -499,11 +499,12 @@ fn controls(
         "Picker" => {
             let mut attributes = PickerAttributes::from_js(config, bridge)?;
             let label = children::label(bridge, component, attributes.take_label(), children)?;
-            Ok(AnyView::new(Picker::new(
-                label,
-                options(attributes.options()),
-                attributes.value(),
-            )))
+            let picker = Picker::new(label, options(attributes.options()), attributes.value());
+            let picker = match attributes.style() {
+                Some(style) => picker.style(style.into()),
+                None => picker,
+            };
+            Ok(AnyView::new(picker))
         }
         "Progress" => {
             let attributes = ProgressAttributes::from_js(config, bridge)?;

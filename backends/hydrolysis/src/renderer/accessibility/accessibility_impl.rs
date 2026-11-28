@@ -343,6 +343,11 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
         selection: nami::Binding<waterui_core::id::Id>,
         target: waterui_core::id::Id,
     },
+    #[cfg(feature = "picker")]
+    PickerWheel {
+        selection: nami::Binding<waterui_core::id::Id>,
+        tags: Vec<waterui_core::id::Id>,
+    },
     Scroll {
         handle: ScrollHandle,
         axis: ScrollAxis,
@@ -1758,6 +1763,45 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             AccessibilityActionTarget::PickerSelect { selection, target } => {
                 handle_accessibility_picker_select_action(&selection, target, action)
             }
+            #[cfg(feature = "picker")]
+            AccessibilityActionTarget::PickerWheel { selection, tags } => match action {
+                AccessibilityAction::Increment => {
+                    if tags.is_empty() {
+                        false
+                    } else {
+                        let current = tags
+                            .iter()
+                            .position(|tag| *tag == selection.snapshot())
+                            .unwrap_or(0);
+                        let next = (current + 1).min(tags.len() - 1);
+                        if tags[next] == selection.snapshot() {
+                            false
+                        } else {
+                            selection.set(tags[next]);
+                            true
+                        }
+                    }
+                }
+                AccessibilityAction::Decrement => {
+                    if tags.is_empty() {
+                        false
+                    } else {
+                        let current = tags
+                            .iter()
+                            .position(|tag| *tag == selection.snapshot())
+                            .unwrap_or(0);
+                        let prev = current.saturating_sub(1);
+                        if tags[prev] == selection.snapshot() {
+                            false
+                        } else {
+                            selection.set(tags[prev]);
+                            true
+                        }
+                    }
+                }
+                AccessibilityAction::Focus => true,
+                _ => declined_action("wheel picker", action),
+            },
             AccessibilityActionTarget::Scroll { handle, axis } => {
                 handle_accessibility_scroll_action(self, &handle, axis, action, target_node)
             }
@@ -3281,6 +3325,11 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
             Self::PickerSelect { selection, target } => Self::PickerSelect {
                 selection: selection.clone(),
                 target: *target,
+            },
+            #[cfg(feature = "picker")]
+            Self::PickerWheel { selection, tags } => Self::PickerWheel {
+                selection: selection.clone(),
+                tags: tags.clone(),
             },
             Self::Scroll { handle, axis } => Self::Scroll {
                 handle: handle.clone(),
