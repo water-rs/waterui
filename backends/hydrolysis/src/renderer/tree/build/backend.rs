@@ -915,6 +915,29 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_wrapper(WrapperEffect::Clip(value), content, env, renderer)
     }
 
+    fn mask<S: ChildView<Self>, C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui_shape::Mask<S>, C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        mark_reached!("mask");
+        let Metadata { content, value } = metadata;
+        let content = C::into_child(content);
+        let mask_child = S::into_child(value.into_mask());
+        let renderer = &mut *self.renderer;
+        let mask_node = RenderNode::build_held(mask_child, env, renderer);
+        RenderNode::build_wrapper(
+            WrapperEffect::Mask(Box::new(MaskEffect {
+                mask: mask_node,
+                mask_frame: Cell::new(kurbo::Rect::ZERO),
+            })),
+            content,
+            env,
+            renderer,
+        )
+    }
+
     fn border<C: ChildView<Self>>(
         &mut self,
         metadata: Metadata<waterui_shape::border::Border, C>,
@@ -951,6 +974,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
+        let dismiss = value.dismiss_handle();
         let AnchoredOverlay {
             content: overlay_builder,
             is_presented,
@@ -966,6 +990,8 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
                 placed_edge,
                 placement,
                 dismissal,
+                dismiss,
+                cached_env: RefCell::new(None),
                 marker: Rc::new(()),
             }),
             content,

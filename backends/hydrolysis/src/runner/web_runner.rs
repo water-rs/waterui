@@ -23,7 +23,7 @@ use nami::Signal;
 use serde::Deserialize;
 use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
-use waterui_backend_core::app::{App, AppMenuBar, AppParts, Windows};
+use waterui_backend_core::app::{App, AppMenuBar, AppParts, AppPhase, Phase, PhaseHandle, Windows};
 use waterui_backend_core::window::WindowState;
 use waterui_core::{Environment, Retain, contract_violation};
 use waterui_structural_transition::ReduceMotion;
@@ -36,7 +36,6 @@ use crate::platform::web_locale::SystemLocale;
 use crate::platform::{BrowserWindow, PlatformWindow};
 #[cfg(feature = "menu")]
 use crate::renderer::HydrolysisTextContextMenuMode;
-#[cfg(feature = "menu")]
 use crate::renderer::MenuShortcutRegistry;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, Next};
 use crate::runner::web_accessibility::WebAccessibilityBridge;
@@ -265,9 +264,129 @@ struct BrowserRunner {
     /// Held for its lifetime: the `languagechange` listener pushes browser
     /// locale changes into `waterui_locale::regional`.
     _system_locale: SystemLocale,
+    /// Held for its lifetime: `visibilitychange`, `focus`, and `blur`
+    /// listeners drive `AppPhase` and `App::on_phase_change`.
+    _phase_observer: WebPhaseObserver,
     /// Earliest `Instant` for the next self-paced continuous
     /// frame when an active vote caps below 60Hz.
     next_paced_due: Option<Instant>,
+}
+
+struct WebPhaseListener {
+    target: web_sys::EventTarget,
+    event_name: &'static str,
+    listener: Closure<dyn FnMut(web_sys::Event)>,
+}
+
+/// Observes `document` `visibilitychange` and `window` `focus`/`blur` events
+/// to keep [`AppPhase`] current and run `on_phase_change` hooks on the browser
+/// microtask queue (even when a hidden tab pauses `requestAnimationFrame`).
+struct WebPhaseObserver {
+    listeners: Vec<WebPhaseListener>,
+}
+
+impl WebPhaseObserver {
+    fn current_phase(document: &web_sys::Document) -> AppPhase {
+        if document.hidden() {
+            AppPhase::Background
+        } else if document.has_focus().unwrap_or(true) {
+            AppPhase::Active
+        } else {
+            AppPhase::Inactive
+        }
+    }
+
+    fn dispatch(handle: &PhaseHandle, next: AppPhase) {
+        if let Some(work) = handle.transition_future(next) {
+            // Spawn directly on the JS microtask/Promise queue rather than the
+            // rAF-driven local executor: hidden tabs throttle or pause rAF, so
+            // `AppPhase::Background` persistence hooks must not wait for a frame.
+            wasm_bindgen_futures::spawn_local(work);
+        }
+    }
+
+    fn observe(phase: Phase, env: &Environment) -> Self {
+        let Some(window) = web_sys::window() else {
+            let _ = phase.start(env);
+            return Self {
+                listeners: Vec::new(),
+            };
+        };
+        let Some(document) = window.document() else {
+            let _ = phase.start(env);
+            return Self {
+                listeners: Vec::new(),
+            };
+        };
+
+        let initial = Self::current_phase(&document);
+        let handle = phase.start_with(env, initial);
+        let mut listeners = Vec::with_capacity(3);
+
+        let visibility_listener =
+            crate::platform::web_impl::add_event_listener(document.as_ref(), "visibilitychange", {
+                let document = document.clone();
+                let handle = handle.clone();
+                move |_event| {
+                    let next = Self::current_phase(&document);
+                    Self::dispatch(&handle, next);
+                }
+            });
+        listeners.push(WebPhaseListener {
+            target: document.clone().into(),
+            event_name: "visibilitychange",
+            listener: visibility_listener,
+        });
+
+        let focus_listener =
+            crate::platform::web_impl::add_event_listener(window.as_ref(), "focus", {
+                let document = document.clone();
+                let handle = handle.clone();
+                move |_event| {
+                    let next = if document.hidden() {
+                        AppPhase::Background
+                    } else {
+                        AppPhase::Active
+                    };
+                    Self::dispatch(&handle, next);
+                }
+            });
+        listeners.push(WebPhaseListener {
+            target: window.clone().into(),
+            event_name: "focus",
+            listener: focus_listener,
+        });
+
+        let blur_listener =
+            crate::platform::web_impl::add_event_listener(window.as_ref(), "blur", {
+                move |_event| {
+                    let next = if document.hidden() {
+                        AppPhase::Background
+                    } else {
+                        AppPhase::Inactive
+                    };
+                    Self::dispatch(&handle, next);
+                }
+            });
+        listeners.push(WebPhaseListener {
+            target: window.into(),
+            event_name: "blur",
+            listener: blur_listener,
+        });
+
+        Self { listeners }
+    }
+}
+
+impl Drop for WebPhaseObserver {
+    fn drop(&mut self) {
+        for entry in &self.listeners {
+            let _ = entry.target.remove_event_listener_with_callback(
+                entry.event_name,
+                entry.listener.as_ref().unchecked_ref(),
+            );
+        }
+    }
 }
 
 impl BrowserRunner {
@@ -547,6 +666,7 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
             env,
             last_window: _,
             termination: _,
+            phase,
         } = app.into_parts();
         let RootWindows {
             initial: windows,
@@ -585,7 +705,6 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
         let _ = env.get_or_insert_with::<crate::renderer::WindowIdentities, _>(
             crate::renderer::WindowIdentities::default,
         );
-        #[cfg(feature = "menu")]
         let _ = env.get_or_insert_with::<MenuShortcutRegistry<crate::text::ParleyEngine>, _>(
             MenuShortcutRegistry::default,
         );
@@ -665,6 +784,7 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
         super::install_core_window_openers(&mut renderer, unsupported_opener);
         let runtime =
             RuntimeWindow::new_painted(window, platform, renderer, render_diagnostics_config, &env);
+        let phase_observer = WebPhaseObserver::observe(phase, &env);
         let accessibility_actions = Rc::new(RefCell::new(VecDeque::new()));
         let accessibility_bridge = WebAccessibilityBridge::new(
             Rc::clone(&accessibility_actions),
@@ -685,6 +805,7 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
             _dormant_window_watches: dormant_window_watches,
             _appearance: system_appearance,
             _system_locale: system_locale,
+            _phase_observer: phase_observer,
             next_paced_due: None,
         };
 

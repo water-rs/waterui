@@ -434,6 +434,7 @@ pub fn components_block_14() {
             .action(handler) // -> Button<impl FnMut(&Environment)>
             .action_async(|| async {}) // [ellipsis filled] single-flight: disables interaction & reports busy until completion or drop
             .pending(&saving) // mirrors in-flight state into &Binding<bool>; composes before or after .action_async
+            .keyboard_shortcut(Shortcut::new('s').command()) // fires while mounted & enabled; preserved in From<Button> for Command
             .style(ButtonStyle::Plain) // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
             // | Glass | GlassProminent (Liquid Glass capsules on Apple;
             //   bordered / bordered-prominent elsewhere)
@@ -452,6 +453,12 @@ pub fn components_block_14() {
     let _ = {
         // Automatic | Switch | Checkbox; .switch() / .checkbox()
         Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)
+    };
+    let _ = {
+        let all = Binding::new(false);
+        let some_selected = Binding::new(true);
+        // impl IntoComputed<bool>; dash indicator + mixed a11y, tap sets true
+        toggle("Select all", &all).checkbox().mixed(some_selected)
     };
     let _ = {
         slider("Volume", &level).range(0.0..=1.0) // &Binding<T: SliderValue>; range/step accept signals
@@ -629,7 +636,7 @@ pub fn components_custom_control_styles() {
             &self,
             configuration: ToggleStyleConfiguration<L>,
         ) -> impl View + use<L> {
-            let (label, is_on, _, _) = configuration.into_parts();
+            let (label, is_on, _, _, _) = configuration.into_parts();
             hstack((
                 label,
                 spacer(),
@@ -1148,7 +1155,14 @@ pub fn components_list_item_prose(records: StateList<Record>) {
     let _ = text("a").list_row_deletable(signal.clone());
     let _ = text("a").list_row_insets(EdgeInsets::all(4.0));
     let _ = text("a").list_min_row_height(0.0);
-    let _ = List::for_each(records.clone(), |r: Record| text(r.title)).selection(&record_selection);
+    let _ = List::for_each(records.clone(), |r: Record| text(r.title))
+        .style(ListStyle::Plain)
+        .selection(&record_selection);
+    let _ = vstack((
+        List::for_each(records.clone(), |r: Record| text(r.title)),
+        List::content((|| text("Row"),)).style(ListStyle::Sidebar),
+    ))
+    .list_style(ListStyle::InsetGrouped);
     let _ = List::content((
         (|| text("Inbox")).tag(Mailbox::Inbox),
         row("Archive", "12").tag(Mailbox::Archive),
@@ -1617,6 +1631,7 @@ pub fn components_a11y_explicit_prose() {
 
     let _ = Divider.a11y_state(AccessibilityState::new().selected(true));
     let _ = Divider.a11y_children(AccessibilityChildren::ExcludeDescendants);
+    let _ = Divider.a11y_children(AccessibilityChildren::Combine);
     let _ = Divider.a11y_children(AccessibilityChildren::Automatic);
     let _ = Divider.a11y_geometry(AccessibilityGeometry::Allocation);
     let _ = Divider.a11y_geometry(AccessibilityGeometry::Region(Rect::new(
@@ -1655,7 +1670,7 @@ pub fn components_block_39() {
 // Block 40 — `Sheet` modal presentation
 // ---------------------------------------------------------------------------
 pub fn components_block_40() {
-    use waterui::sheet::{Sheet, SheetDetent, SheetDismiss};
+    use waterui::sheet::{Sheet, SheetDetent};
 
     let open = binding(false);
     let _ = button("Filters")
@@ -1667,7 +1682,7 @@ pub fn components_block_40() {
             Sheet::new(&open, || {
                 vstack((
                     text("Filter options"),
-                    button("Done").action(|sheet: SheetDismiss| sheet.dismiss()),
+                    button("Done").action(|dismiss: Dismiss| dismiss.dismiss()),
                 ))
             })
             .detents([SheetDetent::Medium, SheetDetent::Large])

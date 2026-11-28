@@ -539,7 +539,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Retain(node) => node.child.prepare_for_measure(renderer),
             Self::Dynamic(node) => node.child.borrow_mut().prepare_for_measure(renderer),
             Self::Env(node) => node.child.prepare_for_measure(renderer),
-            Self::Wrapper(node) => node.child.prepare_for_measure(renderer),
+            Self::Wrapper(node) => {
+                node.child.prepare_for_measure(renderer);
+                if let WrapperEffect::Mask(mask) = &mut node.effect {
+                    mask.mask.prepare_for_measure(renderer);
+                }
+            }
             #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => node.child.prepare_for_measure(renderer),
             Self::Fill(node) => node.child.prepare_for_measure(renderer),
@@ -742,6 +747,39 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         proposal,
                     );
                     renderer.state.pending_size_reports.push((report, placed));
+                } else if let WrapperEffect::Mask(mask) = &mut node.effect {
+                    node.child
+                        .layout_in(renderer, &node_env, safe_area, proposal, bounds);
+                    let mask_proposal = ProposalSize::new(Some(size.width), Some(size.height));
+                    let mask_dim =
+                        mask.mask
+                            .measure(&mut renderer.state, &node_env, &theme, mask_proposal);
+                    let mask_w = if mask_dim.size.width.is_infinite() {
+                        size.width
+                    } else {
+                        mask_dim.size.width.max(0.0)
+                    };
+                    let mask_h = if mask_dim.size.height.is_infinite() {
+                        size.height
+                    } else {
+                        mask_dim.size.height.max(0.0)
+                    };
+                    let mask_x = (size.width - mask_w) * 0.5;
+                    let mask_y = (size.height - mask_h) * 0.5;
+                    mask.mask_frame.set(kurbo::Rect::from_origin_size(
+                        (f64::from(mask_x), f64::from(mask_y)),
+                        (f64::from(mask_w), f64::from(mask_h)),
+                    ));
+                    mask.mask.layout_in(
+                        renderer,
+                        &node_env,
+                        None,
+                        mask_proposal,
+                        Rect::new(
+                            Point::new(bounds.x() + mask_x, bounds.y() + mask_y),
+                            Size::new(mask_w, mask_h),
+                        ),
+                    );
                 } else {
                     node.child
                         .layout_in(renderer, &node_env, safe_area, proposal, bounds);
@@ -1219,7 +1257,21 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Offset(node) => node.child.signature_into(frame, hasher),
             Self::Retain(node) => node.child.signature_into(frame, hasher),
             Self::Env(node) => node.child.signature_into(frame, hasher),
-            Self::Wrapper(node) => node.child.signature_into(frame, hasher),
+            Self::Wrapper(node) => {
+                node.child.signature_into(frame, hasher);
+                if let WrapperEffect::Mask(mask) = &node.effect {
+                    let mask_frame = mask.mask_frame.get();
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "layout signatures hash f32 layout frames"
+                    )]
+                    let rect = Rect::new(
+                        Point::new(mask_frame.x0 as f32, mask_frame.y0 as f32),
+                        Size::new(mask_frame.width() as f32, mask_frame.height() as f32),
+                    );
+                    mask.mask.signature_into(rect, hasher);
+                }
+            }
             Self::Dynamic(node) => node.child.borrow().signature_into(frame, hasher),
             #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => node.child.signature_into(frame, hasher),

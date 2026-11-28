@@ -216,7 +216,7 @@ mod platform {
         /// The depth that settles it.
         expected: usize,
         /// The states it removed — `popped` when it completes.
-        removed: Vec<Rc<RefCell<NavigationDestinationState>>>,
+        removed: Vec<(Rc<RefCell<NavigationDestinationState>>, Environment)>,
     }
 
     impl fmt::Debug for Pending {
@@ -242,6 +242,8 @@ mod platform {
         bar: BarState,
         /// The destination's reactive state.
         state: Rc<RefCell<NavigationDestinationState>>,
+        /// The environment this page and its handlers resolve under.
+        env: Environment,
         /// The transition this page arrives and leaves with.
         transition: NativeNavigationTransition,
         /// The entry's own watchers.
@@ -358,7 +360,7 @@ mod platform {
         /// Renders the root page, installs the native controller's handlers
         /// and returns the stack's leaf.
         pub(super) fn build(self: &Rc<Self>, root: ResolvedNavigationView<Held>) -> NativeLeaf {
-            let root = self.make_entry(root, Mount::Root);
+            let root = self.make_entry(root, Mount::Root, None);
             let nav = cocoa_ui::uikit::NavigationController::new(self.mtm, &root.controller);
             nav.set_prefers_large_titles(true);
             let driver = Rc::downgrade(self);
@@ -419,12 +421,22 @@ mod platform {
         /// `controller.view` — through `LiveChild`, so a page-root
         /// `.transition(...)` is claimed by the stack (§5.5); `Bar`
         /// chrome applies on `navigationItem` as before.
-        fn make_entry(&self, view: ResolvedNavigationView<Held>, mount: Mount) -> Entry {
+        fn make_entry(
+            &self,
+            view: ResolvedNavigationView<Held>,
+            mount: Mount,
+            dismiss: Option<waterui_core::Dismiss>,
+        ) -> Entry {
             let renderer = self
                 .renderer
                 .get()
                 .expect("`prepare` runs before any callback that reads the stack");
-            let ctx = renderer.context();
+            let entry_env = dismiss.map_or_else(
+                || self.env().clone(),
+                |dismiss| self.env().extending(waterui_core::State(dismiss)),
+            );
+            let entry_renderer = renderer.context().with_env(&entry_env).renderer();
+            let ctx = entry_renderer.context();
             let (body, mut view) = view.split_content();
             let leaf = ctx.realize(body);
             let bar = BarState::new(view.bar_mut(), &ctx);
@@ -437,7 +449,7 @@ mod platform {
             });
             let controller = NavContentController::new(self.mtm, &host);
             let leaf = match mount {
-                Mount::Top => LiveChild::mount_inserted(leaf, &host, None, self.env()),
+                Mount::Top => LiveChild::mount_inserted(leaf, &host, None, &entry_env),
                 Mount::Root | Mount::Below => LiveChild::mount(leaf, &host, None),
             };
             // The page root is a transparent wrapper: the tab controller's
@@ -457,20 +469,20 @@ mod platform {
             let state = Rc::new(RefCell::new(view.take_state()));
             let transition = page_transition(view.transition(), &self.transition);
             let mut keep = KeepAlive::default();
-            let mut page = self.nav_page(&bar, root, &controller, &mut keep, &state);
+            let mut page = self.nav_page(&bar, root, &controller, &mut keep, &state, &entry_env);
             if let Some(search) = bar.search.as_ref() {
                 page.search = Some(attach_search(
                     search,
                     bar.search_suggestions.as_ref(),
-                    ctx.env(),
-                    renderer,
+                    &entry_env,
+                    &entry_renderer,
                     &controller,
                     &mut keep,
                 ));
             }
             page.hidden = bar.hidden.snapshot();
             controller.set_page(&page);
-            keep.bind(&Foreground.resolve(ctx.env()), {
+            keep.bind(&Foreground.resolve(&entry_env), {
                 let controller = controller.clone();
                 move |color| controller.set_title_color(&platform_color(&color))
             });
@@ -498,12 +510,12 @@ mod platform {
             }
             {
                 let appear_state = Rc::clone(&state);
-                let env = self.env().clone();
+                let env = entry_env.clone();
                 controller.set_appear_handler(move || {
                     appear_state.borrow_mut().appeared(&env);
                 });
                 let disappear_state = Rc::clone(&state);
-                let env = self.env().clone();
+                let env = entry_env.clone();
                 controller.set_disappear_handler(move || {
                     disappear_state.borrow_mut().disappeared(&env);
                 });
@@ -519,6 +531,7 @@ mod platform {
                 leaf: RefCell::new(Some(leaf)),
                 bar,
                 state,
+                env: entry_env,
                 transition,
                 keep,
             }
@@ -535,6 +548,7 @@ mod platform {
             controller: &Retained<NavContentController>,
             keep: &mut KeepAlive,
             state: &Rc<RefCell<NavigationDestinationState>>,
+            entry_env: &Environment,
         ) -> NavPage {
             let built_items = Rc::new(crate::components::navigation::BuiltBarItems::build(
                 bar,
@@ -575,7 +589,7 @@ mod platform {
             page.hides_back = root && !self.column;
             if !root {
                 let state = Rc::clone(state);
-                let env = self.env().clone();
+                let env = entry_env.clone();
                 let model = self
                     .model
                     .get()
@@ -669,8 +683,7 @@ mod platform {
             } else {
                 let _ = model.transition_cancelled(pending.id);
             }
-            let env = self.env().clone();
-            for state in pending.removed {
+            for (state, env) in pending.removed {
                 state.borrow_mut().popped(&env);
             }
         }
@@ -697,7 +710,6 @@ mod platform {
             if count == 0 {
                 return;
             }
-            let env = self.env().clone();
             let popped: Vec<Rc<Entry>> = {
                 let pages = self.pages.borrow();
                 pages
@@ -707,7 +719,7 @@ mod platform {
                     .collect()
             };
             for entry in &popped {
-                entry.state.borrow_mut().popped(&env);
+                entry.state.borrow_mut().popped(&entry.env);
             }
             self.model
                 .get()
@@ -720,11 +732,10 @@ mod platform {
 
         /// The top page's pop verdict for the interactive gesture.
         fn top_attempt_pop(&self) -> bool {
-            let env = self.env().clone();
             self.pages
                 .borrow()
                 .last()
-                .is_none_or(|entry| entry.state.borrow_mut().attempt_pop(&env))
+                .is_none_or(|entry| entry.state.borrow_mut().attempt_pop(&entry.env))
         }
         fn apply_transaction(&self, transaction: NavigationTransaction<Held>, initial_mount: bool) {
             // A superseded transaction is cancelled; its removed states
@@ -735,8 +746,7 @@ mod platform {
                     .get()
                     .expect("`prepare` runs before any callback that reads the stack")
                     .transition_cancelled(pending.id);
-                let env = self.env().clone();
-                for state in pending.removed {
+                for (state, env) in pending.removed {
                     state.borrow_mut().popped(&env);
                 }
             }
@@ -744,19 +754,21 @@ mod platform {
             let mut pages = self.pages.borrow_mut();
             let cut = prefix.min(pages.len());
             let removed: Vec<Rc<Entry>> = pages.split_off(cut);
-            let removed_states: Vec<Rc<RefCell<NavigationDestinationState>>> = removed
-                .iter()
-                .map(|entry| Rc::clone(&entry.state))
-                .collect();
+            let removed_states: Vec<(Rc<RefCell<NavigationDestinationState>>, Environment)> =
+                removed
+                    .iter()
+                    .map(|entry| (Rc::clone(&entry.state), entry.env.clone()))
+                    .collect();
             let inserted_count = transaction.inserted.len();
             let mut inserted = Vec::new();
-            for (index, builder) in transaction.inserted.into_iter().enumerate() {
+            for (index, mut builder) in transaction.inserted.into_iter().enumerate() {
                 let mount = if !initial_mount && index + 1 == inserted_count {
                     Mount::Top
                 } else {
                     Mount::Below
                 };
-                inserted.push(Rc::new(self.make_entry(builder.build(), mount)));
+                let dismiss = builder.take_dismiss();
+                inserted.push(Rc::new(self.make_entry(builder.build(), mount, dismiss)));
             }
             // A claimed top page — leaving or entering — replaces the
             // stack's own animation for this change (§5.5).
@@ -951,6 +963,8 @@ mod platform {
         bar: BarState,
         /// The destination's reactive state.
         state: Rc<RefCell<NavigationDestinationState>>,
+        /// The environment this page and its handlers resolve under.
+        env: Environment,
         /// The transition this page arrives and leaves with.
         transition: NativeNavigationTransition,
         /// The entry's own watchers.
@@ -1082,7 +1096,7 @@ mod platform {
             self.host.set_hidden_handler(move |_host, hidden| {
                 driver.set_chrome_active(!hidden);
             });
-            let entry = self.make_entry(root, Mount::Root);
+            let entry = self.make_entry(root, Mount::Root, None);
             self.entries.borrow_mut().push(Rc::new(entry));
             let initial = self.initial.borrow_mut().take().unwrap_or_default();
             if initial.is_empty() {
@@ -1099,18 +1113,28 @@ mod platform {
         /// view through `LiveChild`, so a page-root `.transition(...)`
         /// is claimed by the stack (§5.5); bar state and the hidden
         /// watcher republish chrome — `refreshChromeIfTop`.
-        fn make_entry(&self, view: ResolvedNavigationView<Held>, mount: Mount) -> Entry {
+        fn make_entry(
+            &self,
+            view: ResolvedNavigationView<Held>,
+            mount: Mount,
+            dismiss: Option<waterui_core::Dismiss>,
+        ) -> Entry {
             let renderer = self
                 .renderer
                 .get()
                 .expect("`prepare` runs before any callback that reads the stack");
-            let ctx = renderer.context();
+            let entry_env = dismiss.map_or_else(
+                || self.env().clone(),
+                |dismiss| self.env().extending(waterui_core::State(dismiss)),
+            );
+            let entry_renderer = renderer.context().with_env(&entry_env).renderer();
+            let ctx = entry_renderer.context();
             let (body, mut view) = view.split_content();
             let leaf = ctx.realize(body);
             let bar = BarState::new(view.bar_mut(), &ctx);
             let host = HostView::new(self.mtm, cocoa_ui::geometry::Rect::ZERO);
             let leaf = match mount {
-                Mount::Top => LiveChild::mount_inserted(leaf, &host, None, self.env()),
+                Mount::Top => LiveChild::mount_inserted(leaf, &host, None, &entry_env),
                 Mount::Root | Mount::Below => LiveChild::mount(leaf, &host, None),
             };
             crate::primary_content::forward_current(&host, |host| {
@@ -1174,6 +1198,7 @@ mod platform {
                 leaf: RefCell::new(Some(leaf)),
                 bar,
                 state,
+                env: entry_env,
                 transition,
                 keep,
                 #[cfg(feature = "gpu_surface")]
@@ -1262,7 +1287,6 @@ mod platform {
 
         /// `appear`/`disappear` on the top edge — `pageTransitions`.
         fn report_top_change(&self, previous: Option<usize>) {
-            let env = self.env().clone();
             let entries = self.entries.borrow();
             let current = entries
                 .last()
@@ -1275,14 +1299,14 @@ mod platform {
                             .iter()
                             .find(|entry| std::ptr::from_ref(&**entry) as usize == previous)
                     {
-                        old.state.borrow_mut().disappeared(&env);
+                        old.state.borrow_mut().disappeared(&old.env);
                     }
                     if let Some(current) = current
                         && let Some(new) = entries
                             .iter()
                             .find(|entry| std::ptr::from_ref(&**entry) as usize == current)
                     {
-                        new.state.borrow_mut().appeared(&env);
+                        new.state.borrow_mut().appeared(&new.env);
                     }
                 }
             }
@@ -1323,7 +1347,7 @@ mod platform {
             };
             if content.shows_back {
                 let state = Rc::clone(&top.state);
-                let env = self.env().clone();
+                let env = top.env.clone();
                 let model = self
                     .model
                     .get()
@@ -1362,7 +1386,7 @@ mod platform {
                     search,
                     top.bar.search_suggestions.as_ref(),
                     renderer,
-                    self.env(),
+                    &top.env,
                     &mut keep_search,
                 );
                 let source_id = std::ptr::from_ref(&**top) as usize;
@@ -1492,7 +1516,6 @@ mod platform {
             let mut entries = self.entries.borrow_mut();
             let cut = prefix.min(entries.len());
             let removed: Vec<Rc<Entry>> = entries.split_off(cut);
-            let env = self.env().clone();
             let last = removed.len().saturating_sub(1);
             for (index, entry) in removed.iter().enumerate() {
                 // Only the top page leaving ghosts: a claimed entry's
@@ -1509,16 +1532,17 @@ mod platform {
                     retire_page(leaf, self.env(), &self.ghosts);
                 }
                 cocoa_ui::view::remove_from_superview(&entry.view);
-                entry.state.borrow_mut().popped(&env);
+                entry.state.borrow_mut().popped(&entry.env);
             }
             let inserted_count = transaction.inserted.len();
-            for (index, builder) in transaction.inserted.into_iter().enumerate() {
+            for (index, mut builder) in transaction.inserted.into_iter().enumerate() {
                 let mount = if !initial_mount && index + 1 == inserted_count {
                     Mount::Top
                 } else {
                     Mount::Below
                 };
-                entries.push(Rc::new(self.make_entry(builder.build(), mount)));
+                let dismiss = builder.take_dismiss();
+                entries.push(Rc::new(self.make_entry(builder.build(), mount, dismiss)));
             }
             drop(entries);
             self.place_entries();

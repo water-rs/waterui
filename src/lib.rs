@@ -57,7 +57,7 @@ pub mod prelude {
     // Re-export core modules from super, excluding `background` to avoid conflict with layout::background
     #[cfg(feature = "effects")]
     pub use super::FilterViewExt;
-    pub use super::app::{App, AppMenuBar, Windows};
+    pub use super::app::{App, AppMenuBar, AppPhase, Windows};
     pub use super::env::Environment;
     #[cfg(feature = "form")]
     pub use super::form;
@@ -73,11 +73,11 @@ pub mod prelude {
     pub use super::webview;
     pub use super::window::{Window, WindowState};
     pub use super::{
-        Angle, AnimationExt, AnyView, Binding, Color, Computed, Identifiable, OneOf2, OneOf3,
-        OneOf4, OneOf5, OneOf6, OneOf7, OneOf8, Project, Signal, SignalExt, State, Str, View,
-        ViewExt, accessibility, animation, app, binding, color, component, cursor, drag_drop, env,
-        error, filter, gesture, gradient, id, layout, locale, metadata, reactive, regional, shape,
-        sheet, signal, style, task, text, widget, window,
+        Angle, AnimationExt, AnyView, Binding, Color, Computed, Dismiss, Identifiable, OneOf2,
+        OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8, Project, Signal, SignalExt, State, Str,
+        View, ViewExt, accessibility, animation, app, binding, color, component, cursor, drag_drop,
+        env, error, filter, gesture, gradient, id, layout, locale, metadata, reactive, regional,
+        shape, sheet, signal, style, task, text, widget, window,
     };
 
     #[cfg(feature = "flow-markdown")]
@@ -86,7 +86,7 @@ pub mod prelude {
     pub use super::color::*;
     #[cfg(feature = "dialog")]
     pub use super::dialog::{Dialog, DialogAction};
-    pub use super::sheet::{Sheet, SheetDetent, SheetDismiss};
+    pub use super::sheet::{Sheet, SheetDetent};
     #[cfg(feature = "snackbar")]
     pub use super::snackbar::{
         Snackbar, SnackbarDismissReason, SnackbarHost, SnackbarManager, SnackbarPosition,
@@ -120,17 +120,15 @@ pub mod prelude {
     pub use super::component::link::{Link, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
-        ForEachExt, List, ListContent, ListMinRowHeight, Row, Section, detail_row,
+        ForEachExt, List, ListContent, ListMinRowHeight, ListStyle, Row, Section, detail_row,
     };
     #[cfg(feature = "menu")]
-    pub use super::component::menu::{
-        Command, CommandExt, Menu, MenuItem, Shortcut, ShortcutKey, ShortcutModifiers,
-        ShortcutNamedKey,
-    };
+    pub use super::component::menu::{Command, CommandExt, Menu, MenuItem};
     #[cfg(feature = "table")]
     pub use super::component::table::{
         SortDirection, SortableTableColumn, Table, TableColumn, TableSort, col, table,
     };
+    pub use super::component::{Shortcut, ShortcutKey, ShortcutModifiers, ShortcutNamedKey};
     #[cfg(feature = "menu")]
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
     pub use super::metadata::secure::DynamicRange;
@@ -150,11 +148,12 @@ pub mod prelude {
         FlowTablePolicy, flow_markdown,
     };
 
-    // Gradient views
+    // Gradient views and unified shape paint
     #[cfg(any(feature = "gpu", feature = "cpu"))]
     pub use super::gradient::FlowingGradient;
     pub use super::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
     pub use super::gradient::{Gradient, GradientStops, MeshGradient};
+    pub use super::graphics::{IntoPaint, Paint};
 
     // Background types (explicit to avoid module name conflict with layout::background)
     pub use super::background::{Glass, GlassStyle, Material};
@@ -314,8 +313,8 @@ pub use waterui_capture::{
 };
 #[doc(inline)]
 pub use waterui_core::{
-    Angle, AnyView, Error, OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8, Str, animation,
-    contract_violation,
+    Angle, AnyView, Dismiss, Error, OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8, Str,
+    animation, contract_violation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
     extract::{self, Extractor, State},
@@ -544,5 +543,6 @@ mod prelude_tests {
         );
         assert_eq!(*press.key(), Key::Named(NamedKey::Escape));
         assert_eq!(KeyHandling::Handled, KeyHandling::Handled);
+        assert_eq!(AppPhase::default(), AppPhase::Active);
     }
 }

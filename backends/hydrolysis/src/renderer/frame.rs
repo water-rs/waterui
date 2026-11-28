@@ -753,6 +753,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 transform: delta,
                 clip: None,
                 alpha: 1.0,
+                blend: cherenkov_record::BlendMode::Normal,
                 blend_space: None,
                 live: mount::ScopeLive {
                     opacity: None,
@@ -791,6 +792,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 transform: delta,
                 clip: None,
                 alpha: 1.0,
+                blend: cherenkov_record::BlendMode::Normal,
                 blend_space: None,
                 live: mount::ScopeLive {
                     opacity: None,
@@ -842,8 +844,32 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 transform: layer,
                 clip: shape,
                 alpha,
+                blend: cherenkov_record::BlendMode::Normal,
                 blend_space,
                 live,
+            },
+            placement,
+        );
+    }
+
+    /// Opens an alpha-mask compositing scope (`BlendMode::DestIn`) on the
+    /// enclosing isolated layer, with hit-testing disabled for the mask subtree.
+    /// Close with [`Self::close_scope`].
+    pub(crate) fn open_mask_scope(&mut self, key: mount::ScopeKey) {
+        self.push_placement_scope(crate::renderer::ScopeDelta::RECORD_SPACE, None);
+        let gate = crate::renderer::HitGate::Inactive;
+        let placement = self.current_placement();
+        placement.set_removes(gate.removes());
+        placement.set_alpha(gate.alpha());
+        self.program().open_scope(
+            key,
+            mount::ScopeProps {
+                transform: kurbo::Affine::IDENTITY,
+                clip: None,
+                alpha: 1.0,
+                blend: cherenkov_record::BlendMode::DestIn,
+                blend_space: None,
+                live: mount::ScopeLive::NONE,
             },
             placement,
         );

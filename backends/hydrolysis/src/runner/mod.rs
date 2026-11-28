@@ -229,7 +229,6 @@ use crate::renderer::FontFamilyResolution;
 use crate::renderer::HydrolysisTextContextMenuMode;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use crate::renderer::HydrolysisWindowOrigin;
-#[cfg(feature = "menu")]
 use crate::renderer::MenuShortcutRegistry;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use crate::renderer::PopupWindowManager;
@@ -387,7 +386,6 @@ fn install_window_registries<E: crate::text::TextEngine>(env: &mut Environment) 
     let _ = env.get_or_insert_with::<crate::renderer::WindowIdentities, _>(
         crate::renderer::WindowIdentities::default,
     );
-    #[cfg(feature = "menu")]
     let _ = env.get_or_insert_with::<MenuShortcutRegistry<E>, _>(MenuShortcutRegistry::default);
 }
 
@@ -518,6 +516,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
         env,
         last_window: _,
         termination: _,
+        phase: _,
     } = app.into_parts();
     let mut env = env;
     install_application_resources(&mut env);

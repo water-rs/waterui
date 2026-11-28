@@ -223,6 +223,16 @@ mod imp {
         view.setAccessibilityElementsHidden(true, mtm);
     }
 
+    /// Marks `view` an accessibility element that merges its descendants'
+    /// labels in reading order and forwards their actions onto itself.
+    pub fn combine_children(view: &UIView) {
+        let mtm = objc2::MainThreadMarker::from(view);
+        view.setIsAccessibilityElement(true, mtm);
+        if let Some(host) = view.downcast_ref::<crate::uikit::HostView>() {
+            host.set_combines_accessibility_children(true);
+        }
+    }
+
     /// The current accessibility value, if any.
     #[must_use]
     pub fn value(view: &UIView) -> Option<objc2::rc::Retained<NSString>> {
@@ -420,6 +430,24 @@ mod imp {
         element.setAccessibilityElement(true);
         // SAFETY: an empty `NSArray` is a valid children list.
         unsafe { element.setAccessibilityChildren(Some(&NSArray::new())) };
+    }
+
+    /// Marks `element` an accessibility element that merges its descendants'
+    /// labels in reading order and forwards their actions onto itself, hiding
+    /// the merged descendants as standalone children.
+    pub fn combine_children(element: &ProtocolObject<dyn NSAccessibility>) {
+        element.setAccessibilityElement(true);
+        if element.accessibilityRole().is_none() {
+            // SAFETY: reading an immutable string constant exported by AppKit.
+            element.setAccessibilityRole(Some(unsafe { NSAccessibilityGroupRole }));
+        }
+        let any: &AnyObject = element.as_ref();
+        if let Some(host) = any.downcast_ref::<crate::appkit::HostView>() {
+            host.set_combines_accessibility_children(true);
+        } else {
+            // SAFETY: an empty `NSArray` is a valid children list.
+            unsafe { element.setAccessibilityChildren(Some(&NSArray::new())) };
+        }
     }
 
     /// Whether `element` is in the accessibility tree.

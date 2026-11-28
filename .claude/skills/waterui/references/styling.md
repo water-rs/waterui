@@ -249,13 +249,29 @@ rebuild. An animated mesh with `speed` `0.0` holds still and lets the engine idl
 
 ## Shapes
 
-A shape is an outline, not a view: `.fill(color)` turns it into one (a `FilledShape`,
-which fills the space it is given), and `.clip(shape)` uses it as a mask. Two uses:
+A shape is an outline, not a view: `.fill(paint)` turns it into one (a `FilledShape`,
+which fills the space it is given), and `.clip(shape)` clips a view to its outline.
+`.fill(paint)` accepts any [`Paint`] — a concrete `Color`, theme token, reactive colour
+signal, or `Gradient` (linear, radial, or angular). To mask a view with the alpha channel
+of an arbitrary view (such as gradient-filled text), use `.mask(mask_view)`:
 
 ```rust
 use waterui::shape::{CornerRadii, CornerRadius, Ellipse, Path};
 
-Circle.fill(Color::srgb_hex("#3B82F6")).size(80.0, 80.0)   // draw the shape
+Circle.fill(Color::srgb_hex("#3B82F6")).size(80.0, 80.0)   // solid color fill
+Circle
+    .fill(Gradient::linear(
+        [Color::srgb_hex("#38BDF8"), Color::srgb_hex("#A855F7")],
+        UnitPoint::TOP_LEADING,
+        UnitPoint::BOTTOM_TRAILING,
+    ))
+    .size(80.0, 80.0)                                       // gradient paint fill
+Gradient::linear(
+    [Color::srgb_hex("#38BDF8"), Color::srgb_hex("#A855F7")],
+    UnitPoint::LEADING,
+    UnitPoint::TRAILING,
+)
+.mask(text("Title").title())                                // alpha-masked gradient text
 photo.clip(Circle)                                          // clip a view to the shape
 photo.clip(RoundedRectangle::new(12.0))                     // radius in logical points
 photo.clip(RoundedRectangle::new(CornerRadius::fraction(0.1)))

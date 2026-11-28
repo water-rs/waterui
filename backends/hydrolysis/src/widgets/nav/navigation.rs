@@ -53,7 +53,7 @@ use waterui_structural_transition::{ReduceMotion, TransitionProperties};
 use waterui_text::font::Body;
 
 #[derive(Clone, Copy)]
-struct NavigationLeadingReserve(f64);
+pub struct NavigationLeadingReserve(pub(crate) f64);
 
 fn navigation_leading_reserve(env: &Environment) -> f64 {
     env.get::<NavigationLeadingReserve>()
@@ -246,24 +246,56 @@ fn navigation_title_horizontal_span(
 }
 
 /// The environment a page is presented under: `base`, plus the stack's
-/// back-button reserve for any pushed destination. The reserve is a
-/// property of the page, not of the stack's current depth — a pushed page
-/// always shows the back chrome, the root never does — so a departing or
-/// landing page's cached scene is validated and re-recorded against *its*
-/// env, not the current top's (water-rs/hydrolysis#325).
-fn presented_page_env(
+/// back-button reserve and `State(Dismiss)` for any pushed destination.
+/// The reserve is a property of the page, not of the stack's current depth —
+/// a pushed page always shows the back chrome, the root never does — so a
+/// departing or landing page's cached scene is validated and re-recorded
+/// against *its* env, not the current top's (water-rs/hydrolysis#325).
+fn presented_page_env<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    slot_key: &crate::renderer::NavigationKey,
     base: &Environment,
     identity: u64,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
+    theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
 ) -> Environment {
-    let mut env = base.clone();
-    if identity != 0 {
-        let metrics = navigation_look(theme, base).metrics();
-        env.insert(NavigationLeadingReserve(back_button_title_reserve(
-            &metrics,
-        )));
+    if identity == ROOT_NAVIGATION_IDENTITY {
+        return base.clone();
     }
-    env
+    let reserve = theme.map(|theme| {
+        let metrics = navigation_look(theme, base).metrics();
+        back_button_title_reserve(&metrics)
+    });
+    let slot = renderer
+        .navigation
+        .slots
+        .get_mut(slot_key)
+        .expect("Hydrolysis navigation slot missing");
+    if let Some(entry) = slot
+        .entries
+        .borrow_mut()
+        .iter_mut()
+        .find(|entry| entry.identity == identity)
+    {
+        return entry.page_env(base, reserve);
+    }
+    if let Some(entry) = slot
+        .pending_removed
+        .borrow_mut()
+        .iter_mut()
+        .find(|entry| entry.identity == identity)
+    {
+        return entry.page_env(base, reserve);
+    }
+    for event in slot.events.borrow_mut().iter_mut() {
+        if let Some(entry) = event
+            .removed
+            .iter_mut()
+            .find(|entry| entry.identity == identity)
+        {
+            return entry.page_env(base, reserve);
+        }
+    }
+    panic!("Hydrolysis navigation entry identity {identity} is not retained");
 }
 
 struct SearchSuggestionsOverlay<E: crate::text::TextEngine> {
@@ -1489,12 +1521,26 @@ impl<E: crate::text::TextEngine> NavigationSplitRenderState<E> {
         }
     }
 
+    fn sidebar_env(env: &Environment) -> Environment {
+        let mut sidebar_env = env.clone();
+        #[cfg(feature = "list")]
+        {
+            sidebar_env.remove::<waterui_controls::list::ListStyle>();
+            waterui_controls::list::ListStyle::install_default(
+                waterui_controls::list::ListStyle::Sidebar,
+                &mut sidebar_env,
+            );
+        }
+        sidebar_env
+    }
+
     pub(crate) fn prebuild(
         &mut self,
         renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
-        self.primary.ensure_built(renderer, env);
+        let sidebar_env = Self::sidebar_env(env);
+        self.primary.ensure_built(renderer, &sidebar_env);
         self.placeholder.ensure_built(renderer, env);
     }
 
@@ -1692,33 +1738,56 @@ pub fn measure_navigation_split_node<E: crate::text::TextEngine>(
     // belongs to the selection change, not to measurement — against the
     // proposal the column's rect hands it.
     if plan.compact {
-        let column = if plan.three_column {
+        let (column, column_env) = if plan.three_column {
             if detail_selection.is_some() {
-                retained_split_column(detail_selection, split.detail.as_ref(), &split.placeholder)
+                (
+                    retained_split_column(
+                        detail_selection,
+                        split.detail.as_ref(),
+                        &split.placeholder,
+                    ),
+                    None,
+                )
             } else if primary_selection.is_some() {
-                retained_split_column(
-                    primary_selection,
-                    split.content.as_ref(),
-                    &split.placeholder,
+                (
+                    retained_split_column(
+                        primary_selection,
+                        split.content.as_ref(),
+                        &split.placeholder,
+                    ),
+                    None,
                 )
             } else {
-                &split.primary
+                (
+                    &split.primary,
+                    Some(NavigationSplitRenderState::<E>::sidebar_env(env)),
+                )
             }
         } else {
-            retained_split_column(detail_selection, split.detail.as_ref(), &split.placeholder)
+            (
+                retained_split_column(detail_selection, split.detail.as_ref(), &split.placeholder),
+                None,
+            )
         };
-        return ViewDimensions::new(
-            column.measure_built_with_proposal(state, env, theme, proposal),
-        );
+        let measure_env = column_env.as_ref().unwrap_or(env);
+        return ViewDimensions::new(column.measure_built_with_proposal(
+            state,
+            measure_env,
+            theme,
+            proposal,
+        ));
     }
 
     let mut width = 0.0_f64;
     let mut height = 0.0_f64;
     if !plan.three_column || plan.show_all {
-        let size =
-            split
-                .primary
-                .measure_built_with_proposal(state, env, theme, plan.column_proposal);
+        let sidebar_env = NavigationSplitRenderState::<E>::sidebar_env(env);
+        let size = split.primary.measure_built_with_proposal(
+            state,
+            &sidebar_env,
+            theme,
+            plan.column_proposal,
+        );
         width += f64::from(size.width);
         height = height.max(f64::from(size.height));
     }
@@ -1846,10 +1915,11 @@ pub fn render_navigation_split_parts<E: crate::text::TextEngine>(
         // A split column is chrome-hosted content, like navigation content:
         // it inherits the widget's boundaries edge by edge.
         let primary_area = ctx.content_area_for(primary_rect);
+        let sidebar_env = NavigationSplitRenderState::<E>::sidebar_env(env);
         state.borrow_mut().primary.place(
             ctx.renderer_mut(),
             render_ctx,
-            env,
+            &sidebar_env,
             bounded_proposal(primary_rect),
             primary_rect,
             primary_area,
@@ -2044,10 +2114,11 @@ fn render_compact_split<E: crate::text::TextEngine>(
         CompactSplitFront::Sidebar => {
             let render_ctx = ctx.render_context();
             let pane_area = ctx.content_area_for(bounds);
+            let sidebar_env = NavigationSplitRenderState::<E>::sidebar_env(env);
             state.borrow_mut().primary.place(
                 ctx.renderer_mut(),
                 render_ctx,
-                env,
+                &sidebar_env,
                 bounded_proposal(bounds),
                 bounds,
                 pane_area,
@@ -2252,7 +2323,7 @@ fn moving_page_transition<E: crate::text::TextEngine>(
     identity: u64,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> Option<waterui_structural_transition::TransitionSpec> {
-    let env = presented_page_env(stack_env, identity, theme);
+    let env = presented_page_env(renderer, slot_key, stack_env, identity, Some(theme));
     if identity == ROOT_NAVIGATION_IDENTITY {
         let mut state = state.borrow_mut();
         let root = state.root_mut();
@@ -2866,7 +2937,7 @@ fn present_navigation_pages<E: TextEngine>(
         size,
     };
     let Some((style, direction, progress, from, to, page, pair)) = presentation else {
-        let env = presented_page_env(stack_env, active_identity, &theme);
+        let env = presented_page_env(renderer, slot_key, stack_env, active_identity, Some(&theme));
         pages.record(
             renderer,
             active_identity,
@@ -2884,8 +2955,8 @@ fn present_navigation_pages<E: TextEngine>(
         );
         return;
     };
-    let from_env = presented_page_env(stack_env, from.identity, &theme);
-    let to_env = presented_page_env(stack_env, to.identity, &theme);
+    let from_env = presented_page_env(renderer, slot_key, stack_env, from.identity, Some(&theme));
+    let to_env = presented_page_env(renderer, slot_key, stack_env, to.identity, Some(&theme));
     let frame = PageTransitionFrame {
         transform,
         bounds,
@@ -3130,7 +3201,13 @@ pub fn render_navigation_stack_parts<E: crate::text::TextEngine>(
     } else {
         navigation_entry_identity(&entries, depth - 1)
     };
-    let local_env = presented_page_env(&stack_env, active_identity, &ctx.theme());
+    let local_env = presented_page_env(
+        ctx.renderer_mut(),
+        &slot_key,
+        &stack_env,
+        active_identity,
+        Some(&theme),
+    );
 
     // Pages are recorded in their own local space and replayed at the stack's
     // transform; the hit targets and accessibility bounds a page registers
@@ -3759,17 +3836,18 @@ pub fn emit_navigation_stack_accessibility<E: crate::text::TextEngine>(
     } else {
         navigation_entry_identity(&entries, depth - 1)
     };
-    renderer.apply_navigation_events(&slot_key, active_identity, &local_env);
-    renderer.activate_navigation_root_if_needed(&slot_key, &local_env);
+    let page_env = presented_page_env(renderer, &slot_key, &local_env, active_identity, None);
+    renderer.apply_navigation_events(&slot_key, active_identity, &page_env);
+    renderer.activate_navigation_root_if_needed(&slot_key, &page_env);
     // A semantic emit completes the transaction in place — there is no
     // scene transition to await, so `popped`/`appeared` and the controller
     // acknowledgement fire with the emit that shows the result.
-    renderer.complete_navigation_transaction(&slot_key, &local_env);
+    renderer.complete_navigation_transaction(&slot_key, &page_env);
     if depth == 0 {
         state
             .borrow_mut()
             .root_mut()
-            .emit_accessibility(renderer, &local_env);
+            .emit_accessibility(renderer, &page_env);
     } else {
         let mut entries = entries.borrow_mut();
         let entry = entries
@@ -3778,7 +3856,7 @@ pub fn emit_navigation_stack_accessibility<E: crate::text::TextEngine>(
             .unwrap_or_else(|| {
                 panic!("Hydrolysis navigation entry identity {active_identity} is not retained")
             });
-        entry.content.emit_accessibility(renderer, &local_env);
+        entry.content.emit_accessibility(renderer, &page_env);
     }
     if hidden {
         renderer.pop_accessibility_suppression();

@@ -300,11 +300,10 @@ pub struct DelegatedActivation<E: crate::text::TextEngine> {
 pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
     /// Direct semantic activation: `Click` invokes the widget's own activation
     /// handler, no pointer and no coordinates.
-    Activate {
-        action: AccessibilityActivation<E>,
-    },
+    Activate { action: AccessibilityActivation<E> },
     Toggle {
         binding: nami::Binding<bool>,
+        mixed: Option<nami::Computed<bool>>,
     },
     #[cfg(feature = "slider")]
     Slider {
@@ -334,9 +333,7 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
         line_limit: Option<usize>,
     },
     #[cfg(feature = "secure-field")]
-    SecureField {
-        value: nami::Binding<FormSecure>,
-    },
+    SecureField { value: nami::Binding<FormSecure> },
     /// Read-only selectable static text: supports focus and selection updates
     /// without allowing mutation.
     SelectableText {
@@ -387,6 +384,21 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
 }
 
 #[cfg(feature = "accessibility")]
+struct CombinedDescendantAction<E: crate::text::TextEngine> {
+    label: Option<String>,
+    supported: Vec<AccessibilityAction>,
+    target: AccessibilityActionTarget<E>,
+    toggled: Option<AccessibilityToggled>,
+}
+
+#[cfg(feature = "accessibility")]
+struct CombinedDescendantSemantics<E: crate::text::TextEngine> {
+    labels: Vec<String>,
+    actionable: Vec<CombinedDescendantAction<E>>,
+    inherited_custom: Vec<(String, AccessibilityActionTarget<E>)>,
+}
+
+#[cfg(feature = "accessibility")]
 pub struct AccessibilityBuilder<E: crate::text::TextEngine> {
     pub nodes: Vec<(AccessibilityNodeId, AccessibilityNode)>,
     /// `id -> position in nodes`: lookups are index hits, never list
@@ -394,6 +406,11 @@ pub struct AccessibilityBuilder<E: crate::text::TextEngine> {
     node_index: std::collections::BTreeMap<AccessibilityNodeId, usize>,
     pub(crate) root_children: Vec<AccessibilityNodeId>,
     pub(crate) actions: BTreeMap<AccessibilityNodeId, AccessibilityActionTarget<E>>,
+    /// Named custom-action dispatch targets exposed on a node (for example,
+    /// descendant controls folded into an `AccessibilityChildren::Combine`
+    /// element), keyed by node id and `(CustomAction::id, target)`.
+    pub(crate) custom_actions:
+        BTreeMap<AccessibilityNodeId, Vec<(i32, AccessibilityActionTarget<E>)>>,
     /// The [`InteractionFocusBinding`] a node was emitted under, keyed by node
     /// — the same modifier state the pointer path reads for press slots, so a
     /// keyboard-focused node writes its author binding regardless of whether a
@@ -528,6 +545,7 @@ impl<E: crate::text::TextEngine> Default for AccessibilityBuilder<E> {
             node_index: std::collections::BTreeMap::new(),
             root_children: Vec::new(),
             actions: BTreeMap::new(),
+            custom_actions: BTreeMap::new(),
             focus_bindings: BTreeMap::new(),
             interaction_nodes: BTreeMap::new(),
             delegated_activations: BTreeMap::new(),
@@ -590,6 +608,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         self.node_regions.clear();
         self.root_children.clear();
         self.actions.clear();
+        self.custom_actions.clear();
         self.focus_bindings.clear();
         self.interaction_nodes.clear();
         self.delegated_activations.clear();
@@ -641,6 +660,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         self.root_children.retain(|id| !dead.contains(id));
         for id in &dead {
             self.actions.remove(id);
+            self.custom_actions.remove(id);
             self.node_owners.remove(id);
             self.node_regions.remove(id);
             self.node_clips.remove(id);
@@ -967,6 +987,220 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         {
             node.set_label(name);
         }
+    }
+
+    /// Walks `initial_children` in pre-order, returning every descendant id to
+    /// retire alongside the non-hidden descendants in reading order.
+    fn collect_descendants_preorder(
+        &self,
+        initial_children: Vec<AccessibilityNodeId>,
+    ) -> (Vec<AccessibilityNodeId>, Vec<AccessibilityNodeId>) {
+        let mut all_descendants = Vec::new();
+        let mut visible_descendants = Vec::new();
+        let mut stack: Vec<(AccessibilityNodeId, bool)> = initial_children
+            .into_iter()
+            .rev()
+            .map(|id| (id, false))
+            .collect();
+        while let Some((id, parent_hidden)) = stack.pop() {
+            all_descendants.push(id);
+            let Some(node) = self.node(id) else {
+                continue;
+            };
+            let hidden = parent_hidden || node.is_hidden();
+            if !hidden {
+                visible_descendants.push(id);
+            }
+            for &child in node.children().iter().rev() {
+                stack.push((child, hidden));
+            }
+        }
+        (all_descendants, visible_descendants)
+    }
+
+    /// Drains existing custom actions from `node_id` as `(description, target)`
+    /// pairs in declaration order.
+    fn take_custom_action_entries(
+        &mut self,
+        node_id: AccessibilityNodeId,
+    ) -> Vec<(String, AccessibilityActionTarget<E>)> {
+        let Some(targets) = self.custom_actions.remove(&node_id) else {
+            return Vec::new();
+        };
+        let descriptors: Vec<(i32, String)> = self.node(node_id).map_or_default(|node| {
+            node.custom_actions()
+                .iter()
+                .map(|action| (action.id, action.description.clone()))
+                .collect()
+        });
+        descriptors
+            .into_iter()
+            .filter_map(|(action_id, description)| {
+                targets
+                    .iter()
+                    .find(|(tid, _)| *tid == action_id)
+                    .map(|(_, target)| (description, target.clone()))
+            })
+            .collect()
+    }
+
+    fn collect_combined_descendant_semantics(
+        &mut self,
+        visible_descendants: &[AccessibilityNodeId],
+    ) -> CombinedDescendantSemantics<E> {
+        const FORWARDED_ACTIONS: &[AccessibilityAction] = &[
+            AccessibilityAction::Click,
+            AccessibilityAction::Focus,
+            AccessibilityAction::Blur,
+            AccessibilityAction::Expand,
+            AccessibilityAction::Collapse,
+            AccessibilityAction::Increment,
+            AccessibilityAction::Decrement,
+            AccessibilityAction::SetValue,
+            AccessibilityAction::ReplaceSelectedText,
+            AccessibilityAction::ScrollUp,
+            AccessibilityAction::ScrollDown,
+            AccessibilityAction::ScrollLeft,
+            AccessibilityAction::ScrollRight,
+            AccessibilityAction::ScrollIntoView,
+            AccessibilityAction::ShowContextMenu,
+        ];
+
+        let mut labels = Vec::new();
+        let mut actionable = Vec::new();
+        let mut inherited_custom = Vec::new();
+
+        for &id in visible_descendants {
+            let Some(node) = self.node(id) else {
+                continue;
+            };
+            let label = node
+                .label()
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+            if let Some(label) = &label {
+                labels.push(label.clone());
+            }
+            if node.is_disabled() {
+                continue;
+            }
+            let supported = FORWARDED_ACTIONS
+                .iter()
+                .copied()
+                .filter(|action| node.supports_action(*action))
+                .collect();
+            let toggled = node.toggled();
+            if let Some(target) = self.actions.remove(&id) {
+                actionable.push(CombinedDescendantAction {
+                    label,
+                    supported,
+                    target,
+                    toggled,
+                });
+            }
+            inherited_custom.extend(self.take_custom_action_entries(id));
+        }
+        CombinedDescendantSemantics {
+            labels,
+            actionable,
+            inherited_custom,
+        }
+    }
+
+    /// Merges every descendant registered under `container_id` into
+    /// `container_id` itself (`AccessibilityChildren::Combine`,
+    /// water-rs/waterui#4385):
+    ///
+    /// - Non-hidden descendants' labels join in pre-order (reading order) with
+    ///   `", "` whenever `container_id` carries no explicit label of its own.
+    /// - Enabled actionable descendants keep their actions on `container_id`:
+    ///   when `container_id` has no primary action target of its own and
+    ///   exactly one actionable descendant (with no inherited custom actions),
+    ///   that descendant's target is promoted as `container_id`'s primary
+    ///   action; every named activatable descendant (plus any inherited custom
+    ///   actions from nested `Combine` descendants) is also exposed through
+    ///   `CustomAction` entries in reading order.
+    /// - Every merged descendant is detached and retired so it never surfaces
+    ///   as a duplicate standalone sibling or child.
+    fn combine_descendants(&mut self, container_id: AccessibilityNodeId) {
+        let Some(&container_index) = self.node_index.get(&container_id) else {
+            return;
+        };
+        let initial_children = self.nodes[container_index].1.children().to_vec();
+        if initial_children.is_empty() {
+            return;
+        }
+
+        let (all_descendants, visible_descendants) =
+            self.collect_descendants_preorder(initial_children);
+        let CombinedDescendantSemantics {
+            labels,
+            actionable,
+            inherited_custom,
+        } = self.collect_combined_descendant_semantics(&visible_descendants);
+
+        let container_has_own_action = self.actions.contains_key(&container_id);
+        let container_disabled = self.nodes[container_index].1.is_disabled();
+
+        let mut custom_entries = self.take_custom_action_entries(container_id);
+        let mut promoted = None;
+        if !container_disabled {
+            if !container_has_own_action && actionable.len() == 1 && inherited_custom.is_empty() {
+                let single = &actionable[0];
+                promoted = Some((
+                    single.supported.clone(),
+                    single.target.clone(),
+                    single.toggled,
+                ));
+            }
+            for item in actionable {
+                if item.supported.contains(&AccessibilityAction::Click)
+                    && let Some(name) = item.label
+                {
+                    custom_entries.push((name, item.target));
+                }
+            }
+            custom_entries.extend(inherited_custom);
+        }
+
+        let mut custom_descriptors = Vec::with_capacity(custom_entries.len());
+        let mut custom_targets = Vec::with_capacity(custom_entries.len());
+        for (description, target) in custom_entries {
+            if let Ok(next_id) = i32::try_from(custom_descriptors.len()) {
+                custom_descriptors.push(accesskit::CustomAction {
+                    id: next_id,
+                    description,
+                });
+                custom_targets.push((next_id, target));
+            }
+        }
+
+        {
+            let container = &mut self.nodes[container_index].1;
+            container.clear_children();
+            if container.label().is_none_or(str::is_empty) && !labels.is_empty() {
+                container.set_label(labels.join(", "));
+            }
+            if let Some((supported, target, toggled)) = promoted {
+                for action in supported {
+                    container.add_action(action);
+                }
+                if container.toggled().is_none()
+                    && let Some(toggled) = toggled
+                {
+                    container.set_toggled(toggled);
+                }
+                self.actions.insert(container_id, target);
+            }
+            if !custom_descriptors.is_empty() {
+                container.set_custom_actions(custom_descriptors);
+                container.add_action(AccessibilityAction::CustomAction);
+                container.add_action(AccessibilityAction::Focus);
+                self.custom_actions.insert(container_id, custom_targets);
+            }
+        }
+
+        self.retire_nodes(&all_descendants);
     }
 
     /// Collapses a synthesized naming container around exactly one semantic
@@ -1317,6 +1551,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
 pub struct AccessibilityContainerScope<E: crate::text::TextEngine> {
     parent_pushed: bool,
     suppression_pushed: bool,
+    combines_descendants: bool,
     /// The node this scope synthesized for the container, when it did.
     container_node: Option<AccessibilityNodeId>,
     /// The naming scope that node's registration claimed — the channel
@@ -1332,6 +1567,7 @@ impl<E: crate::text::TextEngine> AccessibilityContainerScope<E> {
     const INERT: Self = Self {
         parent_pushed: false,
         suppression_pushed: false,
+        combines_descendants: false,
         container_node: None,
         naming_scope: None,
     };
@@ -1347,10 +1583,15 @@ impl<E: crate::text::TextEngine> AccessibilityContainerScope<E> {
 /// once for the bar.
 #[cfg(feature = "accessibility")]
 pub fn accessibility_container_child_environment(env: &Environment) -> Option<Environment> {
-    // A role, a label, or a value names the container. Identifier/hidden/state
-    // metadata are subtree-scoped and name nothing on their own, so they never
-    // make a bare container into a semantic node.
-    if env.get::<AccessibilityRole>().is_none()
+    // A role, a label, a value, or `AccessibilityChildren::Combine` names the
+    // container. Identifier/hidden/state metadata are subtree-scoped and name
+    // nothing on their own, so they never make a bare container into a semantic
+    // node.
+    let combines = env
+        .get::<AccessibilityChildren>()
+        .is_some_and(AccessibilityChildren::combines_descendants);
+    if !combines
+        && env.get::<AccessibilityRole>().is_none()
         && env.get::<AccessibilityLabel>().is_none()
         && env.get::<AccessibilityValue>().is_none()
     {
@@ -1369,11 +1610,14 @@ pub fn accessibility_container_child_environment(env: &Environment) -> Option<En
     child_env.remove::<AccessibilityStateSignal>();
     // Every claim boundary re-derives text consumption: an enclosing
     // consuming claim's marker is dropped here so a nested claim decides for
-    // its own subtree — the nearer claim owns the text.
+    // its own subtree — the nearer claim owns the text. `Combine` merges all
+    // emitted descendants in reading order after the subtree walk instead of
+    // consuming text leaves out-of-band.
     child_env.remove::<AccessibilityNameFromContents>();
-    if env
-        .get::<AccessibilityRole>()
-        .is_some_and(accessibility_role_names_from_contents)
+    if !combines
+        && env
+            .get::<AccessibilityRole>()
+            .is_some_and(accessibility_role_names_from_contents)
     {
         child_env.insert(AccessibilityNameFromContents);
     }
@@ -1613,36 +1857,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
-    )]
-    #[cfg_attr(
-        not(any(
-            feature = "slider",
-            feature = "stepper",
-            feature = "date-picker",
-            feature = "text-field",
-            feature = "secure-field"
-        )),
-        expect(
-            clippy::needless_pass_by_value,
-            reason = "value-editing capabilities consume request data through the same action interface"
-        )
-    )]
     pub fn handle_accessibility_action(
         &mut self,
         request: AccessibilityActionRequest,
         env: &Environment,
     ) -> bool {
         let action = request.action;
-        #[cfg(any(
-            feature = "slider",
-            feature = "stepper",
-            feature = "date-picker",
-            feature = "text-field",
-            feature = "secure-field"
-        ))]
         let action_data = request.data;
         let target_node = request.target_node;
         let focus_action = matches!(
@@ -1655,6 +1875,34 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 AccessibilityAction::Click => false,
                 _ => declined_action("root", action),
             };
+        }
+        if action == AccessibilityAction::CustomAction {
+            let Some(AccessibilityActionData::CustomAction(action_id)) = action_data else {
+                return declined_action_data("custom action", action, "CustomAction");
+            };
+            let Some(target) = self
+                .accessibility
+                .custom_actions
+                .get(&target_node)
+                .and_then(|entries| {
+                    entries
+                        .iter()
+                        .find_map(|(id, target)| (*id == action_id).then(|| target.clone()))
+                })
+            else {
+                return declined_action("custom action", action);
+            };
+            let changed = self.dispatch_accessibility_action_target(
+                target_node,
+                target,
+                AccessibilityAction::Click,
+                None,
+                env,
+            );
+            if changed {
+                self.set_keyboard_focus_node(Some(target_node), false);
+            }
+            return changed;
         }
         let Some(target) = self.accessibility.actions.get(&target_node).cloned() else {
             // A node may legitimately register no action target: a disabled
@@ -1685,15 +1933,66 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             );
             return false;
         };
-        let changed = match target {
+        let changed = self.dispatch_accessibility_action_target(
+            target_node,
+            target,
+            action,
+            action_data,
+            env,
+        );
+        if changed && focus_action {
+            self.set_keyboard_focus_node(Some(target_node), false);
+        }
+        changed
+    }
+
+    #[cfg(feature = "accessibility")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive match over every accessibility action target"
+    )]
+    #[cfg_attr(
+        not(any(
+            feature = "slider",
+            feature = "stepper",
+            feature = "date-picker",
+            feature = "text-field",
+            feature = "secure-field"
+        )),
+        expect(
+            clippy::needless_pass_by_value,
+            reason = "value-editing capabilities consume request data through the same action interface"
+        )
+    )]
+    fn dispatch_accessibility_action_target(
+        &mut self,
+        target_node: AccessibilityNodeId,
+        target: AccessibilityActionTarget<E>,
+        action: AccessibilityAction,
+        action_data: Option<AccessibilityActionData>,
+        env: &Environment,
+    ) -> bool {
+        #[cfg(not(any(
+            feature = "slider",
+            feature = "stepper",
+            feature = "date-picker",
+            feature = "text-field",
+            feature = "secure-field"
+        )))]
+        let _ = action_data;
+        match target {
             AccessibilityActionTarget::Activate { action: activation } => match action {
                 AccessibilityAction::Click => (activation.borrow_mut())(self, env),
                 AccessibilityAction::Focus => true,
                 _ => declined_action("activation", action),
             },
-            AccessibilityActionTarget::Toggle { binding } => match action {
+            AccessibilityActionTarget::Toggle { binding, mixed } => match action {
                 AccessibilityAction::Click => {
-                    let next = !binding.snapshot();
+                    let next = if mixed.as_ref().is_some_and(nami::Signal::snapshot) {
+                        true
+                    } else {
+                        !binding.snapshot()
+                    };
                     binding.set(next);
                     true
                 }
@@ -1827,11 +2126,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 ),
                 _ => declined_action("list row", action),
             },
-        };
-        if changed && focus_action {
-            self.set_keyboard_focus_node(Some(target_node), false);
         }
-        changed
     }
 
     /// Links the widget's interaction identity to the accessibility node it
@@ -2251,7 +2546,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ) -> AccessibilityContainerScope<E> {
         debug_assert!(
             accessibility_container_child_environment(env).is_some(),
-            "hydrolysis accessibility container scope requires a role, a label, or a value"
+            "hydrolysis accessibility container scope requires a role, a label, a value, or Combine children"
         );
 
         if self.is_accessibility_hidden(env) {
@@ -2259,6 +2554,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             return AccessibilityContainerScope {
                 parent_pushed: false,
                 suppression_pushed: true,
+                combines_descendants: false,
                 container_node: None,
                 naming_scope: None,
             };
@@ -2305,11 +2601,15 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let excludes_descendants = env
             .get::<AccessibilityChildren>()
             .is_some_and(AccessibilityChildren::excludes_descendants);
+        let combines_descendants = env
+            .get::<AccessibilityChildren>()
+            .is_some_and(AccessibilityChildren::combines_descendants);
         if bounds.is_some_and(|bounds| bounds.width() <= 0.0 || bounds.height() <= 0.0) {
             self.push_accessibility_suppression();
             return AccessibilityContainerScope {
                 parent_pushed: false,
                 suppression_pushed: true,
+                combines_descendants: false,
                 container_node: None,
                 naming_scope: None,
             };
@@ -2343,6 +2643,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         AccessibilityContainerScope {
             parent_pushed: true,
             suppression_pushed,
+            combines_descendants,
             container_node: Some(node_id),
             naming_scope: env.get::<ScopedAccessibilitySemantics<E>>().cloned(),
         }
@@ -2466,6 +2767,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.accessibility.collapse_single_child_container(node_id);
     }
 
+    /// Merges the descendants registered under `node_id` into `node_id`
+    /// (`AccessibilityChildren::Combine`).
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn combine_accessibility_descendants(&mut self, node_id: AccessibilityNodeId) {
+        self.accessibility.combine_descendants(node_id);
+    }
+
     #[cfg(feature = "accessibility")]
     #[expect(
         clippy::option_if_let_else,
@@ -2495,10 +2803,15 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             } else {
                 false
             };
-            // A container that consumed descendant text is a composite — it
-            // holds its own name — so it must not dissolve into a surviving
-            // control child: the close button would answer as the tab.
+            if scope.combines_descendants {
+                self.combine_accessibility_descendants(container_id);
+            }
+            // A container that consumed descendant text or combined its
+            // descendants is a composite — it holds its own name — so it must
+            // not dissolve into a surviving control child: the close button
+            // would answer as the tab.
             if !consumed_text
+                && !scope.combines_descendants
                 && let Some(child_id) = self
                     .accessibility
                     .collapse_single_child_container(container_id)
@@ -3304,8 +3617,9 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
             Self::Activate { action } => Self::Activate {
                 action: action.clone(),
             },
-            Self::Toggle { binding } => Self::Toggle {
+            Self::Toggle { binding, mixed } => Self::Toggle {
                 binding: binding.clone(),
+                mixed: mixed.clone(),
             },
             #[cfg(feature = "slider")]
             Self::Slider { value, range, step } => Self::Slider {

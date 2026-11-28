@@ -3782,10 +3782,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         modifiers: Modifiers,
         env: &Environment,
     ) -> bool {
-        #[cfg(not(feature = "menu"))]
-        let _ = logical_key;
         self.registries();
-        // A declared menu chord claims its key before any built-in key
+        // A declared menu or button chord claims its key before any built-in key
         // handling — Escape, Tab traversal, arrow stepping, activation and
         // focused text input — as AppKit offers key equivalents before
         // `keyDown` (water-rs/hydrolysis#247). The runner seeds the registry
@@ -3796,7 +3794,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // types J, while J with nothing editable focused fires its chord —
         // the space bar included — and a bare `Delete` chord does not
         // steal the field's own delete either (water-rs/waterui#2118).
-        #[cfg(feature = "menu")]
         {
             let registry =
                 menu_shortcut_registry::<E>(env, "menu chords are not dispatched for this key");
@@ -3807,7 +3804,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     .is_some_and(|target| target.model.is_editable());
             if !typing
                 && let Some(registry) = registry
-                && registry.dispatch(self.window_id, logical_key, modifiers, env)
+                && registry.dispatch(
+                    self.window_id,
+                    logical_key,
+                    modifiers,
+                    self.modal_shield_active(),
+                    env,
+                )
             {
                 return true;
             }

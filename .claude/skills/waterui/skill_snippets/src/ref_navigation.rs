@@ -260,9 +260,9 @@ pub fn navigation_block_04() {
 // ---------------------------------------------------------------------------
 // navigation.md § "## Going back, and destination lifecycle" — rust block 5/16
 // ---------------------------------------------------------------------------
-pub fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
+pub fn send_draft(mail: Mail, dismiss: Dismiss) {
     mail.send_draft();
-    navigator.pop(); // returns the popped route as Option<T>, `None` at the root
+    dismiss.dismiss(); // pops the pushed destination (or closes an enclosing Sheet / AnchoredOverlay)
 }
 
 // ---------------------------------------------------------------------------
@@ -729,7 +729,7 @@ pub fn navigation_block_15(env: Environment) -> App<impl Windows> {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Resident apps and windows on demand" — rust block 16/16
+// navigation.md § "## Resident apps and windows on demand" — rust block 16/17
 // ---------------------------------------------------------------------------
 pub fn navigation_block_16(env: Environment) -> App<impl Windows, impl AppMenuBar> {
     fn scratch_content() -> impl View {
@@ -752,6 +752,41 @@ pub fn navigation_block_16(env: Environment) -> App<impl Windows, impl AppMenuBa
                     Window::new("Scratch", scratch_content).show(&windows);
                 }),
             ))
+    }
+
+    app(env)
+}
+
+// ---------------------------------------------------------------------------
+// navigation.md § "## Resident apps and windows on demand" — rust block 17/17
+// ---------------------------------------------------------------------------
+pub fn navigation_block_17(env: Environment) -> App<impl Windows> {
+    use waterui::app::{App, AppPhase, Windows};
+    use waterui::env::use_env;
+    use waterui::prelude::*;
+
+    #[waterui::state]
+    #[derive(Clone)]
+    struct Store;
+
+    impl Store {
+        async fn save(&self) {}
+    }
+
+    fn app(env: Environment) -> App<impl Windows> {
+        let store = Store;
+        App::new(env)
+            .state(&store)
+            .on_phase_change(|phase: AppPhase, store: Store| async move {
+                if phase == AppPhase::Background {
+                    store.save().await;
+                }
+            })
+            .window(Window::new("Editor", || {
+                use_env(|State(phase): State<Computed<AppPhase>>| {
+                    text(phase.map(|p| format!("{p:?}")).computed())
+                })
+            }))
     }
 
     app(env)

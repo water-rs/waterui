@@ -73,6 +73,8 @@ pub struct CocoaUiButtonIvars {
     /// Called with the new value after each `setEnabled:`.
     enabled_handler: RefCell<Option<EnabledHandler>>,
     key_commands: Rc<KeyCommandRegistry>,
+    /// Optional `UIKeyCommand` armed directly for `Button::keyboard_shortcut`.
+    shortcut_command: RefCell<Option<Retained<UIKeyCommand>>>,
     /// `UIKit` has presented this button's menu and not yet ended it.
     #[cfg(target_abi = "macabi")]
     menu_open: Cell<bool>,
@@ -112,6 +114,7 @@ define_class!(
             let this = this.set_ivars(CocoaUiButtonIvars {
                 enabled_handler: RefCell::new(None),
                 key_commands: Rc::new(KeyCommandRegistry::default()),
+                shortcut_command: RefCell::new(None),
                 #[cfg(target_abi = "macabi")]
                 menu_open: Cell::new(false),
             });
@@ -123,6 +126,9 @@ define_class!(
         #[unsafe(method(cocoaUiButtonMenuCommandFired:))]
         fn menu_command_fired(&self, command: &UICommand) {
             guarded("CocoaUiButton cocoaUiButtonMenuCommandFired:", || {
+                if self.is_own_shortcut(command) && !self.isEnabled() {
+                    return;
+                }
                 self.ivars().key_commands.fire(command);
             });
         }
@@ -135,23 +141,42 @@ define_class!(
                 return unsafe { msg_send![super(self), canPerformAction: action, withSender: sender] };
             }
             Bool::from(sender.and_then(|sender| sender.downcast_ref::<UICommand>()).map_or_else(
-                || self.ivars().key_commands.any_armed(),
-                |command| self.ivars().key_commands.owns(command),
+                || {
+                    if self.isEnabled() {
+                        self.ivars().key_commands.any_armed()
+                    } else {
+                        self.menu().is_some() && self.ivars().key_commands.any_armed()
+                    }
+                },
+                |command| {
+                    if self.is_own_shortcut(command) && !self.isEnabled() {
+                        return false;
+                    }
+                    self.ivars().key_commands.owns(command)
+                },
             ))
         }
 
-        // SAFETY: the responder property returns retained commands from the menu.
+        // SAFETY: the responder property returns retained commands from the menu and button shortcut.
         #[unsafe(method_id(keyCommands))]
         fn key_commands_override(&self) -> Option<Retained<NSArray<UIKeyCommand>>> {
             guarded("CocoaUiButton keyCommands", || {
                 // SAFETY: `UIResponder.keyCommands`' declared signature.
                 let inherited: Option<Retained<NSArray<UIKeyCommand>>> =
                     unsafe { msg_send![super(self), keyCommands] };
-                let Some(menu) = self.menu() else {
-                    return inherited;
-                };
+                let mut candidates = self
+                    .menu()
+                    .map_or_default(|menu| super::menu::key_commands(&menu));
+                if self.isEnabled()
+                    && let Some(shortcut) = self.ivars().shortcut_command.borrow().as_ref()
+                {
+                    candidates.push(shortcut.clone());
+                }
+                if candidates.is_empty() && inherited.is_none() {
+                    return None;
+                }
                 self.ivars().key_commands.commands(
-                    &super::menu::key_commands(&menu),
+                    &candidates,
                     inherited,
                     sel!(cocoaUiButtonMenuCommandFired:),
                 )
@@ -279,6 +304,46 @@ impl CocoaUiButton {
         )
     }
 
+    fn is_own_shortcut(&self, command: &UICommand) -> bool {
+        self.ivars()
+            .shortcut_command
+            .borrow()
+            .as_ref()
+            .is_some_and(|own| KeyCommandRegistry::same_token(own, command))
+    }
+
+    /// Arms a `UIKeyCommand` directly on this button's registry, active while
+    /// the button is mounted, enabled, and the returned [`KeyCommands`] scope
+    /// stays alive.
+    #[must_use]
+    pub fn arm_shortcut(
+        &self,
+        title: &str,
+        key_equivalent: &str,
+        modifiers: crate::menu::KeyModifiers,
+        action: impl Fn() + 'static,
+    ) -> KeyCommands {
+        let scope = self.menu_commands();
+        let property_list = scope.arm(Rc::new(action));
+        let mtm = self.mtm();
+        // SAFETY: `commandWithTitle:...` is `UIKeyCommand`'s designated
+        // constructor, `scope.action()` is implemented by `CocoaUiButton`, and
+        // `NSString` is a valid property-list object.
+        let key_command = unsafe {
+            UIKeyCommand::commandWithTitle_image_action_input_modifierFlags_propertyList(
+                &NSString::from_str(title),
+                None,
+                scope.action(),
+                &NSString::from_str(key_equivalent),
+                modifiers.native(),
+                Some(AsRef::<AnyObject>::as_ref(&*property_list)),
+                mtm,
+            )
+        };
+        self.ivars().shortcut_command.replace(Some(key_command));
+        scope
+    }
+
     /// How many commands this button's menu has armed.
     #[cfg(feature = "native-test")]
     #[must_use]
@@ -314,6 +379,20 @@ impl Button {
     #[must_use]
     pub fn menu_commands(&self) -> KeyCommands {
         self.inner.menu_commands()
+    }
+
+    /// Arms a `UIKeyCommand` directly on this button's registry; see
+    /// [`CocoaUiButton::arm_shortcut`].
+    #[must_use]
+    pub fn arm_shortcut(
+        &self,
+        title: &str,
+        key_equivalent: &str,
+        modifiers: crate::menu::KeyModifiers,
+        action: impl Fn() + 'static,
+    ) -> KeyCommands {
+        self.inner
+            .arm_shortcut(title, key_equivalent, modifiers, action)
     }
 
     /// A `.system`-type button with no title.

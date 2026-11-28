@@ -54,7 +54,7 @@ use waterui_layout::{
 use waterui_navigation::NavigationView;
 
 #[cfg(feature = "list")]
-use crate::component::list::{ListMinRowHeight, ListRowDeletable, ListRowInsets};
+use crate::component::list::{ListMinRowHeight, ListRowDeletable, ListRowInsets, ListStyle};
 #[cfg(feature = "haptics")]
 use crate::haptic::Feedback;
 use crate::{
@@ -79,7 +79,7 @@ use crate::{
     },
     floating::Floating,
     prelude::Shadow,
-    shape::{ClipShape, Shape},
+    shape::{ClipShape, Mask, MaskView, Shape},
     style::{Anchor, Offset, Rotation, Scale},
 };
 use waterui_controls::button::{ButtonStyleHook, IntoButtonStyle};
@@ -1307,6 +1307,28 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, ClipShape::new(shape))
     }
 
+    /// Masks this view with the alpha channel of `mask`.
+    ///
+    /// This view determines layout size, stretch axis, and priority; `mask` is
+    /// measured against this view's bounds and centered within them. Opaque
+    /// regions of `mask` reveal this view and transparent regions hide it.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// let gradient_title = Gradient::linear(
+    ///     [Color::srgb_hex("#38BDF8"), Color::srgb_hex("#A855F7")],
+    ///     UnitPoint::LEADING,
+    ///     UnitPoint::TRAILING,
+    /// )
+    /// .mask(text("Title").title());
+    /// ```
+    fn mask<M: View>(self, mask: M) -> MaskView<Self, M> {
+        MaskView::new(self, Mask::new(mask))
+    }
+
     /// Attaches a context menu to this view.
     ///
     /// The context menu appears when the user:
@@ -1414,7 +1436,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// ```rust
     /// use waterui::prelude::*;
-    /// use waterui::sheet::{Sheet, SheetDetent, SheetDismiss};
+    /// use waterui::sheet::{Sheet, SheetDetent};
     ///
     /// let open = binding(false);
     /// button("Filter")
@@ -1424,7 +1446,7 @@ pub trait ViewExt: View + Sized {
     ///     })
     ///     .sheet(
     ///         Sheet::new(&open, || {
-    ///             button("Done").action(|sheet: SheetDismiss| sheet.dismiss())
+    ///             button("Done").action(|dismiss: Dismiss| dismiss.dismiss())
     ///         })
     ///         .detents([SheetDetent::Medium, SheetDetent::Large]),
     ///     );
@@ -1454,6 +1476,25 @@ pub trait ViewExt: View + Sized {
     #[cfg(feature = "snackbar")]
     fn snackbar_host_with_icons<I: View + 'static>(self) -> SnackbarHost<Self, I> {
         SnackbarHost::new(self)
+    }
+
+    /// Sets the visual presentation style of every [`List`](crate::component::list::List)
+    /// inside this subtree that does not specify an explicit `.style(...)`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// let grouped = vstack((
+    ///     List::content((|| text!("First"),)),
+    ///     List::content((|| text!("Second"),)),
+    /// ))
+    /// .list_style(ListStyle::InsetGrouped);
+    /// ```
+    #[cfg(feature = "list")]
+    fn list_style(self, style: ListStyle) -> With<Self, ListStyle> {
+        self.with(style)
     }
 
     /// Sets the minimum row height of every list inside this view, in points.

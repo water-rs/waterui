@@ -151,6 +151,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::GpuContent(_) | Self::ExternalFrame(_) => true,
             Self::Wrapper(node) => match node.effect {
                 WrapperEffect::Clip(_)
+                | WrapperEffect::Mask(_)
                 | WrapperEffect::Border(_)
                 | WrapperEffect::Shadow(_)
                 | WrapperEffect::Material(_)
@@ -568,6 +569,27 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         HydrolysisRenderer::apply_clip_shape(renderer, ctx, value, |r| {
                             node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
+                    }
+                    WrapperEffect::Mask(mask) => {
+                        node.child
+                            .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
+                        let mask_frame = mask.mask_frame.get();
+                        renderer.open_mask_scope(mount::ScopeKey {
+                            role: "mask",
+                            item: 0,
+                        });
+                        if mask_frame.width() > 0.0 && mask_frame.height() > 0.0 {
+                            let offset = kurbo::Affine::translate(mask_frame.origin().to_vec2());
+                            let mask_ctx = RenderContext::new(
+                                ctx.local() * offset,
+                                kurbo::Rect::from_origin_size(
+                                    kurbo::Point::ZERO,
+                                    mask_frame.size(),
+                                ),
+                            );
+                            mask.mask.flush(renderer, mask_ctx, child_env, offset);
+                        }
+                        renderer.close_scope();
                     }
                     WrapperEffect::Border(value) => {
                         HydrolysisRenderer::apply_border(renderer, ctx, child_env, value, |r| {
@@ -1246,7 +1268,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         }
                         if let Some(claim) = claim {
                             renderer.drain_claim_scope(claim.node_id, &claim.env);
-                            if claim.synthesized {
+                            if claim
+                                .env
+                                .get::<AccessibilityChildren>()
+                                .is_some_and(AccessibilityChildren::combines_descendants)
+                            {
+                                renderer.combine_accessibility_descendants(claim.node_id);
+                            } else if claim.synthesized {
                                 renderer.collapse_synthesized_claim(claim.node_id);
                             }
                         }

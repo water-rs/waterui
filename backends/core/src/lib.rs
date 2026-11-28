@@ -70,6 +70,8 @@ pub mod native_backend;
 pub mod overlay;
 #[cfg(all(test, feature = "runtime"))]
 mod parked_executor;
+#[cfg(feature = "runtime")]
+mod phase;
 pub mod scroll;
 #[cfg(target_vendor = "apple")]
 mod sf_symbol;

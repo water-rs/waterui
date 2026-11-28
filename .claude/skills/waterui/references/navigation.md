@@ -171,14 +171,17 @@ must be `Serialize + DeserializeOwned`), for restoring a stack across launches.
 ## Going back, and destination lifecycle
 
 ```rust
-fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
+fn send_draft(mail: Mail, dismiss: Dismiss) {
     mail.send_draft();
-    navigator.pop();              // returns the popped route as Option<T>, `None` at the root
+    dismiss.dismiss();              // pops the pushed destination (or closes an enclosing Sheet / AnchoredOverlay)
 }
 ```
 
-`Mail` is the app's own `#[state]`-marked model, so it arrives bare alongside the
-navigator rather than wrapped in `State<..>`.
+`Mail` is the app's own `#[state]`-marked model, so it arrives bare alongside
+`Dismiss` rather than wrapped in `State<..>`. Pushed `NavigationStack` pages publish
+`Dismiss` to pop themselves, while the root page inherits any enclosing `Sheet` or
+`AnchoredOverlay`'s `Dismiss`; multi-step or root pops (`pop_n`, `pop_to_root`,
+`replace`) go through `Navigator<R>`.
 
 `on_navigation_appear` / `on_navigation_disappear` are destination-level hooks that fire
 when the push/pop *transition completes* — the right place for "opening this page marks
@@ -583,6 +586,46 @@ kill the process and call neither. Any menu or action handler can quit the app b
 extracting the `waterui::app::Quit` handle and calling `quit.request()` (it files a
 cancellable request, so `on_quit_request` still answers; extraction fails on iOS, Android,
 web and headless hosts).
+
+Lifecycle phases and background persistence: `AppPhase` (`Active`, `Inactive`, `Background`,
+re-exported in `waterui::app` and `waterui::prelude`) tracks the application's foreground state
+across macOS, iOS, desktop `winit`, Android, and web. `App::on_phase_change(handler)` takes
+`(phase: AppPhase, ...extractors...) -> impl Future<Output = ()> + 'static`; multiple calls
+compose, and redundant transitions are deduplicated. On iOS, transitions to
+`AppPhase::Background` hold a `UIApplication` background task assertion around the hook future;
+on Android, `onStop` pumps local tasks within a bounded budget before returning. The live phase
+is also installed in the application `Environment` as `Computed<AppPhase>` (readable via
+`use_env(|State(phase): State<Computed<AppPhase>>| ...)` or `env.get::<Computed<AppPhase>>()`):
+
+```rust
+use waterui::app::{App, AppPhase, Windows};
+use waterui::env::use_env;
+use waterui::prelude::*;
+
+#[waterui::state]
+#[derive(Clone)]
+struct Store;
+
+impl Store {
+    async fn save(&self) {}
+}
+
+fn app(env: Environment) -> App<impl Windows> {
+    let store = Store;
+    App::new(env)
+        .state(&store)
+        .on_phase_change(|phase: AppPhase, store: Store| async move {
+            if phase == AppPhase::Background {
+                store.save().await;
+            }
+        })
+        .window(Window::new("Editor", || {
+            use_env(|State(phase): State<Computed<AppPhase>>| {
+                text(phase.map(|p| format!("{p:?}")).computed())
+            })
+        }))
+}
+```
 
 `waterui::app::application_name()` and `application_identifier()` return a `Str`, empty
 when nothing told the app. The name is the project's `Water.toml` package name, read at

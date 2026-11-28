@@ -144,7 +144,7 @@ struct Row { #[id] id: u64, title: Str }
 let rows = StateList::from(seed_rows);                 // bulk-seed; .push/.insert/.remove (&mut self) diff by id
 
 scroll(VStack::for_each(rows.clone(), |row| text(row.title))) // virtualized inside scroll
-List::for_each(rows.clone(), |row| text(row.title))           // platform list: lazy, editable
+List::for_each(rows.clone(), |row| text(row.title))           // platform list: lazy, editable; .style(ListStyle::...) or .list_style(...)
 ```
 
 Note the shape: **`ForEach` is a *collection of views*, not a view.** A container consumes
@@ -196,7 +196,7 @@ pub fn app(env: Environment) -> App<impl Windows> {
 ```
 
 `use waterui::prelude::*;` brings in views, layout, colors, text (`IntoText`), controls,
-navigation, menus, `Binding`, `Computed`, `binding` (the general constructor), `StateList`,
+navigation, menus, `App`, `AppPhase`, `Window`, `Binding`, `Computed`, `binding` (the general constructor), `StateList`,
 `SignalCollection`, `State`, `Str`, `AnyView`, `Identifiable` (derive and trait),
 `IntoComputed`, `IntoSignal`, `IntoSignalF32`, `SignalExt`, `Animation`, `AnimationExt`,
 built-in shapes (`Circle`, `Capsule`, `Rectangle`, `RoundedRectangle`, `ShapeExt`), keyboard
@@ -497,7 +497,8 @@ LabelDisplayMode::IconOnly)` for icon buttons, `.install(LabelDisplayMode::IconO
 a whole toolbar. Beyond label, value, role and id, `.a11y_geometry(AccessibilityGeometry)`
 (the rectangle the element reports: the view's own response rectangle by default,
 `Allocation` for the whole assigned frame, or `Region(rect)`), `.a11y_children(
-AccessibilityChildren)` (how descendants contribute semantics), `.a11y_hidden(hidden)` (static `bool` or reactive signal) and
+AccessibilityChildren)` (`Automatic`, `ExcludeDescendants`, or `Combine` to merge descendants'
+labels in reading order and keep their actions on this element), `.a11y_hidden(hidden)` (static `bool` or reactive signal) and
 `.a11y_state(state)` (static `AccessibilityState` or reactive signal) set the rest; the types are in `waterui::accessibility`.
 
 ## Component index
@@ -516,7 +517,7 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Content | `Avatar` `Link` `Disclosure` `.badge(n)` `loading()` |
 | Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
 | Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |
-| Overlays | `.snackbar_host` `.snackbar_host_with_icons` `Snackbar` `SnackbarManager` `.sheet` `Sheet` `SheetDetent` `SheetDismiss` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` `.dialog` `Dialog` `DialogAction` |
+| Overlays | `.snackbar_host` `.snackbar_host_with_icons` `Snackbar` `SnackbarManager` `.sheet` `Sheet` `SheetDetent` `Dismiss` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` `.dialog` `Dialog` `DialogAction` |
 | Media | `Photo` `Image` `VideoPlayer` `PlaybackSession` `MediaPicker` |
 | Data | `waterui::chart` (13 kinds: `line_chart` `bar_chart` `pie_chart` …) `Map` |
 | Graphics | `Canvas` `Barcode` `Svg` `shader!` `ParticleSystem` `GpuView` `ExternalFrameView` icon sets |

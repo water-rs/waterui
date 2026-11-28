@@ -443,6 +443,20 @@ fn ts_toggle_is_a_toggle() {
 }
 
 #[test]
+fn ts_toggle_forwards_mixed_attribute() {
+    let on = Binding::new(false);
+    let mixed = Binding::new(true);
+    assert_same(
+        "Toggle mixed",
+        &stateful(
+            "globalThis.on = waterui.createSignal(false); globalThis.mixed = waterui.createSignal(true);",
+            r#"waterui.jsx("Toggle", { value: globalThis.on, mixed: globalThis.mixed, children: "Select all" })"#,
+        ),
+        toggle("Select all", &on).mixed(mixed),
+    );
+}
+
+#[test]
 fn ts_slider_is_a_slider() {
     let amount = Binding::new(0.25_f64);
     assert_same(
@@ -1445,6 +1459,25 @@ fn ts_a_hidden_view_is_hidden_the_way_rust_hides_it() {
         "a11yHidden",
         &module(r#"waterui.jsx("Text", { a11yHidden: true, children: "Decorative" })"#),
         text("Decorative").a11y_hidden(true),
+    );
+}
+
+#[test]
+fn ts_a11y_children_combine_matches_rust() {
+    assert_same(
+        "a11yChildren combine",
+        &module(
+            r#"waterui.jsx("HStack", {
+                a11yChildren: "combine",
+                children: [
+                    waterui.jsx("Text", { children: "Alice" }),
+                    waterui.jsx("Text", { children: "Hello" }),
+                    waterui.jsx("Text", { children: "2m" }),
+                ],
+            })"#,
+        ),
+        waterui::component::hstack((text("Alice"), text("Hello"), text("2m")))
+            .a11y_children(waterui::accessibility::AccessibilityChildren::Combine),
     );
 }
 

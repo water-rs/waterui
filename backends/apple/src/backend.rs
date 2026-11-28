@@ -1226,6 +1226,18 @@ impl NativeBackend for AppleBackend {
         realize_frame_rate_metadata(metadata, &self.entry(env))
     }
 
+    fn mask<S: ChildView<Self>, C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui_shape::Mask<S>, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("mask");
+        let Metadata { content, value } = metadata;
+        let metadata = Metadata::new(content.into_child(), value.map_slots(S::into_child));
+        crate::components::mask::realize_mask_metadata(metadata, &self.entry(env))
+    }
+
     fn anchored_overlay<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
         metadata: Metadata<AnchoredOverlay<S>, C>,

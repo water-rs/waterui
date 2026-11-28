@@ -27,9 +27,9 @@ use waterui_ts::schema::TsType;
 use waterui_ts::JsViewBuilder;
 
 use super::values::{
-    BackgroundValue, BorderValue, ColorValue, HorizontalAlign, JsAction, PaddingValue,
-    PickerOption, ProgressStyleValue, ScrollAxis, ShadowValue, ShapeValue, StackAlign, TextContent,
-    UrlValue, VerticalAlign,
+    A11yChildrenValue, BackgroundValue, BorderValue, ColorValue, HorizontalAlign, JsAction,
+    PaddingValue, PickerOption, ProgressStyleValue, ScrollAxis, ShadowValue, ShapeValue,
+    StackAlign, TextContent, UrlValue, VerticalAlign,
 };
 
 /// `<VStack>`: children stacked top to bottom.
@@ -195,12 +195,14 @@ impl ButtonAttributes {
     }
 }
 
-/// `<Toggle>`: a two-state switch.
+/// `<Toggle>`: a two-state switch or tri-state checkbox.
 #[derive(Debug, TsType)]
 #[non_exhaustive]
 pub struct ToggleAttributes {
     /// The state the switch reads and writes.
     value: Binding<bool>,
+    /// Whether a checkbox toggle shows the mixed (indeterminate) state.
+    mixed: Option<Computed<bool>>,
     /// The label, when it is not the children.
     label: Option<AnyView>,
 }
@@ -212,6 +214,12 @@ impl ToggleAttributes {
         &self.value
     }
 
+    /// Whether a checkbox toggle shows the mixed (indeterminate) state.
+    #[must_use]
+    pub const fn mixed(&self) -> Option<&Computed<bool>> {
+        self.mixed.as_ref()
+    }
+
     /// The label, when it is not the children.
     #[must_use]
     pub const fn label(&self) -> Option<&AnyView> {
@@ -221,6 +229,12 @@ impl ToggleAttributes {
     /// Takes the label out, leaving none behind.
     pub const fn take_label(&mut self) -> Option<AnyView> {
         self.label.take()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Binding<bool>, Option<Computed<bool>>, Option<AnyView>) {
+        (self.value, self.mixed, self.label)
     }
 }
 
@@ -867,6 +881,8 @@ pub struct Modifiers {
     a11y_id: Str,
     /// Hides the view from assistive technology without hiding it visually.
     a11y_hidden: bool,
+    /// Controls how descendant views contribute to accessibility.
+    a11y_children: A11yChildrenValue,
 }
 
 impl Modifiers {
@@ -986,5 +1002,11 @@ impl Modifiers {
     #[must_use]
     pub const fn a11y_hidden(&self) -> bool {
         self.a11y_hidden
+    }
+
+    /// Controls how descendant views contribute to accessibility.
+    #[must_use]
+    pub const fn a11y_children(&self) -> A11yChildrenValue {
+        self.a11y_children
     }
 }

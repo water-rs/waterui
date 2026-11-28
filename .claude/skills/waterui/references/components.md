@@ -254,8 +254,9 @@ the top and bottom edges and top/bottom along the leading and trailing edges. Un
 `.context_menu`, the overlay takes a `move ||` builder producing arbitrary `impl View`
 content — every presentation calls it, so state shared between presentations lives in
 `Binding`s the caller owns and the builder captures. `placed_edge` lets the content grow
-out of, or point at, the anchor from the right side after a flip. This is the popover and
-tooltip primitive.
+out of, or point at, the anchor from the right side after a flip, and handlers inside
+the overlay can extract `Dismiss` (`|dismiss: Dismiss| dismiss.dismiss()`) to close it.
+This is the popover and tooltip primitive.
 
 ## Scrolling
 
@@ -323,6 +324,7 @@ button("Save")                              // Button<_, NoAction>: not a View u
     .action(handler)                        // -> Button<_, impl FnMut(&Environment)>
     .action_async(|| async { … })           // single-flight: disables interaction & reports busy until completion or drop
     .pending(&saving)                       // mirrors in-flight state into &Binding<bool>; composes before or after .action_async
+    .keyboard_shortcut(Shortcut::new('s').command()) // fires while mounted & enabled; preserved in From<Button> for Command
     .style(ButtonStyle::Plain)              // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
                                             // | Glass | GlassProminent (Liquid Glass capsules on Apple;
                                             //   bordered / bordered-prominent elsewhere)
@@ -333,6 +335,7 @@ button(text!("{edit_label}")).action(|| {}) // a text! satisfies IntoLabel: reac
 
 toggle("Wi-Fi", &enabled)                   // &Binding<bool>
 Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)     // Automatic | Switch | Checkbox; .switch() / .checkbox()
+toggle("Select all", &all).checkbox().mixed(some_selected)    // impl IntoComputed<bool>; dash indicator + mixed a11y, tap sets true
 slider("Volume", &level).range(0.0..=1.0)   // &Binding<T: SliderValue> (f32, f64, ints); range/step accept signals
 slider("Volume", &level).size(ControlSize::Large)      // sliders default ExtraSmall
     .value_formatter(|v| Str::from(format!("{v:.0}"))) // shown above the thumb while dragging
@@ -383,7 +386,9 @@ tests. `ToggleStyle::Automatic` reads the ambient `ToggleStyle` installed in the
 Hydrolysis and iOS, `Checkbox` on macOS AppKit). On Hydrolysis, `Role::toggle(ToggleStyle::Automatic)`
 maps to `Role::SWITCH`. A switch with a visible label fills the
 width it is offered (label leading, switch trailing); a checkbox and a toggle with a
-hidden label are content-sized.
+hidden label are content-sized. Chaining `.mixed(signal)` (`impl IntoComputed<bool>`) on a
+checkbox renders the indeterminate dash and reports `CheckedState::Mixed` while the signal
+is `true`, and activating it resolves the binding to `true`.
 
 ### Custom button and toggle styles
 
@@ -391,7 +396,7 @@ Implement `CustomButtonStyle`, `PrimitiveButtonStyle`, or `CustomToggleStyle`, a
 instance either to a single control with `.style(..)` or to an entire subtree with
 `.button_style(..)` / `.toggle_style(..)`. `CustomButtonStyle` and `CustomToggleStyle`
 receive the semantic `label()` / `into_label()`, interaction-state signals (`is_pressed()`,
-`is_hovered()`, `is_focused()`, `is_disabled()`, `interaction_state()`), `role()` / `is_on()`,
+`is_hovered()`, `is_focused()`, `is_disabled()`, `interaction_state()`), `role()` / `is_on()` / `mixed()`,
 and automatically preserve tap activation, disabled gating, and accessibility semantics;
 `PrimitiveButtonStyle` receives `trigger()` so the style owns its gesture.
 An explicit `.style(..)` on a control wins over an enclosing subtree hook, and an inner
@@ -532,8 +537,12 @@ Shortcut::new('s').command().shift()           // ⇧⌘S; also .option() and .c
 ```
 
 A shortcut key is a `char` or a `ShortcutNamedKey` (or `ShortcutKey::try_from(NamedKey)`). `.command()` is the platform's primary
-modifier: ⌘ on Apple, Ctrl elsewhere. When a chord is live depends on where the command
-sits: a mounted `Menu` arms its chords whether or not its popup is open, a `.context_menu`
+modifier: ⌘ on Apple, Ctrl elsewhere. Use `Button::keyboard_shortcut(shortcut)` to bind a
+chord directly on a mounted button (it fires while the button is mounted and enabled, respects
+modal occlusion, and carries over when converting `Button` into `Command`), and
+`shortcut.matches(&press)` to match a `Shortcut` against a `KeyPress` in `.on_key_press(..)`
+without branching on platform modifiers. When a chord is live depends on where the command
+sits: a mounted `Button` or `Menu` arms its chords while mounted, a `.context_menu`
 arms them only while it is open, and `App::menu_bar` arms them app-wide. A chord without
 Ctrl, Alt or Super does not fire while a text field has focus — that press is typing.
 
@@ -796,7 +805,11 @@ with a `Section` per group, each over its own `SignalCollection`; sections do no
 
 Row modifiers: `.list_row_deletable(signal)`, `.list_row_insets(insets)`; `.list_min_row_height(h)` on
 any ancestor sets the row-height floor for every list inside (`0.0` sizes rows to their
-content). Selection lives on the
+content). List presentation style is chosen with `.style(ListStyle::...)` on `List` / `ListBuilder`
+or ambiently across a subtree with `.list_style(ListStyle::...)` (`Automatic`, `Plain`, `Inset`,
+`InsetGrouped`, `Grouped`, `Sidebar`). `ListStyle::Automatic` keeps each platform's default and
+resolves to `ListStyle::Sidebar` inside a `NavigationSplitView`'s sidebar column; an explicit
+`.style(...)` wins over an ambient `.list_style(...)`. Selection lives on the
 list itself and holds the app's own values — `.selection(&Binding<Option<T>>)` or
 `.multi_selection(&Binding<BTreeSet<T>>)` on both `List` and `ListBuilder`, `T: Ord + Clone`.
 A `ForEach` row — every row of `List::for_each`, or a `ForEach` inside `List::content` —
@@ -1006,8 +1019,10 @@ build it with `Label::new(semantic_text, || content)`, which does this for you.
 Three more modifiers carry explicit semantics. `.a11y_state(..)` accepts either a
 constant `AccessibilityState` or a reactive signal of one. `.a11y_children(
 AccessibilityChildren::ExcludeDescendants)` hides every descendant and exposes only this
-node (`Automatic`, the default, leaves it to the backend) — the one-modifier form of the
-hidden-inner idiom above. `.a11y_geometry(AccessibilityGeometry::Allocation)` reports the
+node, `.a11y_children(AccessibilityChildren::Combine)` merges descendants' labels in
+reading order (unless `.a11y_label(..)` overrides it) and keeps their actions on this
+element for any role while hiding the merged descendants as standalone children, and
+`Automatic` (the default) leaves child exposure to the backend. `.a11y_geometry(AccessibilityGeometry::Allocation)` reports the
 whole frame the parent assigned instead of the view's own rectangle (a canvas whose
 drawing fills it, a gap allocated to a spacer), and `AccessibilityGeometry::Region(rect)`
 an explicit `Rect`; the default is `Response`. Hit testing, focus and drawing are
@@ -1059,11 +1074,12 @@ assistive technology; focus enters the sheet on present and returns to the previ
 focused control on dismiss. Configure heights with `.detents(...)` (`SheetDetent::Medium`,
 `Large`, `Fraction(f32)`, `Height(f32)`, `FullScreen`), opt out of user dismissal with
 `.dismissible(false)`, and handle Escape / back / scrim / swipe dismissal with
-`.on_dismiss(...)`. Handlers inside the sheet extract `SheetDismiss` to close it
-programmatically.
+`.on_dismiss(...)`. Handlers inside the sheet extract `Dismiss` to close it
+programmatically (the same `Dismiss` extractor published by `AnchoredOverlay` and pushed
+`NavigationStack` pages, always closing the innermost presentation).
 
 ```rust
-use waterui::sheet::{Sheet, SheetDetent, SheetDismiss};
+use waterui::sheet::{Sheet, SheetDetent};
 
 let open = binding(false);
 button("Filters")
@@ -1072,7 +1088,7 @@ button("Filters")
         Sheet::new(&open, || {
             vstack((
                 text("Filter options"),
-                button("Done").action(|sheet: SheetDismiss| sheet.dismiss()),
+                button("Done").action(|dismiss: Dismiss| dismiss.dismiss()),
             ))
         })
         .detents([SheetDetent::Medium, SheetDetent::Large])

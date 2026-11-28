@@ -235,7 +235,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Offset(node) => node.child.patch(renderer),
             Self::Retain(node) => node.child.patch(renderer),
             Self::Env(node) => node.child.patch(renderer),
-            Self::Wrapper(node) => node.child.patch(renderer),
+            Self::Wrapper(node) => {
+                let mut changed = node.child.patch(renderer);
+                if let WrapperEffect::Mask(mask) = &mut node.effect {
+                    changed |= mask.mask.patch(renderer);
+                }
+                changed
+            }
             Self::Collection(node) => {
                 // Reconcile membership first (keeps surviving items' nodes and,
                 // with a transition, starts enters/exits), then advance the
@@ -304,7 +310,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Offset(node) => node.child.take_layout_dirty(),
             Self::Retain(node) => node.child.take_layout_dirty(),
             Self::Env(node) => node.child.take_layout_dirty(),
-            Self::Wrapper(node) => node.child.take_layout_dirty(),
+            Self::Wrapper(node) => {
+                let mut dirty = node.child.take_layout_dirty();
+                if let WrapperEffect::Mask(mask) = &mut node.effect {
+                    dirty |= mask.mask.take_layout_dirty();
+                }
+                dirty
+            }
             Self::Dynamic(node) => {
                 node.layout_dirty.replace(false) | node.child.borrow_mut().take_layout_dirty()
             }

@@ -16,17 +16,18 @@
 //! state changes in `UIView` transition blocks — all documented main-thread
 //! APIs, which the [`MainThreadMarker`] `new` requires guarantees.
 
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 use std::fmt;
+use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, ns_string};
 use objc2_ui_kit::{
-    NSLayoutConstraint, UIAccessibilityContentSizeCategoryImageAdjusting, UIButton, UIButtonType,
-    UIColor, UIControl, UIControlState, UIFontTextStyleBody, UIImage, UIImageRenderingMode,
-    UIImageSymbolConfiguration, UILayoutGuide, UILayoutPriorityDefaultHigh,
+    NSLayoutConstraint, NSObjectUIAccessibility, UIAccessibilityContentSizeCategoryImageAdjusting,
+    UIButton, UIButtonType, UIColor, UIControl, UIControlState, UIFontTextStyleBody, UIImage,
+    UIImageRenderingMode, UIImageSymbolConfiguration, UILayoutGuide, UILayoutPriorityDefaultHigh,
     UILayoutPriorityRequired, UIResponder, UISwitch, UIView,
 };
 
@@ -70,14 +71,19 @@ pub enum StateChange {
 #[derive(Clone)]
 enum Control {
     Switch(Retained<UISwitch>),
-    Checkbox(Retained<UIButton>),
+    Checkbox {
+        button: Retained<UIButton>,
+        unchecked: Retained<UIImage>,
+        mixed_image: Retained<UIImage>,
+        mixed: Rc<Cell<bool>>,
+    },
 }
 
 impl fmt::Debug for Control {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Switch(_) => f.write_str("Switch"),
-            Self::Checkbox(_) => f.write_str("Checkbox"),
+            Self::Checkbox { .. } => f.write_str("Checkbox"),
         }
     }
 }
@@ -260,9 +266,13 @@ impl Toggle {
                     .map(|img| img.imageWithRenderingMode(UIImageRenderingMode::AlwaysTemplate));
                 let checked = UIImage::systemImageNamed(ns_string!("checkmark.square.fill"))
                     .map(|img| img.imageWithRenderingMode(UIImageRenderingMode::AlwaysTemplate));
-                let (Some(unchecked), Some(checked)) = (unchecked, checked) else {
+                let mixed_image = UIImage::systemImageNamed(ns_string!("minus.square.fill"))
+                    .map(|img| img.imageWithRenderingMode(UIImageRenderingMode::AlwaysTemplate));
+                let (Some(unchecked), Some(checked), Some(mixed_image)) =
+                    (unchecked, checked, mixed_image)
+                else {
                     panic!(
-                        "SF Symbols ships `square` and `checkmark.square.fill` on every supported iOS"
+                        "SF Symbols ships `square`, `checkmark.square.fill`, and `minus.square.fill` on every supported iOS"
                     );
                 };
                 // Use `UIButtonType::Custom` rather than `System`: a non-configured
@@ -287,7 +297,12 @@ impl Toggle {
                 button.setSelected(is_on);
                 button.setChangesSelectionAsPrimaryAction(true);
                 button.setAdjustsImageSizeForAccessibilityContentSizeCategory(true);
-                Control::Checkbox(button)
+                Control::Checkbox {
+                    button,
+                    unchecked,
+                    mixed_image,
+                    mixed: Rc::new(Cell::new(false)),
+                }
             }
         };
         Self {
@@ -308,7 +323,7 @@ impl Toggle {
     pub fn control(&self) -> &UIView {
         match &self.control {
             Control::Switch(control) => control,
-            Control::Checkbox(control) => control,
+            Control::Checkbox { button, .. } => button,
         }
     }
 
@@ -346,7 +361,7 @@ impl Toggle {
                 .constraintEqualToAnchor(&container.centerYAnchor()),
         ];
         let placed = match &self.control {
-            Control::Checkbox(_) => [
+            Control::Checkbox { .. } => [
                 control
                     .leadingAnchor()
                     .constraintEqualToAnchor(&container.leadingAnchor()),
@@ -405,6 +420,20 @@ impl Toggle {
     ///
     /// When not called on the main thread.
     pub fn set_on(&self, on: bool, change: StateChange) {
+        self.set_state(on, false, change);
+    }
+
+    /// Writes `(on, mixed)` into the control under `change`'s terms.
+    ///
+    /// On a checkbox, `mixed = true` draws the `minus.square.fill` symbol and
+    /// sets `accessibilityValue` to `"Mixed"`; `mixed = false` restores the
+    /// checked/unchecked symbols and clears `accessibilityValue`. Switches
+    /// have no mixed state and ignore `mixed`.
+    ///
+    /// # Panics
+    ///
+    /// When not called on the main thread.
+    pub fn set_state(&self, on: bool, mixed: bool, change: StateChange) {
         match &self.control {
             Control::Switch(switch) => {
                 if switch.isOn() == on {
@@ -417,18 +446,33 @@ impl Toggle {
                     }
                 }
             }
-            Control::Checkbox(button) => {
-                if button.isSelected() == on {
+            Control::Checkbox {
+                button,
+                unchecked,
+                mixed_image,
+                mixed: mixed_cell,
+            } => {
+                let target_selected = !mixed && on;
+                if mixed_cell.get() == mixed && button.isSelected() == target_selected {
                     return;
                 }
+                mixed_cell.set(mixed);
+                let mtm = MainThreadMarker::from(&**button);
+                let apply = {
+                    let button = Retained::clone(button);
+                    let normal_image = Retained::clone(if mixed { mixed_image } else { unchecked });
+                    move || {
+                        button.setImage_forState(Some(&normal_image), UIControlState::Normal);
+                        button.setSelected(target_selected);
+                        let a11y_value = mixed.then_some(ns_string!("Mixed"));
+                        button.setAccessibilityValue(a11y_value, mtm);
+                    }
+                };
                 match change {
-                    StateChange::Immediate | StateChange::Animated => button.setSelected(on),
+                    StateChange::Immediate | StateChange::Animated => apply(),
                     StateChange::Dissolve { seconds } => {
-                        let button = Retained::clone(button);
-                        let view = Retained::clone(&button);
-                        core_animation::cross_dissolve(&view, seconds, move || {
-                            button.setSelected(on);
-                        });
+                        let view = Retained::clone(button);
+                        core_animation::cross_dissolve(&view, seconds, apply);
                     }
                 }
             }
@@ -441,7 +485,16 @@ impl Toggle {
     pub fn is_on(&self) -> bool {
         match &self.control {
             Control::Switch(switch) => switch.isOn(),
-            Control::Checkbox(button) => button.isSelected(),
+            Control::Checkbox { button, .. } => button.isSelected(),
+        }
+    }
+
+    /// Whether a checkbox control is currently displaying the mixed state.
+    #[must_use]
+    pub fn is_mixed(&self) -> bool {
+        match &self.control {
+            Control::Switch(_) => false,
+            Control::Checkbox { mixed, .. } => mixed.get(),
         }
     }
 
@@ -462,7 +515,7 @@ impl Toggle {
             Control::Switch(switch) => switch.setOnTintColor(Some(color)),
             // SAFETY: `setTintColor:` is marked unsafe in the bindings; it is
             // an ordinary main-thread `UIKit` setter.
-            Control::Checkbox(button) => unsafe { button.setTintColor(Some(color)) },
+            Control::Checkbox { button, .. } => unsafe { button.setTintColor(Some(color)) },
         }
     }
 
@@ -474,7 +527,7 @@ impl Toggle {
     pub fn set_enabled(&self, enabled: bool) {
         let control: &UIControl = match &self.control {
             Control::Switch(control) => control,
-            Control::Checkbox(control) => control,
+            Control::Checkbox { button, .. } => button,
         };
         control.setEnabled(enabled);
     }
@@ -492,7 +545,7 @@ impl Toggle {
             Control::Switch(switch) => {
                 ActionTarget::new(switch, ControlEvents::VALUE_CHANGED, handler)
             }
-            Control::Checkbox(button) => {
+            Control::Checkbox { button, .. } => {
                 ActionTarget::new(button, ControlEvents::PRIMARY_ACTION_TRIGGERED, handler)
             }
         }

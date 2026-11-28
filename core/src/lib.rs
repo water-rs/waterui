@@ -108,7 +108,7 @@ pub use anyview::AnyView;
 pub use components::*;
 pub use easing::{EasingCurve, Interpolatable};
 pub use env::Environment;
-pub use extract::State;
+pub use extract::{Dismiss, State};
 pub use foundation::main_thread::MainThreadBound;
 pub use foundation::serial::{LatestDispatch, SerialDispatch};
 pub use foundation::signal::flatten_signal;

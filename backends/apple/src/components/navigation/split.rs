@@ -25,6 +25,22 @@ use waterui_core::id::Id;
 
 use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext};
 
+/// Builds the sidebar column's environment so `ListStyle::Automatic`
+/// resolves to `ListStyle::Sidebar` unless overridden inside the sidebar.
+#[cfg_attr(not(feature = "list"), allow(unused_mut))]
+fn sidebar_env(env: &waterui_backend_core::Environment) -> waterui_backend_core::Environment {
+    let mut sidebar = env.clone();
+    #[cfg(feature = "list")]
+    {
+        sidebar.remove::<waterui_controls::list::ListStyle>();
+        waterui_controls::list::ListStyle::install_default(
+            waterui_controls::list::ListStyle::Sidebar,
+            &mut sidebar,
+        );
+    }
+    sidebar
+}
+
 /// The `NavigationSplitLayout` realization.
 pub fn realize_navigation_split_layout(
     value: NavigationSplitLayout<Held>,
@@ -170,7 +186,8 @@ mod platform {
             UISplitViewControllerColumn::Primary
         }));
 
-        let sidebar_leaf = ctx.realize(sidebar.build());
+        let sidebar_env = super::sidebar_env(ctx.env());
+        let sidebar_leaf = ctx.with_env(&sidebar_env).realize(sidebar.build());
         let sidebar_vc = NavContentController::new(mtm, sidebar_leaf.view());
         hide_bar_when_base(&sidebar_vc);
         // UIKit's implicit wrapper unbalances the sidebar's appearance
@@ -194,6 +211,7 @@ mod platform {
         };
         let mut keep = KeepAlive::default();
         keep.keep(sidebar_leaf);
+        keep.keep(sidebar_env);
         keep.keep(sidebar_vc);
         let nav_for_binds = nav.clone();
         keep.keep(nav.clone());
@@ -401,7 +419,7 @@ mod platform {
         let mtm = ctx.mtm();
         let nav = SplitViewController::new(mtm);
 
-        let sidebar_env = ctx.env().extending(waterui_controls::list::SidebarContent);
+        let sidebar_env = super::sidebar_env(ctx.env());
         let sidebar_leaf = ctx.with_env(&sidebar_env).realize(sidebar.build());
         let columns = Columns {
             renderer: ctx.renderer(),

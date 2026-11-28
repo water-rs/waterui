@@ -321,6 +321,20 @@ fn chrome_trials() -> Vec<Trial> {
             Ok(())
         }),
         Trial::test(
+            "split::explicit_and_ambient_list_styles_map_to_appkit_table_styles",
+            || {
+                split::explicit_and_ambient_list_styles_map_to_appkit_table_styles();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "split::sidebar_explicit_style_overrides_automatic_sidebar_default",
+            || {
+                split::sidebar_explicit_style_overrides_automatic_sidebar_default();
+                Ok(())
+            },
+        ),
+        Trial::test(
             "material_vibrancy::a_window_material_hosts_its_content_and_releases_it",
             || {
                 material_vibrancy::a_window_material_hosts_its_content_and_releases_it();
@@ -403,6 +417,7 @@ fn trials() -> Vec<Trial> {
     }
     tests.extend(migration::trials());
     tests.extend(transition::trials());
+    tests.extend(dismiss::trials());
     tests.extend(owner_lifetimes::trials());
     tests.extend(scroll::trials());
     tests.extend(report_size::trials());
@@ -416,10 +431,12 @@ fn trials() -> Vec<Trial> {
     #[cfg(feature = "link")]
     tests.extend(link::trials());
     tests.extend(async_button_pending::trials());
+    tests.extend(button_keyboard_shortcut::trials());
     tests.extend(markdown_a11y::trials());
     tests.extend(icon_a11y::trials());
     #[cfg(feature = "highlight")]
     tests.extend(code::trials());
+    tests.extend(a11y_combine::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
@@ -508,6 +525,13 @@ fn base_trials() -> Vec<Trial> {
             resolve::toggle_rows_place_the_control_by_kind();
             Ok(())
         }),
+        Trial::test(
+            "resolve::mixed_checkbox_renders_mixed_and_activates_to_on",
+            || {
+                resolve::mixed_checkbox_renders_mixed_and_activates_to_on();
+                Ok(())
+            },
+        ),
         Trial::test("resolve::a_label_leaves_8pt_between_icon_and_title", || {
             resolve::a_label_leaves_8pt_between_icon_and_title();
             Ok(())
@@ -1624,6 +1648,121 @@ mod resolve {
                     name,
                 );
             }
+        }
+    }
+
+    /// water-rs/waterui#4336: a mixed checkbox renders its mixed state
+    /// (`NSControlStateValueMixed` on `AppKit`, `"Mixed"` accessibility value on
+    /// `UIKit`), follows reactive changes to `mixed`, resolves activation while
+    /// mixed to `true`, and never cycles `Off -> Mixed -> On` once unmixed.
+    pub fn mixed_checkbox_renders_mixed_and_activates_to_on() {
+        use nami::{Binding, Signal as _, SignalExt as _};
+
+        let items = Binding::new([true, false, false]);
+        let all = Binding::mapping(
+            &items,
+            |list| list.iter().all(|&done| done),
+            |source, on| source.set([on, on, on]),
+        );
+        let some_but_not_all = items
+            .map(|list| list.iter().any(|&done| done) && !list.iter().all(|&done| done))
+            .computed();
+
+        let leaf = render(
+            Toggle::new("Select all", &all)
+                .checkbox()
+                .mixed(some_but_not_all.clone()),
+        );
+        let subviews = cocoa_ui::view::subviews(leaf.view());
+        assert_eq!(subviews.len(), 2, "checkbox row holds label and control");
+        let control = &subviews[1];
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2_app_kit::{
+                NSButton, NSControlStateValueMixed, NSControlStateValueOff, NSControlStateValueOn,
+            };
+
+            let button = control
+                .downcast_ref::<NSButton>()
+                .expect("AppKit checkbox control is an NSButton");
+            assert!(
+                button.allowsMixedState(),
+                "mixed checkbox enables allowsMixedState"
+            );
+            assert_eq!(
+                button.state(),
+                NSControlStateValueMixed,
+                "mixed checkbox starts in NSControlStateValueMixed (-1)"
+            );
+
+            // Clicking while mixed resolves the binding to `true` (all selected),
+            // leaving mixed state and disabling `allowsMixedState`.
+            // SAFETY: `performClick:` is a main-thread `NSControl` action trigger with nil sender.
+            unsafe { button.performClick(None) };
+            assert!(
+                all.snapshot(),
+                "clicking a mixed checkbox must resolve binding to true"
+            );
+            assert!(!some_but_not_all.snapshot());
+            assert_eq!(items.snapshot(), [true, true, true]);
+            assert_eq!(button.state(), NSControlStateValueOn);
+            assert!(!button.allowsMixedState());
+
+            // Clicking again turns all items off.
+            // SAFETY: `performClick:` is a main-thread `NSControl` action trigger with nil sender.
+            unsafe { button.performClick(None) };
+            assert!(!all.snapshot());
+            assert_eq!(items.snapshot(), [false, false, false]);
+            assert_eq!(button.state(), NSControlStateValueOff);
+            assert!(!button.allowsMixedState());
+
+            // Clicking while off and unmixed goes straight Off -> On (never Mixed).
+            // SAFETY: `performClick:` is a main-thread `NSControl` action trigger with nil sender.
+            unsafe { button.performClick(None) };
+            assert!(all.snapshot());
+            assert_eq!(button.state(), NSControlStateValueOn);
+            assert!(!button.allowsMixedState());
+
+            // Partial selection reactively restores NSControlStateValueMixed.
+            items.set([false, true, false]);
+            assert!(button.allowsMixedState());
+            assert_eq!(button.state(), NSControlStateValueMixed);
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::{NSObjectUIAccessibility, UIButton, UIControlEvents};
+
+            let mtm = mtm();
+            let button = control
+                .downcast_ref::<UIButton>()
+                .expect("UIKit checkbox control is a UIButton");
+            assert!(!button.isSelected(), "mixed checkbox is not selected");
+            assert_eq!(
+                button.accessibilityValue(mtm).map(|v| v.to_string()),
+                Some("Mixed".to_owned()),
+                "mixed checkbox announces accessibilityValue Mixed"
+            );
+
+            // Tapping while mixed resolves the binding to `true` (all selected)
+            // and clears the `"Mixed"` accessibility value.
+            button.sendActionsForControlEvents(UIControlEvents::PrimaryActionTriggered);
+            assert!(
+                all.snapshot(),
+                "tapping a mixed checkbox must resolve binding to true"
+            );
+            assert!(!some_but_not_all.snapshot());
+            assert!(button.isSelected());
+            assert_eq!(button.accessibilityValue(mtm), None);
+
+            // Partial selection reactively restores mixed accessibility state.
+            items.set([false, true, false]);
+            assert!(!button.isSelected());
+            assert_eq!(
+                button.accessibilityValue(mtm).map(|v| v.to_string()),
+                Some("Mixed".to_owned())
+            );
         }
     }
 
@@ -3447,17 +3586,19 @@ mod navigation {
     }
 }
 
-/// A `NavigationSplitView` sidebar column is marked `SidebarContent`: the
-/// lists inside take the source-list chrome — clear background over the
-/// split's material and the unemphasised selection pill — while a list
-/// outside the sidebar keeps the regular fill (water-rs/waterui#1495).
+/// A `NavigationSplitView` sidebar column resolves `ListStyle::Automatic` to
+/// `ListStyle::Sidebar`: the lists inside take the source-list chrome — clear
+/// background over the split's material and the unemphasised selection pill —
+/// while a list outside the sidebar keeps the regular fill (`water-rs/waterui#1495`,
+/// `water-rs/waterui#4421`).
 #[cfg(target_os = "macos")]
 mod split {
-    use cocoa_ui::appkit::ListTableView;
+    use cocoa_ui::appkit::{ListTableView, TableStyle};
     use cocoa_ui::objc2_app_kit::NSTableViewStyle;
     use cocoa_ui::{PlatformView, view};
     use waterui::ViewExt as _;
-    use waterui::component::list::List;
+    use waterui::component::list::{List, ListStyle, Section};
+    use waterui::layout::stack::vstack;
     use waterui::navigation::{NavigationSplitView, NavigationView};
     use waterui::prelude::text;
     use waterui::reactive::binding;
@@ -3476,8 +3617,8 @@ mod split {
         None
     }
 
-    /// The split's sidebar list is the one `set_sidebar` marks — the
-    /// source-list style is what draws the grey selection pill.
+    /// The split's sidebar list resolves `ListStyle::Automatic` to `Sidebar` —
+    /// the source-list style draws the unemphasised selection pill.
     pub fn a_sidebar_list_takes_the_source_list_chrome() {
         let selection = binding(Some(0_i32));
         let leaf = resolve::render(NavigationSplitView::new(
@@ -3492,6 +3633,7 @@ mod split {
             table.is_sidebar(),
             "the sidebar list draws source-list chrome"
         );
+        assert_eq!(table.style(), TableStyle::Sidebar);
         assert_eq!(
             table.table_view().style(),
             NSTableViewStyle::SourceList,
@@ -3509,6 +3651,83 @@ mod split {
             !table.is_sidebar(),
             "a list outside a sidebar keeps the regular fill"
         );
+        assert_eq!(table.style(), TableStyle::Automatic);
+    }
+
+    /// Every `ListStyle` variant maps to its `AppKit` `TableStyle` / `NSTableViewStyle`,
+    /// and subtree `.list_style(...)` applies to descendants unless overridden.
+    pub fn explicit_and_ambient_list_styles_map_to_appkit_table_styles() {
+        let cases = [
+            (
+                ListStyle::Automatic,
+                TableStyle::Automatic,
+                NSTableViewStyle::FullWidth,
+            ),
+            (ListStyle::Plain, TableStyle::Plain, NSTableViewStyle::Plain),
+            (ListStyle::Inset, TableStyle::Inset, NSTableViewStyle::Inset),
+            (
+                ListStyle::InsetGrouped,
+                TableStyle::InsetGrouped,
+                NSTableViewStyle::Inset,
+            ),
+            (
+                ListStyle::Grouped,
+                TableStyle::Grouped,
+                NSTableViewStyle::FullWidth,
+            ),
+            (
+                ListStyle::Sidebar,
+                TableStyle::Sidebar,
+                NSTableViewStyle::SourceList,
+            ),
+        ];
+        for (style, expected_kit, expected_ns) in cases {
+            let leaf = resolve::render(
+                List::content((
+                    Section::new("Group A").content((|| text("One"), || text("Two"))),
+                    Section::new("Group B").content((|| text("Three"),)),
+                ))
+                .style(style),
+            );
+            let table = sidebar_table(leaf.view()).expect("the list mounts a table");
+            assert_eq!(table.style(), expected_kit, "explicit {style:?}");
+            assert_eq!(
+                table.table_view().style(),
+                expected_ns,
+                "explicit NSTableViewStyle for {style:?}"
+            );
+        }
+
+        // Subtree `.list_style(...)` propagates to descendants.
+        let ambient_leaf = resolve::render(
+            vstack((List::content((|| text("Row"),)),)).list_style(ListStyle::InsetGrouped),
+        );
+        let ambient_table = sidebar_table(ambient_leaf.view()).expect("ambient list mounts");
+        assert_eq!(ambient_table.style(), TableStyle::InsetGrouped);
+
+        // Explicit `.style(...)` overrides subtree `.list_style(...)`.
+        let overridden_leaf = resolve::render(
+            vstack((List::content((|| text("Row"),)).style(ListStyle::Plain),))
+                .list_style(ListStyle::InsetGrouped),
+        );
+        let overridden_table =
+            sidebar_table(overridden_leaf.view()).expect("overridden list mounts");
+        assert_eq!(overridden_table.style(), TableStyle::Plain);
+    }
+
+    /// Explicit `.style(ListStyle::Plain)` inside `NavigationSplitView`'s sidebar
+    /// overrides the automatic `Sidebar` default.
+    pub fn sidebar_explicit_style_overrides_automatic_sidebar_default() {
+        let selection = binding(Some(0_i32));
+        let leaf = resolve::render(NavigationSplitView::new(
+            &selection,
+            move || List::content(((|| text("row")).tag(0_usize),)).style(ListStyle::Plain),
+            |_id: i32| NavigationView::new("Detail", text("detail")),
+        ));
+        let table = sidebar_table(leaf.view()).expect("the sidebar mounts a list");
+        assert_eq!(table.style(), TableStyle::Plain);
+        assert_eq!(table.table_view().style(), NSTableViewStyle::Plain);
+        assert!(!table.is_sidebar());
     }
 }
 
@@ -4120,6 +4339,26 @@ mod gpu_surface {
             Trial::test(
                 "gpu_surface::an_input_surface_is_told_its_size_once_before_its_first_frame_and_once_per_change",
                 an_input_surface_is_told_its_size_once_before_its_first_frame_and_once_per_change,
+            ),
+        ]
+        .into_iter()
+        .chain(paint_mask_trials())
+        .collect()
+    }
+
+    fn paint_mask_trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "gpu_surface::gradient_filled_circle_renders_gradient_inside_circle",
+                gradient_filled_circle_renders_gradient_inside_circle,
+            ),
+            Trial::test(
+                "gpu_surface::gradient_masked_by_text_renders_gradient_glyphs_over_backdrop",
+                gradient_masked_by_text_renders_gradient_glyphs_over_backdrop,
+            ),
+            Trial::test(
+                "gpu_surface::solid_color_masked_by_circle_renders_red_circle_over_backdrop",
+                solid_color_masked_by_circle_renders_red_circle_over_backdrop,
             ),
         ]
     }
@@ -4995,6 +5234,227 @@ mod gpu_surface {
                 "{name} must render with active accent blue texels in offscreen capture, got {active_blue}"
             );
         }
+        Ok(())
+    }
+
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub fn gradient_filled_circle_renders_gradient_inside_circle() -> Result<(), Failed> {
+        use std::time::Duration;
+
+        use cocoa_ui::ColorScheme;
+        use waterui::ViewExt as _;
+        use waterui::graphics::{Color, Gradient};
+        use waterui::layout::{Size, UnitPoint};
+        use waterui::shape::{Circle, ShapeExt as _};
+        use waterui_apple::native_test_support::view_renderer::{AppleBackend, GpuRuntime};
+        use waterui_apple::native_test_support::{
+            block_on_main, install_gpu, refresh_theme, window_environment,
+        };
+        use waterui_backend_core::NativeBackend as _;
+        use waterui_capture::view_renderer::{RenderRequest, ViewRenderer as _};
+        use waterui_layout::stack::zstack;
+
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .map_err(|error| format!("the GPU runtime: {error}"))?;
+        let (mut env, theme) = window_environment(mtm());
+        install_gpu(&mut env, runtime);
+        refresh_theme(&theme, ColorScheme::Light);
+
+        let renderer = AppleBackend::new(mtm()).offscreen(&env);
+        let request = RenderRequest::new(Size::new(100.0, 100.0), Duration::from_secs(10));
+        let view = zstack((
+            Color::srgb(0, 180, 0),
+            Circle
+                .fill(Gradient::linear(
+                    [Color::srgb(255, 0, 0), Color::srgb(0, 0, 255)],
+                    UnitPoint::LEADING,
+                    UnitPoint::TRAILING,
+                ))
+                .size(100.0, 100.0),
+        ));
+
+        let result = block_on_main(30.0, renderer.render_to_rgba(view, &env, request))
+            .map_err(|error| format!("gradient circle render_to_rgba failed: {error}"))?;
+        let width = result.width() as usize;
+        let height = result.height() as usize;
+        let pixel = |fx: f64, fy: f64| -> [u8; 4] {
+            let x = ((width as f64) * fx).clamp(0.0, (width - 1) as f64) as usize;
+            let y = ((height as f64) * fy).clamp(0.0, (height - 1) as f64) as usize;
+            let offset = (y * width + x) * 4;
+            result.rgba_data()[offset..offset + 4].try_into().unwrap()
+        };
+
+        let corner = pixel(0.04, 0.04);
+        assert!(
+            corner[1] > 140
+                && corner[1] > corner[0].saturating_add(60)
+                && corner[1] > corner[2].saturating_add(60),
+            "corner outside circle must keep green backdrop, got {corner:?}"
+        );
+        let left = pixel(0.20, 0.50);
+        assert!(
+            left[0] > 150 && left[0] > left[2].saturating_add(60),
+            "left interior of gradient-filled circle must be red-dominant, got {left:?}"
+        );
+        let right = pixel(0.80, 0.50);
+        assert!(
+            right[2] > 150 && right[2] > right[0].saturating_add(60),
+            "right interior of gradient-filled circle must be blue-dominant, got {right:?}"
+        );
+        Ok(())
+    }
+
+    pub fn gradient_masked_by_text_renders_gradient_glyphs_over_backdrop() -> Result<(), Failed> {
+        use std::time::Duration;
+
+        use cocoa_ui::ColorScheme;
+        use waterui::ViewExt as _;
+        use waterui::component::text;
+        use waterui::graphics::{Color, Gradient};
+        use waterui::layout::{Size, UnitPoint};
+        use waterui_apple::native_test_support::view_renderer::{AppleBackend, GpuRuntime};
+        use waterui_apple::native_test_support::{
+            block_on_main, install_gpu, refresh_theme, window_environment,
+        };
+        use waterui_backend_core::NativeBackend as _;
+        use waterui_capture::view_renderer::{RenderRequest, ViewRenderer as _};
+        use waterui_layout::stack::zstack;
+
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .map_err(|error| format!("the GPU runtime: {error}"))?;
+        let (mut env, theme) = window_environment(mtm());
+        install_gpu(&mut env, runtime);
+        refresh_theme(&theme, ColorScheme::Light);
+
+        let renderer = AppleBackend::new(mtm()).offscreen(&env);
+        let request = RenderRequest::new(Size::new(200.0, 80.0), Duration::from_secs(10));
+        let view = zstack((
+            Color::srgb(0, 180, 0),
+            Gradient::linear(
+                [Color::srgb(255, 0, 0), Color::srgb(0, 0, 255)],
+                UnitPoint::LEADING,
+                UnitPoint::TRAILING,
+            )
+            .size(200.0, 80.0)
+            .mask(text("MMMMMM").font_size(32.0).bold(true)),
+        ));
+
+        let result = block_on_main(30.0, renderer.render_to_rgba(view, &env, request))
+            .map_err(|error| format!("gradient masked text render_to_rgba failed: {error}"))?;
+        let w = result.width() as usize;
+        let h = result.height() as usize;
+        let pixel = |x: usize, y: usize| -> [u8; 4] {
+            let i = (y * w + x) * 4;
+            result.rgba_data()[i..i + 4].try_into().unwrap()
+        };
+
+        let corner = pixel((w / 25).max(1), (h / 20).max(1));
+        assert!(
+            corner[1] > 140
+                && corner[1] > corner[0].saturating_add(60)
+                && corner[1] > corner[2].saturating_add(60),
+            "corner outside masked text must keep green backdrop, got {corner:?}"
+        );
+
+        let mut left_red = 0_usize;
+        let mut right_blue = 0_usize;
+        for y in (h / 8)..(h * 7 / 8) {
+            for x in (w / 20)..(w / 2) {
+                let px = pixel(x, y);
+                if px[0] > 130
+                    && px[0] > px[1].saturating_add(30)
+                    && px[0] > px[2].saturating_add(30)
+                {
+                    left_red += 1;
+                }
+            }
+            for x in (w / 2)..(w * 19 / 20) {
+                let px = pixel(x, y);
+                if px[2] > 130
+                    && px[2] > px[1].saturating_add(30)
+                    && px[2] > px[0].saturating_add(30)
+                {
+                    right_blue += 1;
+                }
+            }
+        }
+
+        assert!(
+            left_red > 25,
+            "left half of gradient-masked text must contain red gradient glyph pixels, got {left_red}"
+        );
+        assert!(
+            right_blue > 25,
+            "right half of gradient-masked text must contain blue gradient glyph pixels, got {right_blue}"
+        );
+        Ok(())
+    }
+
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub fn solid_color_masked_by_circle_renders_red_circle_over_backdrop() -> Result<(), Failed> {
+        use std::time::Duration;
+
+        use cocoa_ui::ColorScheme;
+        use waterui::ViewExt as _;
+        use waterui::graphics::Color;
+        use waterui::layout::Size;
+        use waterui::shape::{Circle, ShapeExt as _};
+        use waterui_apple::native_test_support::view_renderer::{AppleBackend, GpuRuntime};
+        use waterui_apple::native_test_support::{
+            block_on_main, install_gpu, refresh_theme, window_environment,
+        };
+        use waterui_backend_core::NativeBackend as _;
+        use waterui_capture::view_renderer::{RenderRequest, ViewRenderer as _};
+        use waterui_layout::stack::zstack;
+
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .map_err(|error| format!("the GPU runtime: {error}"))?;
+        let (mut env, theme) = window_environment(mtm());
+        install_gpu(&mut env, runtime);
+        refresh_theme(&theme, ColorScheme::Light);
+
+        let renderer = AppleBackend::new(mtm()).offscreen(&env);
+        let request = RenderRequest::new(Size::new(100.0, 100.0), Duration::from_secs(10));
+        let view = zstack((
+            Color::srgb(0, 180, 0),
+            Color::srgb(255, 0, 0)
+                .size(100.0, 100.0)
+                .mask(Circle.fill(Color::srgb(255, 255, 255))),
+        ));
+
+        let result = block_on_main(30.0, renderer.render_to_rgba(view, &env, request))
+            .map_err(|error| format!("circle mask render_to_rgba failed: {error}"))?;
+        let width = result.width() as usize;
+        let height = result.height() as usize;
+        let pixel = |fx: f64, fy: f64| -> [u8; 4] {
+            let x = ((width as f64) * fx).clamp(0.0, (width - 1) as f64) as usize;
+            let y = ((height as f64) * fy).clamp(0.0, (height - 1) as f64) as usize;
+            let offset = (y * width + x) * 4;
+            result.rgba_data()[offset..offset + 4].try_into().unwrap()
+        };
+
+        let corner = pixel(0.04, 0.04);
+        assert!(
+            corner[1] > 140
+                && corner[1] > corner[0].saturating_add(60)
+                && corner[1] > corner[2].saturating_add(60),
+            "corner outside circle mask must keep green backdrop, got {corner:?}"
+        );
+        let center = pixel(0.50, 0.50);
+        assert!(
+            center[0] > 180
+                && center[0] > center[1].saturating_add(80)
+                && center[0] > center[2].saturating_add(80),
+            "center inside circle mask must be red, got {center:?}"
+        );
         Ok(())
     }
 
@@ -19379,6 +19839,162 @@ mod async_button_pending {
     }
 }
 
+mod button_keyboard_shortcut {
+    use core::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::Message;
+    use cocoa_ui::view::subviews;
+    use cocoa_ui::{PlatformView, Retained};
+    use libtest_mimic::Trial;
+    use nami::binding;
+    use waterui::ViewExt as _;
+    use waterui::component::button::button;
+    use waterui::component::shortcut::Shortcut;
+
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::appkit::Button as PlatformButton;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::uikit::button::CocoaUiButton as PlatformButton;
+
+    use super::{mtm, resolve};
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "button_keyboard_shortcut::arms_shortcut_while_enabled_and_respects_disabled",
+            || {
+                arms_shortcut_while_enabled_and_respects_disabled();
+                Ok(())
+            },
+        )]
+    }
+
+    fn find_button(root: &PlatformView) -> Option<Retained<PlatformButton>> {
+        for sub in subviews(root) {
+            if let Some(button) = sub.downcast_ref::<PlatformButton>() {
+                return Some(Message::retain(button));
+            }
+            if let Some(found) = find_button(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn arms_shortcut_while_enabled_and_respects_disabled() {
+        let disabled = binding(false);
+        let calls = Rc::new(Cell::new(0u32));
+        let calls_action = Rc::clone(&calls);
+
+        let leaf = resolve::render(
+            button("Save")
+                .keyboard_shortcut(Shortcut::new('s').command())
+                .action(move || calls_action.set(calls_action.get() + 1))
+                .disabled(disabled.clone()),
+        );
+        let native_button =
+            find_button(leaf.view()).expect("button leaf must mount a native button");
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
+            use cocoa_ui::objc2_foundation::{NSPoint, NSString};
+
+            assert_eq!(native_button.keyEquivalent().to_string(), "s");
+            assert_eq!(
+                native_button.keyEquivalentModifierMask(),
+                NSEventModifierFlags::Command
+            );
+
+            let cmd_s = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+                NSEventType::KeyDown,
+                NSPoint::ZERO,
+                NSEventModifierFlags::Command,
+                0.0,
+                0,
+                None,
+                &NSString::from_str("s"),
+                &NSString::from_str("s"),
+                false,
+                1,
+            )
+            .expect("synthetic Cmd+S key event constructs");
+
+            assert!(
+                native_button.performKeyEquivalent(&cmd_s),
+                "enabled NSButton must claim its key equivalent"
+            );
+            assert_eq!(calls.get(), 1);
+
+            disabled.set(true);
+            assert!(
+                waterui_apple::native_test_support::drain_main_queue(mtm()),
+                "main queue must drain disabled watcher"
+            );
+            assert!(!native_button.is_enabled());
+            assert!(
+                !native_button.performKeyEquivalent(&cmd_s),
+                "disabled NSButton must not perform its key equivalent"
+            );
+            assert_eq!(calls.get(), 1);
+
+            disabled.set(false);
+            assert!(
+                waterui_apple::native_test_support::drain_main_queue(mtm()),
+                "main queue must drain re-enabled watcher"
+            );
+            assert!(native_button.is_enabled());
+            assert!(native_button.performKeyEquivalent(&cmd_s));
+            assert_eq!(calls.get(), 2);
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2::runtime::AnyObject;
+            use cocoa_ui::objc2::sel;
+            use cocoa_ui::objc2_ui_kit::UIKeyModifierFlags;
+
+            let mtm = mtm();
+            let commands = native_button
+                .keyCommands()
+                .expect("UIButton with keyboard_shortcut must expose keyCommands");
+            assert_eq!(commands.len(), 1);
+            let cmd = commands.objectAtIndex(0);
+            let sender: &AnyObject = AsRef::<AnyObject>::as_ref(&*cmd);
+            assert_eq!(cmd.input().map(|s| s.to_string()), Some(String::from("s")));
+            assert_eq!(cmd.modifierFlags(), UIKeyModifierFlags::Command);
+            assert!(
+                // SAFETY: `canPerformAction:withSender:` queries the responder chain on the main thread.
+                unsafe {
+                    native_button.canPerformAction_withSender(
+                        sel!(cocoaUiButtonMenuCommandFired:),
+                        Some(sender),
+                    )
+                },
+                "enabled UIButton must accept its armed key command"
+            );
+
+            disabled.set(true);
+            assert!(
+                waterui_apple::native_test_support::drain_main_queue(mtm),
+                "main queue must drain disabled watcher"
+            );
+            assert!(!native_button.isEnabled());
+            assert!(
+                // SAFETY: `canPerformAction:withSender:` queries the responder chain on the main thread.
+                !unsafe {
+                    native_button.canPerformAction_withSender(
+                        sel!(cocoaUiButtonMenuCommandFired:),
+                        Some(sender),
+                    )
+                },
+                "disabled UIButton must refuse its armed key command"
+            );
+            assert_eq!(calls.get(), 0);
+        }
+    }
+}
+
 mod markdown_a11y {
     use cocoa_ui::{PlatformView, Retained, view};
     use libtest_mimic::Trial;
@@ -19877,6 +20493,243 @@ mod code {
     }
 }
 
+/// `AccessibilityChildren::Combine` merges descendant labels in reading order
+/// and forwards descendant actions on any role, independent of tap gestures
+/// (water-rs/waterui#4385).
+mod a11y_combine {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use libtest_mimic::Trial;
+    use waterui::ViewExt as _;
+    use waterui::accessibility::{AccessibilityChildren, AccessibilityRole};
+    use waterui::component::{button, hstack, text};
+
+    use super::resolve;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "a11y_combine::merges_labels_and_hides_children_for_any_role",
+                || {
+                    merges_labels_and_hides_children_for_any_role();
+                    Ok(())
+                },
+            ),
+            Trial::test("a11y_combine::explicit_label_wins_over_descendants", || {
+                explicit_label_wins_over_descendants();
+                Ok(())
+            }),
+            Trial::test(
+                "a11y_combine::forwards_single_and_multiple_descendant_actions",
+                || {
+                    forwards_single_and_multiple_descendant_actions();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn merges_labels_and_hides_children_for_any_role() {
+        let leaf = resolve::render(
+            hstack((
+                text("Alice"),
+                text("Secret").a11y_hidden(true),
+                text("Hey there"),
+                text("2m"),
+            ))
+            .a11y_role(AccessibilityRole::ListItem)
+            .a11y_children(AccessibilityChildren::Combine),
+        );
+        let view = leaf.view();
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::ProtocolObject;
+            use cocoa_ui::objc2_app_kit::NSAccessibility;
+
+            let element = ProtocolObject::<dyn NSAccessibility>::from_ref(view);
+            assert!(element.isAccessibilityElement());
+            assert_eq!(
+                element.accessibilityLabel().map(|s| s.to_string()),
+                Some(String::from("Alice, Hey there, 2m"))
+            );
+            assert_eq!(
+                element
+                    .accessibilityChildren()
+                    .map_or(0, |items| items.len()),
+                0,
+                "combined host must not expose merged descendants as standalone children"
+            );
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+
+            let mtm = super::mtm();
+            assert!(view.isAccessibilityElement(mtm));
+            assert_eq!(
+                view.accessibilityLabel(mtm).map(|s| s.to_string()),
+                Some(String::from("Alice, Hey there, 2m"))
+            );
+        }
+    }
+
+    fn explicit_label_wins_over_descendants() {
+        let leaf = resolve::render(
+            hstack((text("Part A"), text("Part B")))
+                .a11y_label("Custom Summary")
+                .a11y_children(AccessibilityChildren::Combine),
+        );
+        let view = leaf.view();
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::ProtocolObject;
+            use cocoa_ui::objc2_app_kit::NSAccessibility;
+
+            let element = ProtocolObject::<dyn NSAccessibility>::from_ref(view);
+            assert_eq!(
+                element.accessibilityLabel().map(|s| s.to_string()),
+                Some(String::from("Custom Summary"))
+            );
+            assert_eq!(
+                element
+                    .accessibilityChildren()
+                    .map_or(0, |items| items.len()),
+                0
+            );
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+
+            let mtm = super::mtm();
+            assert!(view.isAccessibilityElement(mtm));
+            assert_eq!(
+                view.accessibilityLabel(mtm).map(|s| s.to_string()),
+                Some(String::from("Custom Summary"))
+            );
+        }
+    }
+
+    fn forwards_single_and_multiple_descendant_actions() {
+        let single_pressed = Rc::new(Cell::new(0u32));
+        let single_leaf = resolve::render({
+            let single_pressed = Rc::clone(&single_pressed);
+            hstack((
+                text("Notifications"),
+                button("Enable").action(move || single_pressed.set(single_pressed.get() + 1)),
+            ))
+            .a11y_children(AccessibilityChildren::Combine)
+        });
+
+        let replied = Rc::new(Cell::new(0u32));
+        let archived = Rc::new(Cell::new(0u32));
+        let multi_leaf = resolve::render({
+            let replied = Rc::clone(&replied);
+            let archived = Rc::clone(&archived);
+            hstack((
+                text("Alice"),
+                button("Reply").action(move || replied.set(replied.get() + 1)),
+                button("Archive").action(move || archived.set(archived.get() + 1)),
+            ))
+            .a11y_children(AccessibilityChildren::Combine)
+        });
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::{Bool, ProtocolObject};
+            use cocoa_ui::objc2::{msg_send, sel};
+            use cocoa_ui::objc2_app_kit::NSAccessibility;
+
+            let single_view = single_leaf.view();
+            let single_el = ProtocolObject::<dyn NSAccessibility>::from_ref(single_view);
+            assert_eq!(
+                single_el.accessibilityLabel().map(|s| s.to_string()),
+                Some(String::from("Notifications, Enable"))
+            );
+            // SAFETY: `isAccessibilitySelectorAllowed:` and
+            // `accessibilityPerformPress` are standard `NSAccessibility` selectors.
+            let allowed: bool = unsafe {
+                msg_send![single_view, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)]
+            };
+            assert!(allowed, "single-button combined host must allow AXPress");
+            // SAFETY: `accessibilityPerformPress` is a standard `NSAccessibility` selector returning `BOOL`.
+            let pressed: bool = unsafe { msg_send![single_view, accessibilityPerformPress] };
+            assert!(pressed);
+            assert_eq!(single_pressed.get(), 1);
+
+            let multi_view = multi_leaf.view();
+            let multi_el = ProtocolObject::<dyn NSAccessibility>::from_ref(multi_view);
+            assert_eq!(
+                multi_el.accessibilityLabel().map(|s| s.to_string()),
+                Some(String::from("Alice, Reply, Archive"))
+            );
+            let actions = multi_el
+                .accessibilityCustomActions()
+                .expect("multi-button combined host must expose custom actions");
+            let names: Vec<String> = actions.iter().map(|a| a.name().to_string()).collect();
+            assert_eq!(names, vec![String::from("Reply"), String::from("Archive")]);
+            for action in &actions {
+                let handler = action.handler();
+                assert!(
+                    !handler.is_null(),
+                    "custom action must carry a handler block"
+                );
+                // SAFETY: `handler` is a valid non-null `block2::DynBlock<dyn Fn() -> Bool>`
+                // owned by `action`.
+                let result: Bool = unsafe { (*handler).call(()) };
+                assert!(result.as_bool());
+            }
+            assert_eq!(replied.get(), 1);
+            assert_eq!(archived.get(), 1);
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::{
+                NSObjectUIAccessibility as _, NSObjectUIAccessibilityAction as _,
+            };
+
+            let mtm = super::mtm();
+            let single_view = single_leaf.view();
+            assert_eq!(
+                single_view.accessibilityLabel(mtm).map(|s| s.to_string()),
+                Some(String::from("Notifications, Enable"))
+            );
+            assert!(single_view.accessibilityActivate(mtm));
+            assert_eq!(single_pressed.get(), 1);
+
+            let multi_view = multi_leaf.view();
+            assert_eq!(
+                multi_view.accessibilityLabel(mtm).map(|s| s.to_string()),
+                Some(String::from("Alice, Reply, Archive"))
+            );
+            let actions = multi_view
+                .accessibilityCustomActions(mtm)
+                .expect("multi-button combined host must expose custom actions");
+            let names: Vec<String> = actions.iter().map(|a| a.name().to_string()).collect();
+            assert_eq!(names, vec![String::from("Reply"), String::from("Archive")]);
+            for action in &actions {
+                // SAFETY: `actionHandler` returns the action's handler block pointer.
+                let handler = unsafe { action.actionHandler() };
+                assert!(
+                    !handler.is_null(),
+                    "custom action must carry a handler block"
+                );
+                // SAFETY: `handler` is a valid non-null block owned by `action`.
+                let result = unsafe { (*handler).call((core::ptr::NonNull::from(&*action),)) };
+                assert!(result.as_bool());
+            }
+            assert_eq!(replied.get(), 1);
+            assert_eq!(archived.get(), 1);
+        }
+    }
+}
+
 /// `ViewExt::report_size` (water-rs/waterui#4298): committed placed sizes write
 /// into the bound `Binding<Size>` after commit, stay silent on unchanged
 /// relayouts, and drive adaptive `when(size.map(...), ...)` across resize
@@ -20056,6 +20909,460 @@ mod report_size {
             writes.get(),
             writes_settled,
             "settled adapted layout must not re-write or cycle"
+        );
+    }
+}
+
+/// `Dismiss` extractor trials across `NavigationStack` and `AnchoredOverlay`.
+mod dismiss {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::Message;
+    use cocoa_ui::objc2::rc::{Retained, autoreleasepool};
+    use cocoa_ui::{PlatformView, view};
+    use waterui::ViewExt as _;
+    use waterui::component::{button, text, vstack};
+    use waterui::metadata::anchored_overlay::{AnchoredOverlay, Dismissal};
+    use waterui::navigation::{NavigationLink, NavigationPath, NavigationStack, NavigationView};
+    use waterui::reactive::{Signal as _, binding};
+    use waterui::{Dismiss, State};
+    use waterui_apple::native_test_support::pump_main_until;
+
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::appkit::Button as PlatformButton;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::uikit::button::CocoaUiButton as PlatformButton;
+
+    use super::{leaf, mtm, resolve};
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "dismiss::navigation_root_has_no_dismiss_and_pushed_pages_pop_on_dismiss",
+                || {
+                    navigation_root_has_no_dismiss_and_pushed_pages_pop_on_dismiss();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "dismiss::navigation_closure_link_pushed_page_pops_on_dismiss",
+                || {
+                    navigation_closure_link_pushed_page_pops_on_dismiss();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "dismiss::navigation_root_preserves_enclosing_dismiss_while_pushed_page_pops",
+                || {
+                    navigation_root_preserves_enclosing_dismiss_while_pushed_page_pops();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "dismiss::anchored_overlay_dismiss_closes_overlay_and_shadows_pushed_page",
+                || {
+                    anchored_overlay_dismiss_closes_overlay_and_shadows_pushed_page();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn collect_buttons(root: &PlatformView, out: &mut Vec<Retained<PlatformButton>>) {
+        for sub in view::subviews(root) {
+            if let Some(button) = sub.downcast_ref::<PlatformButton>() {
+                out.push(Message::retain(button));
+            }
+            collect_buttons(&sub, out);
+        }
+    }
+
+    fn click_button(button: &PlatformButton) {
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2_app_kit::NSControl;
+            // SAFETY: `performClick:` dispatches the button's target-action on the main thread.
+            unsafe { NSControl::performClick(button, None) };
+        }
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::UIControlEvents;
+            button.sendActionsForControlEvents(UIControlEvents::TouchUpInside);
+        }
+    }
+
+    #[cfg(target_os = "ios")]
+    fn find_nav_controller(
+        root: &PlatformView,
+    ) -> Retained<cocoa_ui::objc2_ui_kit::UINavigationController> {
+        use cocoa_ui::objc2_ui_kit::UINavigationController;
+        use cocoa_ui::uikit::view_controller::owning_controller;
+
+        fn search(view: &PlatformView) -> Option<Retained<UINavigationController>> {
+            if let Some(controller) = owning_controller(view) {
+                if let Ok(nav) = controller.clone().downcast() {
+                    return Some(nav);
+                }
+                if let Some(nav) = controller.navigationController() {
+                    return Some(nav);
+                }
+            }
+            view::subviews(view)
+                .into_iter()
+                .find_map(|sub| search(&sub))
+        }
+
+        search(root).expect("NavigationStack mounts a UINavigationController")
+    }
+
+    fn navigation_root_has_no_dismiss_and_pushed_pages_pop_on_dismiss() {
+        let root_had_dismiss = Rc::new(Cell::new(None::<bool>));
+        let root_probe = Rc::clone(&root_had_dismiss);
+        let path = NavigationPath::<i32>::new();
+        let stack_path = path.clone();
+
+        let rendered = resolve::render(
+            NavigationStack::with_path(
+                stack_path,
+                NavigationView::new(
+                    "Root",
+                    button("Probe Root").action(move |dismiss: Option<Dismiss>| {
+                        root_probe.set(Some(dismiss.is_some()));
+                    }),
+                ),
+            )
+            .destination(|_route: i32| {
+                NavigationView::new(
+                    "Detail",
+                    button("Dismiss Detail").action(|dismiss: Dismiss| dismiss.dismiss()),
+                )
+            }),
+        );
+
+        let mut root_buttons = Vec::new();
+        collect_buttons(rendered.view(), &mut root_buttons);
+        assert_eq!(root_buttons.len(), 1);
+        click_button(&root_buttons[0]);
+        assert_eq!(
+            root_had_dismiss.get(),
+            Some(false),
+            "root NavigationStack page must not receive a stack Dismiss"
+        );
+
+        autoreleasepool(|_| path.push(1));
+
+        #[cfg(target_os = "macos")]
+        let detail_button = {
+            assert!(
+                pump_main_until(2.0, || view::subviews(rendered.view()).len() == 2),
+                "pushing onto NavigationPath must mount the pushed page"
+            );
+            let pages = view::subviews(rendered.view());
+            let mut buttons = Vec::new();
+            collect_buttons(&pages[1], &mut buttons);
+            assert_eq!(buttons.len(), 1);
+            buttons.into_iter().next().unwrap()
+        };
+
+        #[cfg(target_os = "ios")]
+        let (nav, detail_button) = {
+            let nav = find_nav_controller(rendered.view());
+            assert!(
+                pump_main_until(2.0, || nav.viewControllers().count() == 2),
+                "pushing onto NavigationPath must push a UIViewController"
+            );
+            let top = nav.topViewController().expect("top pushed controller");
+            let top_view = top.view().expect("pushed controller view");
+            let mut buttons = Vec::new();
+            collect_buttons(&top_view, &mut buttons);
+            assert_eq!(buttons.len(), 1);
+            (nav, buttons.into_iter().next().unwrap())
+        };
+
+        autoreleasepool(|_| click_button(&detail_button));
+        assert!(
+            pump_main_until(2.0, || path.is_empty()),
+            "Dismiss on path-pushed page must pop NavigationPath"
+        );
+        #[cfg(target_os = "macos")]
+        assert!(
+            pump_main_until(2.0, || view::subviews(rendered.view()).len() == 1),
+            "macOS stack must return to root page"
+        );
+        #[cfg(target_os = "ios")]
+        assert!(
+            pump_main_until(2.0, || nav.viewControllers().count() == 1),
+            "iOS UINavigationController must return to root controller"
+        );
+    }
+
+    fn navigation_closure_link_pushed_page_pops_on_dismiss() {
+        let rendered = resolve::render(NavigationStack::new(NavigationView::new(
+            "Root",
+            NavigationLink::new("Push Closure Page", || {
+                NavigationView::new(
+                    "Closure Page",
+                    button("Dismiss Closure Page").action(|dismiss: Dismiss| dismiss.dismiss()),
+                )
+            }),
+        )));
+
+        let mut root_buttons = Vec::new();
+        collect_buttons(rendered.view(), &mut root_buttons);
+        assert_eq!(root_buttons.len(), 1);
+        autoreleasepool(|_| click_button(&root_buttons[0]));
+
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                pump_main_until(2.0, || view::subviews(rendered.view()).len() == 2),
+                "NavigationLink must push closure page onto stack"
+            );
+            let pages = view::subviews(rendered.view());
+            let mut detail_buttons = Vec::new();
+            collect_buttons(&pages[1], &mut detail_buttons);
+            assert_eq!(detail_buttons.len(), 1);
+            autoreleasepool(|_| click_button(&detail_buttons[0]));
+            assert!(
+                pump_main_until(2.0, || view::subviews(rendered.view()).len() == 1),
+                "Dismiss on closure-pushed page must pop back to root"
+            );
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            let nav = find_nav_controller(rendered.view());
+            assert!(
+                pump_main_until(2.0, || nav.viewControllers().count() == 2),
+                "NavigationLink must push closure controller"
+            );
+            let top_view = nav
+                .topViewController()
+                .and_then(|c| c.view())
+                .expect("top controller view");
+            let mut detail_buttons = Vec::new();
+            collect_buttons(&top_view, &mut detail_buttons);
+            assert_eq!(detail_buttons.len(), 1);
+            autoreleasepool(|_| click_button(&detail_buttons[0]));
+            assert!(
+                pump_main_until(2.0, || nav.viewControllers().count() == 1),
+                "Dismiss on closure-pushed page must pop back to root"
+            );
+        }
+    }
+
+    fn navigation_root_preserves_enclosing_dismiss_while_pushed_page_pops() {
+        let outer_dismissed = Rc::new(Cell::new(0usize));
+        let outer_counter = Rc::clone(&outer_dismissed);
+        let path = NavigationPath::from(vec![1_i32]);
+        let stack_path = path.clone();
+
+        let rendered = resolve::render_with(
+            NavigationStack::with_path(
+                stack_path,
+                NavigationView::new(
+                    "Root",
+                    button("Dismiss Outer").action(|dismiss: Dismiss| dismiss.dismiss()),
+                ),
+            )
+            .destination(|_route: i32| {
+                NavigationView::new(
+                    "Detail",
+                    button("Pop Pushed").action(|dismiss: Dismiss| dismiss.dismiss()),
+                )
+            }),
+            |env| {
+                env.insert(State(Dismiss::new(move || {
+                    outer_counter.set(outer_counter.get() + 1);
+                })));
+            },
+        );
+
+        #[cfg(target_os = "macos")]
+        {
+            let pages = view::subviews(rendered.view());
+            assert_eq!(pages.len(), 2);
+            let mut pushed_buttons = Vec::new();
+            collect_buttons(&pages[1], &mut pushed_buttons);
+            assert_eq!(pushed_buttons.len(), 1);
+            autoreleasepool(|_| click_button(&pushed_buttons[0]));
+            assert!(
+                pump_main_until(2.0, || path.is_empty()
+                    && view::subviews(rendered.view()).len() == 1),
+                "Dismiss on pushed page must pop without invoking outer Dismiss"
+            );
+            assert_eq!(outer_dismissed.get(), 0);
+
+            let pages = view::subviews(rendered.view());
+            let mut root_buttons = Vec::new();
+            collect_buttons(&pages[0], &mut root_buttons);
+            assert_eq!(root_buttons.len(), 1);
+            autoreleasepool(|_| click_button(&root_buttons[0]));
+            assert_eq!(
+                outer_dismissed.get(),
+                1,
+                "Dismiss on root page must invoke enclosing Dismiss"
+            );
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            let nav = find_nav_controller(rendered.view());
+            let controllers = nav.viewControllers();
+            assert_eq!(controllers.count(), 2);
+            let top_view = controllers
+                .objectAtIndex(1)
+                .view()
+                .expect("pushed controller view");
+            let mut pushed_buttons = Vec::new();
+            collect_buttons(&top_view, &mut pushed_buttons);
+            assert_eq!(pushed_buttons.len(), 1);
+            autoreleasepool(|_| click_button(&pushed_buttons[0]));
+            assert!(
+                pump_main_until(2.0, || path.is_empty()
+                    && nav.viewControllers().count() == 1),
+                "Dismiss on pushed page must pop without invoking outer Dismiss"
+            );
+            assert_eq!(outer_dismissed.get(), 0);
+
+            let root_view = nav
+                .viewControllers()
+                .objectAtIndex(0)
+                .view()
+                .expect("root controller view");
+            let mut root_buttons = Vec::new();
+            collect_buttons(&root_view, &mut root_buttons);
+            assert_eq!(root_buttons.len(), 1);
+            autoreleasepool(|_| click_button(&root_buttons[0]));
+            assert_eq!(
+                outer_dismissed.get(),
+                1,
+                "Dismiss on root page must invoke enclosing Dismiss"
+            );
+        }
+    }
+
+    fn anchored_overlay_dismiss_closes_overlay_and_shadows_pushed_page() {
+        let overlay_open = binding(true);
+        let overlay_for_view = overlay_open.clone();
+        let path = NavigationPath::from(vec![1_i32]);
+        let stack_path = path.clone();
+
+        let rendered = resolve::render(
+            NavigationStack::with_path(stack_path, NavigationView::new("Root", text("Root")))
+                .destination(move |_| {
+                    let overlay_open = overlay_for_view.clone();
+                    NavigationView::new(
+                        "Detail",
+                        vstack((
+                            button("Pop Page").action(|dismiss: Dismiss| dismiss.dismiss()),
+                            text("Anchor").anchored_overlay(
+                                AnchoredOverlay::new(&overlay_open, || {
+                                    button("Close Overlay")
+                                        .action(|dismiss: Dismiss| dismiss.dismiss())
+                                })
+                                .dismissal(Dismissal::Manual),
+                            ),
+                        )),
+                    )
+                }),
+        );
+
+        let window = leaf::attach(mtm(), rendered.view());
+        verify_overlay_dismiss(rendered.view(), &window, &overlay_open, &path);
+        drop(window);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn verify_overlay_dismiss(
+        rendered_view: &PlatformView,
+        _window: &cocoa_ui::appkit::Window,
+        overlay_open: &waterui::Binding<bool>,
+        path: &NavigationPath<i32>,
+    ) {
+        let parent = cocoa_ui::appkit::window_of(rendered_view).expect("parent NSWindow");
+        assert!(
+            pump_main_until(2.0, || autoreleasepool(|_| {
+                parent
+                    .childWindows()
+                    .is_some_and(|children| !children.is_empty())
+            })),
+            "AnchoredOverlay must present its NSPanel"
+        );
+        let panel = autoreleasepool(|_| parent.childWindows().unwrap().objectAtIndex(0));
+        let panel_content = panel.contentView().expect("overlay panel contentView");
+        let mut overlay_buttons = Vec::new();
+        collect_buttons(&panel_content, &mut overlay_buttons);
+        assert_eq!(overlay_buttons.len(), 1);
+        autoreleasepool(|_| click_button(&overlay_buttons[0]));
+        assert!(
+            pump_main_until(2.0, || !overlay_open.snapshot()),
+            "Dismiss inside AnchoredOverlay must close it"
+        );
+        assert_eq!(
+            path.len(),
+            1,
+            "closing AnchoredOverlay must not pop enclosing NavigationStack page"
+        );
+
+        let pages = view::subviews(rendered_view);
+        let mut pushed_buttons = Vec::new();
+        collect_buttons(&pages[1], &mut pushed_buttons);
+        assert_eq!(pushed_buttons.len(), 1);
+        autoreleasepool(|_| click_button(&pushed_buttons[0]));
+        assert!(
+            pump_main_until(2.0, || path.is_empty()),
+            "Dismiss on pushed page must pop the stack after overlay closes"
+        );
+    }
+
+    #[cfg(target_os = "ios")]
+    fn verify_overlay_dismiss(
+        rendered_view: &PlatformView,
+        window: &cocoa_ui::objc2_ui_kit::UIWindow,
+        overlay_open: &waterui::Binding<bool>,
+        path: &NavigationPath<i32>,
+    ) {
+        let window_view: &PlatformView = window;
+        let find_overlay_button = || {
+            view::subviews(window_view).into_iter().find_map(|sub| {
+                if std::ptr::eq(&raw const *sub, std::ptr::from_ref(rendered_view)) {
+                    return None;
+                }
+                let mut buttons = Vec::new();
+                collect_buttons(&sub, &mut buttons);
+                buttons.into_iter().next()
+            })
+        };
+        assert!(
+            pump_main_until(2.0, || autoreleasepool(|_| find_overlay_button().is_some())),
+            "AnchoredOverlay must present its button in passthrough host"
+        );
+        let overlay_btn = autoreleasepool(|_| find_overlay_button().unwrap());
+        autoreleasepool(|_| click_button(&overlay_btn));
+        assert!(
+            pump_main_until(2.0, || !overlay_open.snapshot()),
+            "Dismiss inside AnchoredOverlay must close it"
+        );
+        assert_eq!(
+            path.len(),
+            1,
+            "closing AnchoredOverlay must not pop enclosing NavigationStack page"
+        );
+
+        let nav = find_nav_controller(rendered_view);
+        let top_view = nav
+            .topViewController()
+            .and_then(|c| c.view())
+            .expect("pushed controller view");
+        let mut pushed_buttons = Vec::new();
+        collect_buttons(&top_view, &mut pushed_buttons);
+        assert_eq!(pushed_buttons.len(), 1);
+        autoreleasepool(|_| click_button(&pushed_buttons[0]));
+        assert!(
+            pump_main_until(2.0, || path.is_empty()),
+            "Dismiss on pushed page must pop the stack after overlay closes"
         );
     }
 }

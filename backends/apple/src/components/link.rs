@@ -22,6 +22,7 @@ pub fn realize_link_config(config: LinkConfig<Held>, ctx: &RenderContext<'_>) ->
         None,
         Some(Role::Link),
         None,
+        None,
         move |_| {
             let target_url = url.snapshot();
             if !cocoa_ui::open_url(target_url.as_str(), mtm) {
