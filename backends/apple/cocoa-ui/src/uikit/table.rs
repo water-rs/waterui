@@ -53,10 +53,13 @@ use objc2_ui_kit::{
 };
 
 use crate::EdgeInsets;
+use crate::action::ActionTarget;
 use crate::callback::guarded;
 use crate::geometry::{IndexPath, Point};
 use crate::response::{ReportsResponse, ResponseGeometry};
 use crate::scroll_flight::{FlightPlan, ScrollFlight};
+use crate::uikit::disclosure::{DisclosureButton, attach_label_click};
+use crate::uikit::gesture::GestureAttachment;
 use crate::uikit::keyboard::KeyboardTracking;
 
 /// Visual presentation style for a `UIKit` [`TableView`].
@@ -1373,12 +1376,26 @@ impl TableCell {
 #[derive(Default)]
 pub struct TableHeaderFooterViewIvars {
     payload: RefCell<Option<Box<dyn Any>>>,
+    disclosure: RefCell<Option<Retained<DisclosureButton>>>,
+    disclosure_constraints: RefCell<Vec<Retained<NSLayoutConstraint>>>,
+    disclosure_target: RefCell<Option<ActionTarget>>,
+    label_click: RefCell<Option<GestureAttachment>>,
 }
 
 impl fmt::Debug for TableHeaderFooterViewIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TableHeaderFooterViewIvars")
             .field("payload", &self.payload.borrow().is_some())
+            .field("disclosure", &self.disclosure.borrow().is_some())
+            .field(
+                "disclosure_constraints",
+                &self.disclosure_constraints.borrow().len(),
+            )
+            .field(
+                "disclosure_target",
+                &self.disclosure_target.borrow().is_some(),
+            )
+            .field("label_click", &self.label_click.borrow().is_some())
             .finish()
     }
 }
@@ -1402,6 +1419,7 @@ define_class!(
         fn prepare_for_reuse(&self) {
             // SAFETY: the super implementation restores default state.
             let _: () = unsafe { msg_send![super(self), prepareForReuse] };
+            self.clear_collapsible();
             self.view_ivars().payload.take();
         }
     }
@@ -1434,6 +1452,75 @@ impl TableHeaderFooterView {
         };
         configuration.setText(Some(text));
         self.setContentConfiguration(Some(ProtocolObject::from_ref(&*configuration)));
+        if let Some(disclosure) = self.view_ivars().disclosure.borrow().as_ref() {
+            disclosure.set_accessibility_label(&text.to_string());
+        }
+    }
+
+    /// Removes any mounted disclosure affordance (used on reuse or for
+    /// non-collapsible headers/footers).
+    pub fn clear_collapsible(&self) {
+        let ivars = self.view_ivars();
+        if let Some(old) = ivars.disclosure.borrow_mut().take() {
+            old.removeFromSuperview();
+        }
+        NSLayoutConstraint::deactivateConstraints(
+            &NSArray::from_retained_slice(&ivars.disclosure_constraints.replace(Vec::new())),
+            self.mtm(),
+        );
+        ivars.disclosure_target.replace(None);
+        ivars.label_click.replace(None);
+    }
+
+    /// Mounts a native `UIKit` disclosure chevron button on this header and
+    /// wires tapping the header or button to `on_toggle`.
+    pub fn set_collapsible(&self, expanded: bool, label: &str, on_toggle: impl Fn(bool) + 'static) {
+        self.clear_collapsible();
+        let mtm = self.mtm();
+        let button = DisclosureButton::new(mtm, expanded);
+        button.set_tint(&UIColor::secondaryLabelColor());
+        button.set_accessibility_label(label);
+        button.setTranslatesAutoresizingMaskIntoConstraints(false);
+        let content_view = self.contentView();
+        content_view.addSubview(&button);
+        let constraints = vec![
+            button
+                .trailingAnchor()
+                .constraintEqualToAnchor_constant(&content_view.trailingAnchor(), -12.0),
+            button
+                .centerYAnchor()
+                .constraintEqualToAnchor(&content_view.centerYAnchor()),
+        ];
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&constraints), mtm);
+        let target = button.on_change({
+            let weak = Weak::from_retained(&button);
+            move |_| {
+                if let Some(btn) = weak.load() {
+                    let next = btn.is_expanded();
+                    btn.set_expanded(next);
+                    on_toggle(next);
+                }
+            }
+        });
+        let label_click = attach_label_click(&content_view, button.clone());
+        let ivars = self.view_ivars();
+        ivars.disclosure_constraints.replace(constraints);
+        ivars.disclosure_target.replace(Some(target));
+        ivars.label_click.replace(Some(label_click));
+        ivars.disclosure.replace(Some(button));
+    }
+
+    /// Updates the mounted disclosure chevron's visual and accessibility state.
+    pub fn set_expanded(&self, expanded: bool) {
+        if let Some(disclosure) = self.view_ivars().disclosure.borrow().as_ref() {
+            disclosure.set_expanded(expanded);
+        }
+    }
+
+    /// The mounted disclosure button on a collapsible header, if any.
+    #[must_use]
+    pub fn disclosure_button(&self) -> Option<Retained<DisclosureButton>> {
+        self.view_ivars().disclosure.borrow().clone()
     }
 
     /// Stores `value` in the view; the previous payload is dropped — and

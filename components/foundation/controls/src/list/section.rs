@@ -7,6 +7,7 @@
 //! Material section dividers — attached to whichever rows the section holds
 //! at the moment.
 
+use nami::Binding;
 use waterui_core::View;
 use waterui_text::{IntoText, Text};
 
@@ -25,6 +26,11 @@ use super::rows::ListItemSink;
 /// both. Rows of a reactive collection are inserted and removed as it
 /// changes; the header opens whichever row currently leads the section, and
 /// a section with no rows draws neither header nor footer until rows return.
+///
+/// Chain [`Section::expanded`] to make a section collapsible: backends render
+/// a native disclosure affordance on its header, animate collapse and expand,
+/// expose the expanded state to assistive technology, and preserve tags and
+/// selection on collapsed rows.
 ///
 /// The header and footer are semantic text, so a string literal localizes and
 /// a signal-backed title updates in place: the backend repaints the chrome
@@ -54,6 +60,7 @@ use super::rows::ListItemSink;
 pub struct Section<C> {
     label: Option<Text>,
     footer: Option<Text>,
+    expanded: Option<Binding<bool>>,
     content: C,
 }
 
@@ -66,6 +73,7 @@ impl Section<()> {
         Self {
             label: Some(label.into_text()),
             footer: None,
+            expanded: None,
             content: (),
         }
     }
@@ -78,6 +86,7 @@ impl Section<()> {
         Self {
             label: None,
             footer: None,
+            expanded: None,
             content: (),
         }
     }
@@ -93,6 +102,7 @@ impl<C> Section<C> {
         Section {
             label: self.label,
             footer: self.footer,
+            expanded: self.expanded,
             content,
         }
     }
@@ -101,6 +111,18 @@ impl<C> Section<C> {
     #[must_use]
     pub fn footer(mut self, footer: impl IntoText) -> Self {
         self.footer = Some(footer.into_text());
+        self
+    }
+
+    /// Makes this section collapsible, bound to `expanded`.
+    ///
+    /// Backends realize a native disclosure affordance on the section header,
+    /// animate collapse and expand, toggle `expanded` on activation, hide
+    /// collapsed rows while preserving their tags and selection state, and
+    /// expose the expanded state to assistive technology.
+    #[must_use]
+    pub fn expanded(mut self, expanded: &Binding<bool>) -> Self {
+        self.expanded = Some(expanded.clone());
         self
     }
 }
@@ -113,7 +135,7 @@ impl<C: ListContent<SectionScope>> ListContent<ListScope> for Section<C> {
         R: View,
         W: Fn(Self::Row) -> R + Clone + 'static,
     {
-        sink.begin_section(ListSection::new(self.label, self.footer));
+        sink.begin_section(ListSection::new(self.label, self.footer, self.expanded));
         self.content.collect_items(sink, wrap);
         sink.end_section();
     }

@@ -128,8 +128,17 @@ struct SectionGroup {
     label: Option<Computed<StyledStr>>,
     /// The section's resolved footer text, watched live.
     footer: Option<Computed<StyledStr>>,
+    /// Reactive expanded state for a collapsible section; `None` is always expanded.
+    expanded: Option<Binding<bool>>,
     /// How many items the group covers.
     count: usize,
+}
+
+impl SectionGroup {
+    /// Whether this section's rows are currently visible.
+    fn is_expanded(&self) -> bool {
+        self.expanded.as_ref().is_none_or(Signal::snapshot)
+    }
 }
 
 /// `computeListSectionGroups`: consecutive items of one section form a
@@ -160,6 +169,7 @@ fn compute_section_groups(
             footer: chrome
                 .and_then(ListSection::footer)
                 .map(|text| resolve_text(text, env)),
+            expanded: chrome.and_then(ListSection::expanded).cloned(),
             count: 1,
         });
     }
@@ -169,7 +179,10 @@ fn compute_section_groups(
 /// `isSinglePlainSection`: one group carrying no chrome is the shape batch
 /// updates are safe for.
 const fn is_single_plain_section(groups: &[SectionGroup]) -> bool {
-    groups.len() == 1 && groups[0].label.is_none() && groups[0].footer.is_none()
+    groups.len() == 1
+        && groups[0].label.is_none()
+        && groups[0].footer.is_none()
+        && groups[0].expanded.is_none()
 }
 
 /// The row edits that turn one plain section's rows into another's, in
@@ -407,13 +420,20 @@ fn rebuild_flat_layout(state: &mut Shared) {
         {
             state.flat_layout.push(FlatEntry::Spacer);
         }
+        let expanded = state
+            .groups
+            .get(section)
+            .is_none_or(SectionGroup::is_expanded);
         if let Some(group) = state.groups.get(section)
             && group.label.is_some()
         {
             state.flat_layout.push(FlatEntry::Header(section));
-            if section == 0 && !state.is_sidebar() {
+            if section == 0 && !state.is_sidebar() && expanded {
                 state.flat_layout.push(FlatEntry::Spacer);
             }
+        }
+        if !expanded {
+            continue;
         }
         for (member_section, member) in &rows {
             if *member_section == section {
@@ -603,6 +623,17 @@ struct Shared {
     pending_inserted: HashMap<ItemId, PendingRow>,
     /// The section groups covering `item_ids`, in order.
     groups: Vec<SectionGroup>,
+    /// Watchers on collapsible sections' `expanded` bindings, re-armed whenever
+    /// section groups recompute.
+    section_expansion_guards: Vec<BoxWatcherGuard>,
+    /// Weak handles to mounted collapsible section header views so external
+    /// `Binding<bool>` updates sync the disclosure indicator in place.
+    #[cfg(target_os = "macos")]
+    section_headers: RefCell<HashMap<usize, cocoa_ui::objc2::rc::Weak<SectionHeader>>>,
+    /// Weak handles to mounted collapsible section header views (`UIKit`).
+    #[cfg(target_os = "ios")]
+    section_headers:
+        RefCell<HashMap<usize, cocoa_ui::objc2::rc::Weak<cocoa_ui::uikit::TableHeaderFooterView>>>,
     /// `AppKit`: `flatLayout` — the table's flat entry list.
     #[cfg(target_os = "macos")]
     flat_layout: Vec<FlatEntry>,
@@ -654,13 +685,21 @@ impl fmt::Debug for Shared {
 }
 
 impl Shared {
-    /// Every live row's index path in display order (`UIKit`).
+    /// Every live row's index path in display order (`UIKit`), skipping rows
+    /// inside collapsed sections.
     #[cfg(target_os = "ios")]
     fn live_index_paths(&self) -> Vec<IndexPath> {
         let mut counts: Vec<usize> = Vec::new();
         self.display_rows()
             .into_iter()
             .filter_map(|(section, member)| {
+                if !self
+                    .groups
+                    .get(section)
+                    .is_none_or(SectionGroup::is_expanded)
+                {
+                    return None;
+                }
                 while counts.len() <= section {
                     counts.push(0);
                 }
@@ -799,9 +838,17 @@ impl Shared {
         rows
     }
 
-    /// The display member `section`/`row` names (`UIKit`).
+    /// The display member `section`/`row` names (`UIKit`), `None` when
+    /// `section` is collapsed.
     #[cfg(target_os = "ios")]
     fn display_at(&self, section: usize, row: usize) -> Option<DisplayRow> {
+        if !self
+            .groups
+            .get(section)
+            .is_none_or(SectionGroup::is_expanded)
+        {
+            return None;
+        }
         self.display_rows()
             .into_iter()
             .filter(|(member_section, _)| *member_section == section)
@@ -810,11 +857,19 @@ impl Shared {
     }
 
     /// The `(section, row)` `wanted` displays at — `row` counting within
-    /// `section`'s displayed members (`UIKit`).
+    /// `section`'s displayed members (`UIKit`). Returns `None` while the
+    /// owning section is collapsed.
     #[cfg(target_os = "ios")]
     fn display_index_of(&self, wanted: DisplayRow) -> Option<(usize, usize)> {
         let mut counts: Vec<usize> = Vec::new();
         for (section, member) in self.display_rows() {
+            if !self
+                .groups
+                .get(section)
+                .is_none_or(SectionGroup::is_expanded)
+            {
+                continue;
+            }
             while counts.len() <= section {
                 counts.push(0);
             }
@@ -828,13 +883,22 @@ impl Shared {
     }
 
     /// Each section's displayed member count: its live rows plus the
-    /// ghosts anchored into it. With no live rows at all the ghosts
-    /// still form one section (`UIKit`).
+    /// ghosts anchored into it, or `0` while collapsed. With no live rows at
+    /// all the ghosts still form one section (`UIKit`).
     #[cfg(target_os = "ios")]
     fn display_section_counts(&self) -> Vec<usize> {
-        let mut counts: Vec<usize> = self.groups.iter().map(|group| group.count).collect();
+        let mut counts: Vec<usize> = self
+            .groups
+            .iter()
+            .map(|group| if group.is_expanded() { group.count } else { 0 })
+            .collect();
         for (section, member) in self.display_rows() {
-            if matches!(member, DisplayRow::Ghost(_)) {
+            if matches!(member, DisplayRow::Ghost(_))
+                && self
+                    .groups
+                    .get(section)
+                    .is_none_or(SectionGroup::is_expanded)
+            {
                 if counts.len() <= section {
                     counts.resize(section + 1, 0);
                 }
@@ -1390,12 +1454,147 @@ fn apply_contents_change(
     });
 }
 
-/// Clears unconsumed insertion rows, reapplies selection, and retries any
-/// deferred identity-keyed scroll after a membership update completes.
+/// Clears unconsumed insertion rows, re-arms collapsible section watchers,
+/// reapplies selection, and retries any deferred identity-keyed scroll after
+/// a membership update completes.
 fn finish_contents_change(state: &Rc<RefCell<Shared>>, table: &TableView) {
     state.borrow_mut().pending_inserted.clear();
+    watch_section_expansions(state, table);
     apply_binding_selection(state, table);
     flush_pending_scroll(state, table);
+}
+
+/// Watches every collapsible section's `expanded: Binding<bool>` so external
+/// updates and header clicks animate the section's rows in or out without
+/// disturbing row tags or selection state.
+fn watch_section_expansions(state: &Rc<RefCell<Shared>>, table: &TableView) {
+    let bindings: Vec<(usize, Binding<bool>)> = state
+        .borrow()
+        .groups
+        .iter()
+        .enumerate()
+        .filter_map(|(section, group)| group.expanded.clone().map(|binding| (section, binding)))
+        .collect();
+    let mut guards: Vec<BoxWatcherGuard> = Vec::with_capacity(bindings.len());
+    for (section, binding) in bindings {
+        let state = Rc::clone(state);
+        let table = cocoa_ui::objc2::rc::Weak::new(table);
+        let guard = binding.watch(move |ctx| {
+            let expanded = *ctx.value();
+            let Some(table) = table.load() else {
+                return;
+            };
+            apply_section_expansion(&state, &table, section, expanded);
+        });
+        guards.push(Box::new(guard));
+    }
+    state.borrow_mut().section_expansion_guards = guards;
+}
+
+/// Animates `section` expanding or collapsing on `table` while preserving the
+/// list's selection binding.
+fn apply_section_expansion(
+    state: &Rc<RefCell<Shared>>,
+    table: &TableView,
+    section: usize,
+    expanded: bool,
+) {
+    if let Some(header) = state
+        .borrow()
+        .section_headers
+        .borrow()
+        .get(&section)
+        .and_then(cocoa_ui::objc2::rc::Weak::load)
+    {
+        header.set_expanded(expanded);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let (deletes, inserts) = {
+            let mut shared = state.borrow_mut();
+            let old_layout = shared.flat_layout.clone();
+            rebuild_flat_layout(&mut shared);
+            let new_layout = &shared.flat_layout;
+            // Find the range owned by `section` right after its header (or at
+            // section start) in both layouts.
+            let old_header = old_layout
+                .iter()
+                .position(|entry| *entry == FlatEntry::Header(section));
+            let new_header = new_layout
+                .iter()
+                .position(|entry| *entry == FlatEntry::Header(section));
+            if let (Some(old_start), Some(new_start)) = (old_header, new_header) {
+                let old_end = old_layout[old_start + 1..]
+                    .iter()
+                    .position(|entry| matches!(entry, FlatEntry::Header(_)))
+                    .map_or(old_layout.len(), |offset| old_start + 1 + offset);
+                let new_end = new_layout[new_start + 1..]
+                    .iter()
+                    .position(|entry| matches!(entry, FlatEntry::Header(_)))
+                    .map_or(new_layout.len(), |offset| new_start + 1 + offset);
+                let old_count = old_end.saturating_sub(old_start + 1);
+                let new_count = new_end.saturating_sub(new_start + 1);
+                if old_count == new_count {
+                    return;
+                }
+                if expanded {
+                    (Vec::new(), (new_start + 1..new_end).collect::<Vec<_>>())
+                } else {
+                    ((old_start + 1..old_end).collect::<Vec<_>>(), Vec::new())
+                }
+            } else {
+                shared.applying_selection.set(true);
+                drop(shared);
+                table.reload_data();
+                state.borrow().applying_selection.set(false);
+                apply_binding_selection(state, table);
+                return;
+            }
+        };
+        state.borrow().applying_selection.set(true);
+        table.apply_row_updates(&deletes, &[], &inserts, &[], true);
+        refresh_separators(state, table);
+        state.borrow().applying_selection.set(false);
+        apply_binding_selection(state, table);
+    }
+
+    #[cfg(target_os = "ios")]
+    {
+        let row_count = {
+            let shared = state.borrow();
+            let Some(group) = shared.groups.get(section) else {
+                return;
+            };
+            let ghosts = shared
+                .display_rows()
+                .into_iter()
+                .filter(|(s, m)| *s == section && matches!(m, DisplayRow::Ghost(_)))
+                .count();
+            group.count + ghosts
+        };
+        let current_rows = table
+            .numberOfRowsInSection(section.cast_signed())
+            .cast_unsigned();
+        let target_rows = if expanded { row_count } else { 0 };
+        if current_rows == target_rows {
+            return;
+        }
+        state.borrow().applying_selection.set(true);
+        if expanded {
+            let inserts: Vec<IndexPath> = (0..target_rows)
+                .map(|row| IndexPath { section, row })
+                .collect();
+            table.apply_row_updates(&[], &inserts, &[], &[], true);
+        } else {
+            let deletes: Vec<IndexPath> = (0..current_rows)
+                .map(|row| IndexPath { section, row })
+                .collect();
+            table.apply_row_updates(&deletes, &[], &[], &[], true);
+        }
+        state.borrow().applying_selection.set(false);
+        apply_binding_selection(state, table);
+    }
 }
 
 /// `applyBindingSelection`: push the binding's selection onto the table
@@ -1844,17 +2043,23 @@ mod platform_impl {
             kind: SectionKind,
             section: usize,
         ) -> bool {
-            let computed = {
+            let (computed, expanded_binding) = {
                 let state = self.state.borrow();
                 let Some(group) = state.groups.get(section) else {
                     return false;
                 };
                 match kind {
-                    SectionKind::Header => group.label.clone(),
-                    SectionKind::Footer => group.footer.clone(),
+                    SectionKind::Header => (group.label.clone(), group.expanded.clone()),
+                    SectionKind::Footer => {
+                        if !group.is_expanded() {
+                            return false;
+                        }
+                        (group.footer.clone(), None)
+                    }
                 }
             };
             let Some(signal) = computed else {
+                view.clear_collapsible();
                 return false;
             };
             let weak = cocoa_ui::objc2::rc::Weak::new(view);
@@ -1866,7 +2071,22 @@ mod platform_impl {
                 let plain = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
                 view.set_text(&objc2_foundation::NSString::from_str(&plain), kind);
             };
-            apply(&signal.snapshot());
+            let initial_styled = signal.snapshot();
+            let initial_plain = cocoa_ui::text::strip_bidi_controls(&initial_styled.to_plain());
+            apply(&initial_styled);
+            if let Some(binding) = expanded_binding {
+                let binding_for_toggle = binding.clone();
+                view.set_collapsible(binding.snapshot(), &initial_plain, move |next| {
+                    binding_for_toggle.set(next);
+                });
+                self.state
+                    .borrow()
+                    .section_headers
+                    .borrow_mut()
+                    .insert(section, cocoa_ui::objc2::rc::Weak::new(view));
+            } else {
+                view.clear_collapsible();
+            }
             let guard = signal.watch(move |ctx| apply(ctx.value()));
             view.set_payload(Box::new(vec![guard]));
             true
@@ -2317,11 +2537,14 @@ mod platform_impl {
         }
 
         /// A section band: the platform list's group row for a header (a
-        /// sidebar keeps the source list's).
+        /// sidebar keeps the source list's), with a native disclosure triangle
+        /// when `expanded` is `Some`.
         fn band_view(
             &self,
+            section: usize,
             kind: SectionKind,
             signal: &Computed<StyledStr>,
+            expanded: Option<Binding<bool>>,
         ) -> Retained<cocoa_ui::PlatformView> {
             let group_row = kind == SectionKind::Header && !self.state.borrow().is_sidebar();
             let band = if group_row {
@@ -2364,6 +2587,17 @@ mod platform_impl {
                         .snapshot(),
                 };
                 band.set_font(&self.platform_font(&font));
+            }
+            if let Some(binding) = expanded {
+                let binding_for_toggle = binding.clone();
+                band.set_collapsible(self.mtm, binding.snapshot(), move |next| {
+                    binding_for_toggle.set(next);
+                });
+                self.state
+                    .borrow()
+                    .section_headers
+                    .borrow_mut()
+                    .insert(section, cocoa_ui::objc2::rc::Weak::from_retained(&band));
             }
             let guards: Vec<BoxWatcherGuard> = vec![Box::new(text_guard), Box::new(color_guard)];
             band.set_payload(Box::new(guards));
@@ -2429,13 +2663,17 @@ mod platform_impl {
             let entry = *self.state.borrow().flat_layout.get(row)?;
             match entry {
                 FlatEntry::Header(section) => {
-                    let signal = self
+                    let (signal, expanded) = self
                         .state
                         .borrow()
                         .groups
                         .get(section)
-                        .and_then(|group| group.label.clone());
-                    signal.map(|signal| self.band_view(SectionKind::Header, &signal))
+                        .map_or((None, None), |group| {
+                            (group.label.clone(), group.expanded.clone())
+                        });
+                    signal.map(|signal| {
+                        self.band_view(section, SectionKind::Header, &signal, expanded)
+                    })
                 }
                 FlatEntry::Footer(section) => {
                     let signal = self
@@ -2444,7 +2682,7 @@ mod platform_impl {
                         .groups
                         .get(section)
                         .and_then(|group| group.footer.clone());
-                    signal.map(|signal| self.band_view(SectionKind::Footer, &signal))
+                    signal.map(|signal| self.band_view(section, SectionKind::Footer, &signal, None))
                 }
                 FlatEntry::Spacer => None,
                 FlatEntry::Ghost(key) => {
@@ -2847,6 +3085,8 @@ fn render(config: &ListConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
         ghost_ids: HashMap::new(),
         pending_inserted: HashMap::new(),
         groups: Vec::new(),
+        section_expansion_guards: Vec::new(),
+        section_headers: RefCell::new(HashMap::new()),
         #[cfg(target_os = "macos")]
         flat_layout: Vec::new(),
         #[cfg(target_os = "macos")]
@@ -2904,6 +3144,8 @@ fn render(config: &ListConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
         rebuild_flat_layout(&mut borrowed);
         drop(borrowed);
         table.reload_data();
+        watch_section_expansions(&state, &table);
+        apply_binding_selection(&state, &table);
     }
 
     // `AppKit`: `layout`/`tileIfNeeded` — a width change tracks the column

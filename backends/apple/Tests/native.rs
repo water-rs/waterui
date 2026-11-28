@@ -335,6 +335,13 @@ fn chrome_trials() -> Vec<Trial> {
             },
         ),
         Trial::test(
+            "split::collapsible_section_toggles_rows_disclosure_and_preserves_selection",
+            || {
+                split::collapsible_section_toggles_rows_disclosure_and_preserves_selection();
+                Ok(())
+            },
+        ),
+        Trial::test(
             "material_vibrancy::a_window_material_hosts_its_content_and_releases_it",
             || {
                 material_vibrancy::a_window_material_hosts_its_content_and_releases_it();
@@ -3745,6 +3752,128 @@ mod split {
         assert_eq!(table.style(), TableStyle::Plain);
         assert_eq!(table.table_view().style(), NSTableViewStyle::Plain);
         assert!(!table.is_sidebar());
+    }
+
+    fn mounted_section_disclosures(
+        root: &PlatformView,
+    ) -> Vec<cocoa_ui::Retained<cocoa_ui::appkit::disclosure::DisclosureButton>> {
+        use cocoa_ui::appkit::SectionHeader;
+        let mut found = Vec::new();
+        let mut stack = vec![view::retain_base(root)];
+        while let Some(v) = stack.pop() {
+            if let Ok(header) = v.clone().downcast::<SectionHeader>()
+                && let Some(button) = header.disclosure_button()
+            {
+                found.push(button);
+            }
+            stack.extend(view::subviews(&v));
+        }
+        found
+    }
+
+    /// A collapsible `Section::expanded(&binding)` mounts a native `AppKit`
+    /// disclosure control on its section header, collapses/expands rows on
+    /// user activation and external binding writes, updates accessibility
+    /// expanded state, and preserves selection on hidden rows.
+    pub fn collapsible_section_toggles_rows_disclosure_and_preserves_selection() {
+        use cocoa_ui::objc2_app_kit::NSAccessibility as _;
+        use cocoa_ui::objc2_core_foundation::{CGPoint, CGRect, CGSize};
+        use waterui::reactive::{Signal as _, SignalExt as _};
+        use waterui::text::font::{FontSlot as _, Footnote};
+
+        let first_open = binding(true);
+        let second_open = binding(false);
+        let selection = binding(Some(1_usize));
+
+        let leaf = resolve::render_with(
+            List::content((
+                Section::new("Pinned")
+                    .footer("Pinned footer")
+                    .expanded(&first_open)
+                    .content((
+                        (|| text("Alpha")).tag(1_usize),
+                        (|| text("Beta")).tag(2_usize),
+                    )),
+                Section::new("Archive")
+                    .expanded(&second_open)
+                    .content(((|| text("Gamma")).tag(3_usize),)),
+            ))
+            .selection(&selection),
+            |env| {
+                waterui::theme::install_font_signal::<Footnote>(
+                    env,
+                    binding(Footnote::DEFAULT).computed(),
+                );
+            },
+        );
+        let table = sidebar_table(leaf.view()).expect("list mounts a ListTableView");
+        // Size and lay out the table so `NSTableView` realizes its visible header/row views.
+        let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(320.0, 480.0));
+        leaf.view().setFrame(frame);
+        table.setFrame(frame);
+        table.layoutSubtreeIfNeeded();
+        let ns_table = table.table_view();
+        // Flat rows initially on non-sidebar AppKit:
+        // Pinned header + spacer + Alpha + Beta + Pinned footer + Archive header = 6.
+        assert_eq!(
+            ns_table.numberOfRows(),
+            6,
+            "expanded Pinned (header+spacer+2+footer) + collapsed Archive (header) = 6 flat rows"
+        );
+
+        let disclosures = mounted_section_disclosures(leaf.view());
+        assert_eq!(
+            disclosures.len(),
+            2,
+            "both collapsible sections must mount native DisclosureButton controls"
+        );
+        let pinned_button = disclosures
+            .iter()
+            .find(|btn| {
+                btn.accessibilityLabel()
+                    .is_some_and(|l| l.to_string() == "Pinned")
+            })
+            .expect("Pinned disclosure button exists");
+        assert!(pinned_button.is_expanded());
+        assert!(pinned_button.isAccessibilityExpanded());
+
+        // Activating the Pinned disclosure button collapses Pinned and preserves selection on Alpha (1).
+        pinned_button.activate();
+        assert!(
+            !first_open.snapshot(),
+            "activating the disclosure button must flip the expanded binding to false"
+        );
+        assert_eq!(
+            ns_table.numberOfRows(),
+            2,
+            "both sections collapsed leaves only their 2 section headers"
+        );
+        assert_eq!(
+            selection.snapshot(),
+            Some(1_usize),
+            "collapsing a section must not clear selection on hidden rows"
+        );
+
+        // External write `second_open.set(true)` expands Archive (adds Gamma -> 3 flat rows).
+        second_open.set(true);
+        assert_eq!(
+            ns_table.numberOfRows(),
+            3,
+            "expanding Archive externally must reveal its row"
+        );
+
+        // External write `first_open.set(true)` restores Pinned's spacer + 2 rows + footer -> 7 flat rows,
+        // and restores visual selection on Alpha (flat row 2: Header(0)=0, Spacer=1, Alpha=2).
+        first_open.set(true);
+        assert_eq!(
+            ns_table.numberOfRows(),
+            7,
+            "re-expanding Pinned must restore its spacer, rows, and footer"
+        );
+        assert!(
+            ns_table.selectedRowIndexes().containsIndex(2),
+            "re-expanding Pinned must restore table visual selection on Alpha (row 2)"
+        );
     }
 }
 

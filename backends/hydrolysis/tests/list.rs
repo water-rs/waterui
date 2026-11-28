@@ -1604,3 +1604,148 @@ fn ambient_list_style_and_navigation_split_sidebar_automatic_resolution() {
         sidebar_row.y1 - sidebar_row.y0
     );
 }
+
+fn find_collapsible_header(
+    tree: &accesskit::TreeUpdate,
+    label: &str,
+) -> (accesskit::NodeId, accesskit::Node) {
+    tree.nodes
+        .iter()
+        .find(|(_, node)| node.role() == Role::Button && node.label() == Some(label))
+        .map_or_else(
+            || panic!("expected collapsible header button '{label}'"),
+            |(id, node)| (*id, node.clone()),
+        )
+}
+
+#[test]
+fn collapsible_section_toggles_rows_a11y_and_preserves_selection() {
+    let first_open = Binding::new(true);
+    let second_open = Binding::new(false);
+    let selected = Binding::new(Some(1_i32));
+
+    let mut rt = mount_rendered(
+        Environment::new(),
+        {
+            let first_open = first_open.clone();
+            let second_open = second_open.clone();
+            let selected = selected.clone();
+            move || {
+                List::content((
+                    Section::new("Pinned")
+                        .footer("Pinned footer")
+                        .expanded(&first_open)
+                        .content(((|| text("Alpha")).tag(1_i32), (|| text("Beta")).tag(2_i32))),
+                    Section::new("Archive")
+                        .expanded(&second_open)
+                        .content(((|| text("Gamma")).tag(3_i32),)),
+                ))
+                .selection(&selected)
+            }
+        },
+        400,
+        600,
+    );
+    rt.settle();
+
+    // Initially: Pinned is expanded (Alpha, Beta, Pinned footer visible), Archive is collapsed (Gamma hidden).
+    assert!(node_label_exists(rt.tree(), "Alpha"));
+    assert!(node_label_exists(rt.tree(), "Beta"));
+    assert!(node_label_exists(rt.tree(), "Pinned footer"));
+    assert!(
+        !node_label_exists(rt.tree(), "Gamma"),
+        "initially collapsed section must hide its rows"
+    );
+
+    let (pinned_id, pinned_node) = find_collapsible_header(rt.tree(), "Pinned");
+    assert_eq!(pinned_node.is_expanded(), Some(true));
+    assert!(pinned_node.supports_action(accesskit::Action::Click));
+    assert!(pinned_node.supports_action(accesskit::Action::Expand));
+    assert!(pinned_node.supports_action(accesskit::Action::Collapse));
+
+    let (archive_id, archive_node) = find_collapsible_header(rt.tree(), "Archive");
+    assert_eq!(archive_node.is_expanded(), Some(false));
+
+    // Clicking the Pinned header collapses it, hides Alpha/Beta/footer, and preserves selection of Alpha (1).
+    rt.click(pinned_id);
+    rt.settle();
+    assert!(
+        !first_open.snapshot(),
+        "clicking header must toggle binding"
+    );
+    assert!(!node_label_exists(rt.tree(), "Alpha"));
+    assert!(!node_label_exists(rt.tree(), "Beta"));
+    assert!(!node_label_exists(rt.tree(), "Pinned footer"));
+    assert_eq!(
+        selected.snapshot(),
+        Some(1_i32),
+        "collapsing a section must preserve selection on hidden rows"
+    );
+    let (_, collapsed_pinned) = find_collapsible_header(rt.tree(), "Pinned");
+    assert_eq!(collapsed_pinned.is_expanded(), Some(false));
+
+    // Accessibility Expand action expands Archive and reveals Gamma.
+    rt.perform_action(archive_id, accesskit::Action::Expand, None);
+    rt.settle();
+    assert!(
+        second_open.snapshot(),
+        "Expand action must set binding true"
+    );
+    assert!(node_label_exists(rt.tree(), "Gamma"));
+    let (_, expanded_archive) = find_collapsible_header(rt.tree(), "Archive");
+    assert_eq!(expanded_archive.is_expanded(), Some(true));
+
+    // External Binding::set(true) re-expands Pinned and restores Alpha still selected.
+    first_open.set(true);
+    rt.settle();
+    assert!(node_label_exists(rt.tree(), "Alpha"));
+    assert!(node_label_exists(rt.tree(), "Pinned footer"));
+    let alpha_selected = rt
+        .tree()
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == Role::ListItem && node.label() == Some("Alpha"))
+        .and_then(|(_, node)| node.is_selected());
+    assert_eq!(
+        alpha_selected,
+        Some(true),
+        "re-expanded row must retain its selected accessibility state"
+    );
+
+    // Accessibility Collapse action collapses Pinned again.
+    let (pinned_id, _) = find_collapsible_header(rt.tree(), "Pinned");
+    rt.perform_action(pinned_id, accesskit::Action::Collapse, None);
+    rt.settle();
+    assert!(!first_open.snapshot());
+    assert!(!node_label_exists(rt.tree(), "Alpha"));
+}
+
+#[test]
+fn collapsible_section_semantic_runtime_hides_collapsed_rows() {
+    let sem_open = Binding::new(false);
+    let mut sem = mount_semantic(
+        Environment::new(),
+        {
+            let sem_open = sem_open.clone();
+            move || {
+                List::content((
+                    Section::new("Details")
+                        .expanded(&sem_open)
+                        .content((|| text("Hidden Row"),)),
+                    Section::new("Visible").content((|| text("Shown Row"),)),
+                ))
+            }
+        },
+        400,
+        600,
+    );
+    sem.settle();
+    assert!(!node_label_exists(sem.tree(), "Hidden Row"));
+    assert!(node_label_exists(sem.tree(), "Shown Row"));
+    let (details_id, details_node) = find_collapsible_header(sem.tree(), "Details");
+    assert_eq!(details_node.is_expanded(), Some(false));
+    sem.perform_action(details_id, accesskit::Action::Expand, None);
+    sem.settle();
+    assert!(sem_open.snapshot());
+    assert!(node_label_exists(sem.tree(), "Hidden Row"));
+}

@@ -55,6 +55,9 @@ use objc2_foundation::{
     NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString,
 };
 
+use crate::ActionTarget;
+use crate::appkit::disclosure::{DisclosureButton, attach_label_click};
+use crate::appkit::gesture::GestureAttachment;
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Point};
 use crate::notification::NotificationObserver;
@@ -1468,6 +1471,11 @@ impl TableView {
 pub struct SectionHeaderIvars {
     label: RefCell<Option<Retained<NSTextField>>>,
     constraints: RefCell<Vec<Retained<NSLayoutConstraint>>>,
+    label_trailing: RefCell<Option<Retained<NSLayoutConstraint>>>,
+    disclosure: RefCell<Option<Retained<DisclosureButton>>>,
+    disclosure_constraints: RefCell<Vec<Retained<NSLayoutConstraint>>>,
+    disclosure_target: RefCell<Option<ActionTarget>>,
+    label_click: RefCell<Option<GestureAttachment>>,
     payload: RefCell<Option<Box<dyn Any>>>,
 }
 
@@ -1475,6 +1483,7 @@ impl fmt::Debug for SectionHeaderIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SectionHeaderIvars")
             .field("label", &self.label.borrow().is_some())
+            .field("disclosure", &self.disclosure.borrow().is_some())
             .finish_non_exhaustive()
     }
 }
@@ -1544,6 +1553,9 @@ impl SectionHeader {
         let label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
         label.setTranslatesAutoresizingMaskIntoConstraints(false);
         this.addSubview(&label);
+        let label_trailing = label
+            .trailingAnchor()
+            .constraintLessThanOrEqualToAnchor_constant(&this.trailingAnchor(), -16.0);
         let constraints = vec![
             label
                 .leadingAnchor()
@@ -1551,15 +1563,14 @@ impl SectionHeader {
             label
                 .topAnchor()
                 .constraintEqualToAnchor_constant(&this.topAnchor(), top),
-            label
-                .trailingAnchor()
-                .constraintLessThanOrEqualToAnchor_constant(&this.trailingAnchor(), -16.0),
+            label_trailing.clone(),
             label
                 .bottomAnchor()
                 .constraintLessThanOrEqualToAnchor_constant(&this.bottomAnchor(), -6.0),
         ];
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&constraints));
         this.ivars().constraints.replace(constraints);
+        this.ivars().label_trailing.replace(Some(label_trailing));
         this.ivars().label.replace(Some(label));
         this
     }
@@ -1569,6 +1580,86 @@ impl SectionHeader {
         if let Some(label) = self.ivars().label.borrow().as_ref() {
             label.setStringValue(text);
         }
+        if let Some(disclosure) = self.ivars().disclosure.borrow().as_ref() {
+            disclosure.set_accessibility_label(&text.to_string());
+        }
+    }
+
+    /// Attaches a native `AppKit` disclosure triangle button to this header
+    /// band and makes clicking the header toggle it.
+    pub fn set_collapsible(
+        &self,
+        mtm: MainThreadMarker,
+        expanded: bool,
+        on_toggle: impl Fn(bool) + 'static,
+    ) {
+        let ivars = self.ivars();
+        if let Some(old) = ivars.disclosure.borrow_mut().take() {
+            old.removeFromSuperview();
+        }
+        NSLayoutConstraint::deactivateConstraints(&NSArray::from_retained_slice(
+            &ivars.disclosure_constraints.replace(Vec::new()),
+        ));
+        ivars.disclosure_target.replace(None);
+        ivars.label_click.replace(None);
+
+        let Some(label) = ivars.label.borrow().clone() else {
+            return;
+        };
+        if let Some(old_trailing) = ivars.label_trailing.borrow_mut().take() {
+            old_trailing.setActive(false);
+        }
+
+        let button = DisclosureButton::new(mtm, expanded);
+        button.set_accessibility_label(&label.stringValue().to_string());
+        button.setTranslatesAutoresizingMaskIntoConstraints(false);
+        self.addSubview(&button);
+
+        let new_trailing = label
+            .trailingAnchor()
+            .constraintLessThanOrEqualToAnchor_constant(&button.leadingAnchor(), -6.0);
+        let disclosure_constraints = vec![
+            new_trailing.clone(),
+            button
+                .trailingAnchor()
+                .constraintEqualToAnchor_constant(&self.trailingAnchor(), -10.0),
+            button
+                .centerYAnchor()
+                .constraintEqualToAnchor(&label.centerYAnchor()),
+        ];
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(
+            &disclosure_constraints,
+        ));
+        ivars.label_trailing.replace(Some(new_trailing));
+        ivars.disclosure_constraints.replace(disclosure_constraints);
+
+        let target = button.on_change({
+            let weak = objc2::rc::Weak::from_retained(&button);
+            move |_| {
+                if let Some(btn) = weak.load() {
+                    let expanded = btn.is_expanded();
+                    btn.set_expanded(expanded);
+                    on_toggle(expanded);
+                }
+            }
+        });
+        let label_click = attach_label_click(self, button.clone());
+        ivars.disclosure_target.replace(Some(target));
+        ivars.label_click.replace(Some(label_click));
+        ivars.disclosure.replace(Some(button));
+    }
+
+    /// Updates the disclosure button's visual and accessibility expanded state.
+    pub fn set_expanded(&self, expanded: bool) {
+        if let Some(disclosure) = self.ivars().disclosure.borrow().as_ref() {
+            disclosure.set_expanded(expanded);
+        }
+    }
+
+    /// The disclosure button mounted on a collapsible section header, if any.
+    #[must_use]
+    pub fn disclosure_button(&self) -> Option<Retained<DisclosureButton>> {
+        self.ivars().disclosure.borrow().clone()
     }
 
     /// Sets the band's text color.

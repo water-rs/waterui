@@ -8,6 +8,7 @@ use super::list_motion::RowMotion;
 use crate::gesture::GestureTarget;
 use crate::num_cast::f64_as_f32;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
+use crate::renderer::live_toggle::LiveToggleParts;
 #[cfg(feature = "accessibility")]
 use crate::renderer::{
     AccessibilityActionTarget, ScopedAccessibilitySemantics,
@@ -20,7 +21,10 @@ use crate::renderer::{
     list_spec, list_style_geometry, materialize_list_item,
 };
 use crate::scroll::{ScrollHandle, ScrollRun, ScrollRunOutcome};
-use crate::theme::{Chrome, ListGestures, ListLook, ListMetrics, ListSpec, WidgetTheme};
+use crate::theme::{
+    Chrome, DisclosureLook, DisclosureSpec, ListGestures, ListLook, ListMetrics, ListSpec,
+    SpecTint, WidgetTheme,
+};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, NodeId as AccessibilityNodeId,
@@ -30,7 +34,7 @@ use accesskit::{
 use waterui_accessibility::{AccessibilityHidden, AccessibilityStateSignal};
 use waterui_backend_core::scroll::{ScrollPositionReport, animated_row_scroll_approach};
 use waterui_controls::list::{
-    ListConfig, ListRowDeletable, ListRowInsets, ListRowTags, ListScrollController,
+    ListConfig, ListRowDeletable, ListRowInsets, ListRowTags, ListScrollController, ListSection,
     ListSectionSpan, ListSelection, ListTagId,
 };
 use waterui_core::Environment;
@@ -54,7 +58,7 @@ use crate::renderer::lazy::VirtualExtentIndex;
 use crate::widgets::draw_scroll_indicators;
 use cherenkov_record::Draw as _;
 use nami::watcher::BoxWatcherGuard;
-use nami::{Computed, Signal, SignalExt as _};
+use nami::{Binding, Computed, Signal, SignalExt as _};
 use waterui_controls::theme::color;
 use waterui_core::resolve::Resolvable as _;
 
@@ -335,10 +339,18 @@ pub struct ListRenderState<E: crate::text::TextEngine> {
     /// The look the theme gave the list and the spec it was requested for,
     /// held while the spec stays the same.
     look: RefCell<Option<(ListSpec, ListLook)>>,
+    /// The disclosure look the theme provides for collapsible section chevrons.
+    disclosure_look: RefCell<Option<(DisclosureSpec, DisclosureLook)>>,
+    /// Retained animated disclosure indicators for collapsible section headers,
+    /// keyed by the section's first row id so the indicator animates in place
+    /// across expand and collapse.
+    section_toggles: RefCell<std::collections::HashMap<ListItemId, Option<LiveToggleParts>>>,
     /// The sections holding rows in `rows_snapshot`, resolved once per
     /// membership change from the list's `ListSections` — row ids only, no
     /// row is materialized for it.
     sections: RefCell<Vec<ListSectionSpan>>,
+    /// Display-position mapping after folding collapsed sections.
+    visible_layout: RefCell<VisibleLayout>,
     /// Set whenever the watcher replaces `rows_snapshot`: the sections are
     /// resolved again from the new membership. Two sections can change in
     /// opposite directions between frames, so the row count alone cannot
@@ -405,6 +417,199 @@ struct RowControlChrome {
     delete: ControlChrome,
 }
 
+/// One contiguous run in the list's displayed order after folding collapsed sections.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum VisibleRun {
+    /// Expanded semantic row indices `rows`, displayed starting at `display_start`.
+    Rows {
+        display_start: usize,
+        rows: Range<usize>,
+    },
+    /// One collapsed section's header, occupying a single display slot.
+    CollapsedHeader {
+        display_start: usize,
+        section_index: usize,
+        first_row_index: usize,
+    },
+}
+
+impl VisibleRun {
+    const fn display_start(&self) -> usize {
+        match self {
+            Self::Rows { display_start, .. } | Self::CollapsedHeader { display_start, .. } => {
+                *display_start
+            }
+        }
+    }
+}
+
+/// Display-position mapping after folding collapsed sections.
+///
+/// When every section is expanded (`identity == true`), display positions map
+/// 1:1 to semantic rows with zero per-row allocation and removal ghosts stay
+/// active. When any section is collapsed, `runs` holds an `O(sections)` table
+/// folding collapsed sections to their headers while preserving the full
+/// underlying snapshot for tags and selection.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct VisibleLayout {
+    identity: bool,
+    len: usize,
+    runs: Vec<VisibleRun>,
+}
+
+/// What occupies one display position in the list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VisibleEntry {
+    Row(usize),
+    CollapsedHeader {
+        section_index: usize,
+        first_row_index: usize,
+    },
+    Ghost(usize),
+}
+
+impl VisibleLayout {
+    fn push_rows(runs: &mut Vec<VisibleRun>, display_cursor: &mut usize, range: Range<usize>) {
+        if range.is_empty() {
+            return;
+        }
+        let count = range.len();
+        if let Some(VisibleRun::Rows { rows, .. }) = runs.last_mut()
+            && rows.end == range.start
+        {
+            rows.end = range.end;
+        } else {
+            runs.push(VisibleRun::Rows {
+                display_start: *display_cursor,
+                rows: range,
+            });
+        }
+        *display_cursor += count;
+    }
+
+    fn build(
+        row_count: usize,
+        sections: &[ListSectionSpan],
+        mut read_expanded: impl FnMut(&Binding<bool>) -> bool,
+    ) -> Self {
+        let mut any_collapsed = false;
+        let mut expanded_flags = Vec::with_capacity(sections.len());
+        for span in sections {
+            let expanded = span
+                .section
+                .as_ref()
+                .and_then(ListSection::expanded)
+                .is_none_or(&mut read_expanded);
+            if !expanded {
+                any_collapsed = true;
+            }
+            expanded_flags.push(expanded);
+        }
+        if !any_collapsed {
+            return Self {
+                identity: true,
+                len: row_count,
+                runs: Vec::new(),
+            };
+        }
+        let mut runs: Vec<VisibleRun> = Vec::with_capacity(sections.len());
+        let mut cursor = 0usize;
+        let mut display_cursor = 0usize;
+        for (section_index, (span, &expanded)) in
+            sections.iter().zip(expanded_flags.iter()).enumerate()
+        {
+            if cursor < span.rows.start {
+                Self::push_rows(&mut runs, &mut display_cursor, cursor..span.rows.start);
+            }
+            if expanded {
+                Self::push_rows(&mut runs, &mut display_cursor, span.rows.clone());
+            } else if !span.rows.is_empty()
+                && span.section.as_ref().and_then(ListSection::label).is_some()
+            {
+                runs.push(VisibleRun::CollapsedHeader {
+                    display_start: display_cursor,
+                    section_index,
+                    first_row_index: span.rows.start,
+                });
+                display_cursor += 1;
+            }
+            cursor = span.rows.end;
+        }
+        if cursor < row_count {
+            Self::push_rows(&mut runs, &mut display_cursor, cursor..row_count);
+        }
+        Self {
+            identity: false,
+            len: display_cursor,
+            runs,
+        }
+    }
+
+    fn entry_at(&self, position: usize) -> Option<VisibleEntry> {
+        let idx = self
+            .runs
+            .partition_point(|run| run.display_start() <= position)
+            .checked_sub(1)?;
+        match self.runs.get(idx)? {
+            VisibleRun::Rows {
+                display_start,
+                rows,
+            } => {
+                let offset = position - *display_start;
+                (offset < rows.len()).then_some(VisibleEntry::Row(rows.start + offset))
+            }
+            VisibleRun::CollapsedHeader {
+                display_start,
+                section_index,
+                first_row_index,
+            } => (position == *display_start).then_some(VisibleEntry::CollapsedHeader {
+                section_index: *section_index,
+                first_row_index: *first_row_index,
+            }),
+        }
+    }
+
+    fn display_of_row(&self, index: usize) -> Option<usize> {
+        for run in &self.runs {
+            if let VisibleRun::Rows {
+                display_start,
+                rows,
+            } = run
+                && rows.contains(&index)
+            {
+                return Some(*display_start + (index - rows.start));
+            }
+        }
+        None
+    }
+
+    fn nearest_row_at(&self, position: usize) -> Option<usize> {
+        match self.entry_at(position)? {
+            VisibleEntry::Row(index) => Some(index),
+            VisibleEntry::CollapsedHeader {
+                first_row_index, ..
+            } => Some(first_row_index),
+            VisibleEntry::Ghost(_) => None,
+        }
+    }
+}
+
+/// Interaction slots allocated per row id:
+/// 0 = move up, 1 = move down, 2 = delete, 3 = row selection press,
+/// 4 = row accessibility anchor, 5 = collapsible section header toggle.
+const INTERACTION_SLOTS_PER_ROW: usize = 6;
+#[cfg(feature = "accessibility")]
+const INTERACTION_SLOT_ROW_PRESS: usize = 3;
+#[cfg(feature = "accessibility")]
+const INTERACTION_SLOT_ROW_ANCHOR: usize = 4;
+const INTERACTION_SLOT_SECTION_HEADER: usize = 5;
+
+fn row_interaction_base(row_id: ListItemId) -> usize {
+    (crate::num_cast::i32_as_u32(i32::from(row_id)) as usize)
+        .checked_mul(INTERACTION_SLOTS_PER_ROW)
+        .expect("hydrolysis List interaction identity overflow")
+}
+
 /// The section chrome one row is responsible for drawing.
 ///
 /// The row that currently opens a section owns its header, and the row that
@@ -421,6 +626,7 @@ struct RowControlChrome {
 struct RowSectionChrome {
     header: Option<Text>,
     footer: Option<Text>,
+    header_expanded: Option<Binding<bool>>,
     is_section_first: bool,
     is_section_last: bool,
     starts_later_section: bool,
@@ -607,7 +813,10 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             preserve_anchor_index_once: Cell::new(false),
             row_gestures: RefCell::new(std::collections::HashMap::new()),
             look: RefCell::new(None),
+            disclosure_look: RefCell::new(None),
+            section_toggles: RefCell::new(std::collections::HashMap::new()),
             sections: RefCell::new(Vec::new()),
+            visible_layout: RefCell::new(VisibleLayout::default()),
             sections_stale,
             rows_snapshot,
             transitions,
@@ -626,6 +835,24 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             Some((held_spec, look)) if *held_spec == spec => look.clone(),
             _ => {
                 let look = theme.list(&spec, env);
+                *held = Some((spec, look.clone()));
+                look
+            }
+        }
+    }
+
+    /// The theme's disclosure look for collapsible section header indicators.
+    fn disclosure_look(
+        &self,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        env: &Environment,
+    ) -> DisclosureLook {
+        let spec = DisclosureSpec::new(layout_direction(env).snapshot(), SpecTint::resolve(env));
+        let mut held = self.disclosure_look.borrow_mut();
+        match &*held {
+            Some((held_spec, look)) if *held_spec == spec => look.clone(),
+            _ => {
+                let look = theme.disclosure(&spec, env);
                 *held = Some((spec, look.clone()));
                 look
             }
@@ -716,6 +943,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
                         span.rows.clone(),
                         section.label().is_some(),
                         section.footer().is_some(),
+                        section.expanded().is_some(),
                     ))
                 })
                 .collect::<Vec<_>>()
@@ -723,6 +951,80 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         let changed = chrome_rows(&spans) != chrome_rows(&self.sections.borrow());
         *self.sections.borrow_mut() = spans;
         changed
+    }
+
+    /// Reads every collapsible section's `expanded` binding through `renderer`
+    /// (subscribing this list node to external writes) and updates the folded
+    /// display layout. Returns whether the visible layout changed.
+    fn sync_visible_layout(
+        &self,
+        row_count: usize,
+        renderer: &mut crate::renderer::SemanticCore<E>,
+    ) -> bool {
+        let next = {
+            let sections = self.sections.borrow();
+            VisibleLayout::build(row_count, &sections, |binding| {
+                renderer.read_signal(binding)
+            })
+        };
+        let mut current = self.visible_layout.borrow_mut();
+        if *current == next {
+            false
+        } else {
+            *current = next;
+            true
+        }
+    }
+
+    fn display_len(&self, row_count: usize) -> usize {
+        let layout = self.visible_layout.borrow();
+        if layout.identity {
+            self.transitions.display_len(row_count)
+        } else {
+            layout.len
+        }
+    }
+
+    fn display_entry_at(&self, position: usize) -> Option<VisibleEntry> {
+        let layout = self.visible_layout.borrow();
+        if layout.identity {
+            Some(match self.transitions.slot_at(position) {
+                crate::renderer::LazySlot::Row(index) => VisibleEntry::Row(index),
+                crate::renderer::LazySlot::Ghost(ghost) => VisibleEntry::Ghost(ghost),
+            })
+        } else {
+            layout.entry_at(position)
+        }
+    }
+
+    fn display_position_of_row(&self, index: usize) -> Option<usize> {
+        let layout = self.visible_layout.borrow();
+        if layout.identity {
+            Some(self.transitions.row_display(index))
+        } else {
+            layout.display_of_row(index)
+        }
+    }
+
+    fn nearest_row_at(&self, position: usize) -> Option<usize> {
+        let layout = self.visible_layout.borrow();
+        if layout.identity {
+            Some(self.transitions.row_at(position))
+        } else {
+            layout.nearest_row_at(position)
+        }
+    }
+
+    /// Header text, expanded binding, and `starts_later_section` flag for a
+    /// collapsed section.
+    fn collapsed_section_header(
+        &self,
+        section_index: usize,
+    ) -> Option<(Text, Option<Binding<bool>>, bool)> {
+        let sections = self.sections.borrow();
+        let section = sections.get(section_index)?.section.as_ref()?;
+        let header = section.label().cloned()?;
+        Some((header, section.expanded().cloned(), section_index > 0))
     }
 
     /// The chrome row `index` owns: its section's header when it opens the
@@ -745,18 +1047,22 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         let is_section_first = index == span.rows.start;
         let is_section_last = index + 1 == span.rows.end;
         let starts_later_section = is_section_first && position > 0;
-        let (header, footer) = span.section.as_ref().map_or_else(
-            || (None, None),
+        let (header, footer, header_expanded) = span.section.as_ref().map_or_else(
+            || (None, None, None),
             |section| {
                 (
                     is_section_first.then(|| section.label().cloned()).flatten(),
                     is_section_last.then(|| section.footer().cloned()).flatten(),
+                    is_section_first
+                        .then(|| section.expanded().cloned())
+                        .flatten(),
                 )
             },
         );
         RowSectionChrome {
             header,
             footer,
+            header_expanded,
             is_section_first,
             is_section_last,
             starts_later_section,
@@ -1014,15 +1320,26 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
     }
 
     /// Resets the extent index over the display order — rows and removal
-    /// ghosts — seeding each ghost's frozen slot.
+    /// ghosts when all sections are expanded, or the folded visible layout
+    /// when any section is collapsed.
     fn reset_extents(&self, len: usize, estimate: f64) {
-        self.transitions.reset_extents(
-            &mut self.extent_index.borrow_mut(),
-            len,
-            estimate,
-            0.0,
-            |size| f64::from(size.height),
-        );
+        let layout = self.visible_layout.borrow();
+        if layout.identity {
+            drop(layout);
+            self.transitions.reset_extents(
+                &mut self.extent_index.borrow_mut(),
+                len,
+                estimate,
+                0.0,
+                |size| f64::from(size.height),
+            );
+        } else {
+            let visible_len = layout.len;
+            drop(layout);
+            self.extent_index
+                .borrow_mut()
+                .reset(visible_len, estimate, 0.0);
+        }
     }
 
     /// Advances every row insertion and removal ghost to the frame instant;
@@ -1051,7 +1368,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
                 now,
             );
         }
-        let display = self.transitions.display_len(len);
+        let display = self.display_len(len);
         if dirty || !self.extent_index.borrow().matches(display, estimate, 0.0) {
             self.reset_extents(len, estimate);
             let preserve_anchor_index = self.preserve_anchor_index_once.replace(false);
@@ -1072,10 +1389,8 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
                         .find(|index| snapshot.get_id(*index) == Some(anchor.id))
                         .unwrap_or_else(|| anchor.index.min(len - 1))
                 };
-                let rebased = self
-                    .extent_index
-                    .borrow()
-                    .offset_of(self.transitions.row_display(index))
+                let display_pos = self.display_position_of_row(index)?;
+                let rebased = self.extent_index.borrow().offset_of(display_pos)
                     + anchor.offset_within_row.min(estimate);
                 // Written back in the new coordinates: `prepare_rows` runs
                 // twice a frame — the semantic pass, then the render pass —
@@ -1256,8 +1571,10 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         // Re-issuing the target every frame is what keeps a virtualized
         // request accurate: rows measured while the list moves past them move
         // `offset_of(index)`, so the destination is refined until it actually
-        // lands.
-        let pending_position = self.transitions.row_display(target_index);
+        // lands. A row inside a collapsed section has no display slot yet.
+        let Some(pending_position) = self.display_position_of_row(target_index) else {
+            return false;
+        };
         let offset = self.extent_index.borrow().offset_of(pending_position);
         let moved = match pending.animation.clone() {
             Some(animation) if animate => match pending.state {
@@ -1288,26 +1605,24 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
                 },
                 PendingScrollState::Unarmed => {
                     let metrics = handle.metrics();
-                    let current = self.transitions.row_at(
-                        self.extent_index
-                            .borrow()
-                            .visible_window(
-                                metrics.offset_y,
-                                metrics.offset_y + metrics.viewport_height,
-                            )
-                            .start,
-                    );
+                    let start_pos = self
+                        .extent_index
+                        .borrow()
+                        .visible_window(
+                            metrics.offset_y,
+                            metrics.offset_y + metrics.viewport_height,
+                        )
+                        .start;
+                    let current = self.nearest_row_at(start_pos).unwrap_or(0);
                     // Animating the whole way across a large dataset would
                     // drag the list through every viewport between here and
                     // there, and read as a blur regardless: jump to within
                     // the approach bound of the target and animate only that
                     // final stretch.
                     let approached = animated_row_scroll_approach(current, target_index)
-                        .is_some_and(|approach_index| {
-                            let approach = self
-                                .extent_index
-                                .borrow()
-                                .offset_of(self.transitions.row_display(approach_index));
+                        .and_then(|approach_index| self.display_position_of_row(approach_index))
+                        .is_some_and(|approach_pos| {
+                            let approach = self.extent_index.borrow().offset_of(approach_pos);
                             handle.scroll_to(0.0, approach)
                         });
                     // Arming starts the run's clock at the frame instant —
@@ -1361,8 +1676,12 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             .extent_index
             .borrow()
             .visible_window(metrics.offset_y, metrics.offset_y + metrics.viewport_height);
-        // A removal ghost at the top anchors on the row it sits before.
-        let index = self.transitions.row_at(window.start);
+        // A removal ghost at the top anchors on the row it sits before; a
+        // collapsed section header anchors on that section's first row.
+        let Some(index) = self.nearest_row_at(window.start) else {
+            self.viewport_anchor.set(None);
+            return;
+        };
         if index >= row_count {
             self.viewport_anchor.set(None);
             return;
@@ -1377,7 +1696,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         let row_start = self
             .extent_index
             .borrow()
-            .offset_of(self.transitions.row_display(index));
+            .offset_of(self.display_position_of_row(index).unwrap_or(window.start));
         self.viewport_anchor.set(Some(ListViewportAnchor {
             id,
             index,
@@ -1414,13 +1733,18 @@ fn row_a11y_key_base(row_id: ListItemId) -> i64 {
 /// Registers one section header or footer as its own accessibility node.
 ///
 /// Section chrome is not part of any row: a screen reader announces "Activity"
-/// as a heading and then the rows under it, rather than folding the title into
-/// the first row's label. The label is read through the renderer so a title
-/// driven by a signal re-flushes the tree when it changes.
+/// as a heading (or a disclosure button when collapsible) and then the rows
+/// under it, rather than folding the title into the first row's label. The
+/// label is read through the renderer so a title driven by a signal re-flushes
+/// the tree when it changes.
 #[cfg(feature = "accessibility")]
 #[expect(
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "section chrome registration carries renderer, context, key, text, role/expansion state, bounds, and env"
 )]
 fn register_section_chrome_node<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
@@ -1428,11 +1752,16 @@ fn register_section_chrome_node<E: crate::text::TextEngine>(
     semantic_key: i64,
     label: Text,
     is_header: bool,
+    expanded: Option<Binding<bool>>,
     bounds: kurbo::Rect,
     env: &Environment,
 ) -> Option<AccessibilityNodeId> {
     let role = if is_header {
-        AccessibilityNodeRole::Header
+        if expanded.is_some() {
+            AccessibilityNodeRole::Button
+        } else {
+            AccessibilityNodeRole::Header
+        }
     } else {
         AccessibilityNodeRole::Footer
     };
@@ -1441,19 +1770,31 @@ fn register_section_chrome_node<E: crate::text::TextEngine>(
         crate::renderer::SemanticCore::<E>::resolve_accessibility_role(env, role),
     );
     node.set_label(styled.to_string());
+    let target = expanded.map(|binding| {
+        let is_expanded = renderer.read_signal(&binding);
+        node.set_expanded(is_expanded);
+        node.add_action(AccessibilityAction::Focus);
+        node.add_action(AccessibilityAction::Click);
+        node.add_action(AccessibilityAction::Expand);
+        node.add_action(AccessibilityAction::Collapse);
+        AccessibilityActionTarget::Toggle {
+            binding,
+            mixed: None,
+        }
+    });
     match ctx {
         Some(_ctx) => renderer.register_accessibility_child_node_with_key(
             semantic_key,
             node,
             bounds,
             env,
-            None,
+            target,
         ),
         None => renderer.register_accessibility_child_node_with_key_semantic(
             semantic_key,
             node,
             env,
-            None,
+            target,
         ),
     }
 }
@@ -1578,12 +1919,16 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
         // The transition clocks advance before the extents re-base on what
         // remains.
         state.advance_transitions(renderer);
+        // Resolve sections and collapsible section states ahead of extent
+        // preparation so collapsed rows leave the display index in one step.
+        let sections_changed = state.resolve_sections();
+        let layout_changed = state.sync_visible_layout(row_count, renderer);
         state.prepare_rows(row_count, row_estimate, renderer.frame_instant());
-        // The chrome decides how tall each row's slot is, so it has to be
-        // resolved before extents are measured here — exactly as the draw pass
-        // does.
-        if state.resolve_sections() {
+        if sections_changed || layout_changed {
             state.reset_extents(row_count, row_estimate);
+            if layout_changed {
+                renderer.context_mark_layout();
+            }
         }
     } else {
         // The semantic path keeps section chrome current but measures rows in
@@ -1592,7 +1937,8 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
         // emit reads the same retained rows.
         state.consume_replaced_rows();
         let _ = state.resolve_sections();
-        let display = state.transitions.display_len(row_count);
+        let _ = state.sync_visible_layout(row_count, renderer);
+        let display = state.display_len(row_count);
         let mut extent_index = state.extent_index.borrow_mut();
         if !extent_index.matches(display, 1.0, 0.0) {
             extent_index.reset(display, 1.0, 0.0);
@@ -1633,7 +1979,7 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                 .visible_window(span.start, span.end);
             (window.start..window.end, window.leading_offset)
         } else {
-            (0..row_count, 0.0)
+            (0..state.display_len(row_count), 0.0)
         };
         let mut list_node = AccessibilityNode::new(
             crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
@@ -1667,20 +2013,94 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
         let surface_viewport = crate::renderer::grow_rect(viewport, state.surface.extension());
         let mut y = viewport.y0 - metrics.offset_y + leading_offset;
         for position in emit_range {
-            // The rendered window runs over display positions: a removal
-            // ghost holds its slot but left the semantic tree.
-            let index = if is_rendered {
-                match state.transitions.slot_at(position) {
-                    crate::renderer::LazySlot::Row(index) => index,
-                    crate::renderer::LazySlot::Ghost(ghost) => {
+            // The window runs over display positions: removal ghosts hold their
+            // slots without semantic nodes, and collapsed sections emit only
+            // their interactive header node while hiding their rows and footer.
+            let Some(entry) = state.display_entry_at(position) else {
+                continue;
+            };
+            let index = match entry {
+                VisibleEntry::Row(index) => index,
+                VisibleEntry::Ghost(ghost) => {
+                    if is_rendered {
                         y += f64::from(state.transitions.ghost(ghost).size().height);
+                    }
+                    continue;
+                }
+                VisibleEntry::CollapsedHeader {
+                    section_index,
+                    first_row_index,
+                } => {
+                    let Some(first_row_id) = rows_snapshot.get_id(first_row_index) else {
+                        continue;
+                    };
+                    let Some((header, expanded_binding, starts_later)) =
+                        state.collapsed_section_header(section_index)
+                    else {
+                        continue;
+                    };
+                    let top_gap = if starts_later {
+                        style_geom.inter_section_gap
+                    } else {
+                        0.0
+                    };
+                    let header_height =
+                        list_metrics.map_or(0.0, |m| f64::from(m.section_header_height));
+                    let slot_height = if is_rendered {
+                        let cached = state.extent_index.borrow().measured(position);
+                        if let Some(extent) = cached {
+                            extent
+                        } else {
+                            let extent = top_gap + header_height;
+                            state
+                                .extent_index
+                                .borrow_mut()
+                                .set_measured(position, extent);
+                            extent
+                        }
+                    } else {
+                        0.0
+                    };
+                    let slot_rect = kurbo::Rect::new(viewport.x0, y, viewport.x1, y + slot_height);
+                    y += slot_height;
+                    if is_rendered
+                        && (slot_rect.y1 <= surface_viewport.y0
+                            || slot_rect.y0 >= surface_viewport.y1)
+                    {
                         continue;
                     }
+                    let outer_inset = style_geom.outer_horizontal_inset;
+                    let header_rect = kurbo::Rect::new(
+                        slot_rect.x0 + outer_inset,
+                        slot_rect.y0 + top_gap,
+                        (slot_rect.x1 - outer_inset).max(slot_rect.x0 + outer_inset),
+                        slot_rect.y0 + top_gap + header_height,
+                    );
+                    let key_base = row_a11y_key_base(first_row_id);
+                    if let Some(node_id) = register_section_chrome_node(
+                        renderer,
+                        ctx,
+                        key_base + A11Y_KEY_HEADER,
+                        header,
+                        true,
+                        expanded_binding,
+                        header_rect,
+                        env,
+                    ) {
+                        list_node.push_child(node_id);
+                        renderer.register_accessibility_focus_link(
+                            &crate::renderer::InteractionKey::for_rc(
+                                owner,
+                                row_interaction_base(first_row_id)
+                                    + INTERACTION_SLOT_SECTION_HEADER,
+                            ),
+                            node_id,
+                        );
+                    }
+                    continue;
                 }
-            } else {
-                position
             };
-            let position = state.transitions.row_display(index);
+            let position = state.display_position_of_row(index).unwrap_or(position);
             let row_env = env.clone();
             let Some(row_id) = rows_snapshot.get_id(index) else {
                 contract_violation!(
@@ -1758,25 +2178,45 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                     .max(slot_rect.y0 + top_gap + header_height),
             );
             let key_base = row_a11y_key_base(row_id);
+            let row_interaction_base = row_interaction_base(row_id);
             if let Some(header) = chrome.header.clone() {
-                let inset =
-                    list_metrics.map_or(0.0, |m| f64::from(m.horizontal_inset)) + outer_inset;
-                let header_rect = kurbo::Rect::new(
-                    slot_rect.x0 + inset,
-                    slot_rect.y0 + top_gap,
-                    (slot_rect.x1 - inset).max(slot_rect.x0 + inset),
-                    slot_rect.y0 + top_gap + header_height,
-                );
+                let header_rect = if chrome.header_expanded.is_some() {
+                    kurbo::Rect::new(
+                        slot_rect.x0 + outer_inset,
+                        slot_rect.y0 + top_gap,
+                        (slot_rect.x1 - outer_inset).max(slot_rect.x0 + outer_inset),
+                        slot_rect.y0 + top_gap + header_height,
+                    )
+                } else {
+                    let inset =
+                        list_metrics.map_or(0.0, |m| f64::from(m.horizontal_inset)) + outer_inset;
+                    kurbo::Rect::new(
+                        slot_rect.x0 + inset,
+                        slot_rect.y0 + top_gap,
+                        (slot_rect.x1 - inset).max(slot_rect.x0 + inset),
+                        slot_rect.y0 + top_gap + header_height,
+                    )
+                };
                 if let Some(node_id) = register_section_chrome_node(
                     renderer,
                     ctx,
                     key_base + A11Y_KEY_HEADER,
                     header,
                     true,
+                    chrome.header_expanded.clone(),
                     header_rect,
                     &row_env,
                 ) {
                     list_node.push_child(node_id);
+                    if chrome.header_expanded.is_some() {
+                        renderer.register_accessibility_focus_link(
+                            &crate::renderer::InteractionKey::for_rc(
+                                owner,
+                                row_interaction_base + INTERACTION_SLOT_SECTION_HEADER,
+                            ),
+                            node_id,
+                        );
+                    }
                 }
             }
             // The row's `ListItem` node claims the naming its content carries
@@ -1871,24 +2311,22 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
             };
             if let Some(row_node_id) = row_node_id {
                 list_node.push_child(row_node_id);
-                // Interaction slots per row: 0 and 1 are the reorder handle's
-                // up/down press slots, 2 the delete control's, 3 the row's own
-                // selection press, 4 the row's anchor — the key the draw pass
-                // resolves the row node through to parent its content under.
-                // Each press slot links to the node that control emits below,
-                // so a pointer press lands keyboard focus on it.
-                let row_interaction_base = (crate::num_cast::i32_as_u32(i32::from(row_id))
-                    as usize)
-                    .checked_mul(5)
-                    .expect("hydrolysis List interaction identity overflow");
+                // Link each interaction slot on this row to its accessibility
+                // node so pointer presses land keyboard focus on it.
                 renderer.register_accessibility_focus_link(
-                    &crate::renderer::InteractionKey::for_rc(owner, row_interaction_base + 4),
+                    &crate::renderer::InteractionKey::for_rc(
+                        owner,
+                        row_interaction_base + INTERACTION_SLOT_ROW_ANCHOR,
+                    ),
                     row_node_id,
                 );
                 // The row's own press slot — the selection target the draw
                 // pass registers — resolves focus to the same node.
                 renderer.register_accessibility_focus_link(
-                    &crate::renderer::InteractionKey::for_rc(owner, row_interaction_base + 3),
+                    &crate::renderer::InteractionKey::for_rc(
+                        owner,
+                        row_interaction_base + INTERACTION_SLOT_ROW_PRESS,
+                    ),
                     row_node_id,
                 );
                 let row_can_delete = list.edits().can_delete(row_id);
@@ -2036,6 +2474,7 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                     key_base + A11Y_KEY_FOOTER,
                     footer,
                     false,
+                    None,
                     footer_rect,
                     &row_env,
                 ) {
@@ -2232,13 +2671,20 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
     }
     let frame_instant = ctx.renderer_mut().frame_instant();
     state.borrow().advance_transitions(ctx.renderer_mut());
+    let sections_changed = state.borrow().resolve_sections();
+    let layout_changed = state
+        .borrow()
+        .sync_visible_layout(row_count, ctx.renderer_mut());
     state
         .borrow()
         .prepare_rows(row_count, row_estimate, frame_instant);
-    if state.borrow().resolve_sections() {
-        // Row extents measured before the chrome was known are short by its
-        // height, so drop them rather than drawing rows into a stale slot.
+    if sections_changed || layout_changed {
+        // Row extents measured before section chrome or collapsed state changed
+        // are stale, so drop them rather than drawing into stale slots.
         state.borrow().reset_extents(row_count, row_estimate);
+        if layout_changed {
+            ctx.renderer_mut().context_mark_layout();
+        }
     }
 
     let viewport = ctx.bounds;
@@ -2364,19 +2810,51 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
     let mut extents_changed = false;
     // Removal ghosts in the window, with the content-space top of each slot.
     let mut ghosts = Vec::new();
+    // Collapsed section headers in the window: `(section_index, first_row_id, y, height)`.
+    let mut collapsed_headers = Vec::new();
     let mut position = window.start;
     let mut end = window.end;
     loop {
         while position < end {
-            // The window runs over display positions: a removal ghost holds
-            // its frozen slot between the rows (layout-spec.md §4.5).
-            let slot = state.borrow().transitions.slot_at(position);
-            let index = match slot {
-                crate::renderer::LazySlot::Row(index) => index,
-                crate::renderer::LazySlot::Ghost(ghost) => {
+            // The window runs over display positions: removal ghosts hold
+            // frozen slots and collapsed sections appear as header-only slots.
+            let Some(entry) = state.borrow().display_entry_at(position) else {
+                position += 1;
+                continue;
+            };
+            let index = match entry {
+                VisibleEntry::Row(index) => index,
+                VisibleEntry::Ghost(ghost) => {
                     let height = f64::from(state.borrow().transitions.ghost(ghost).size().height);
                     ghosts.push((ghost, y));
                     y += height;
+                    position += 1;
+                    continue;
+                }
+                VisibleEntry::CollapsedHeader {
+                    section_index,
+                    first_row_index,
+                } => {
+                    let Some(first_row_id) = contents.get_id(first_row_index) else {
+                        position += 1;
+                        continue;
+                    };
+                    let starts_later = section_index > 0;
+                    let slot_height = if starts_later {
+                        style_geom.inter_section_gap
+                    } else {
+                        0.0
+                    } + f64::from(list_metrics.section_header_height);
+                    {
+                        let state_ref = state.borrow();
+                        let mut extent_index = state_ref.extent_index.borrow_mut();
+                        extents_changed |= extent_index
+                            .measured(position)
+                            .is_none_or(|old| old.to_bits() != slot_height.to_bits());
+                        extent_index.set_measured(position, slot_height);
+                    }
+                    collapsed_headers.push((section_index, first_row_id, y, slot_height));
+                    y += slot_height;
                     position += 1;
                     continue;
                 }
@@ -2490,6 +2968,53 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         draw_list_ghost(ctx, state, env, ghost, resting_y);
     }
 
+    let mut visible_header_ids: Vec<ListItemId> = Vec::new();
+    let outer_inset = style_geom.outer_horizontal_inset;
+    let header_horizontal_inset = f64::from(list_metrics.horizontal_inset) + outer_inset;
+    for (section_index, first_row_id, resting_y, slot_height) in collapsed_headers {
+        let slot_rect =
+            kurbo::Rect::new(viewport.x0, resting_y, viewport.x1, resting_y + slot_height);
+        if slot_rect.y1 <= span.start + viewport.y0 || slot_rect.y0 >= span.end + viewport.y0 {
+            continue;
+        }
+        let Some((header, expanded, starts_later)) =
+            state.borrow().collapsed_section_header(section_index)
+        else {
+            continue;
+        };
+        let top_gap = if starts_later {
+            style_geom.inter_section_gap
+        } else {
+            0.0
+        };
+        let header_height = f64::from(list_metrics.section_header_height);
+        let hit_rect = kurbo::Rect::new(
+            slot_rect.x0 + outer_inset,
+            slot_rect.y0 + top_gap,
+            (slot_rect.x1 - outer_inset).max(slot_rect.x0 + outer_inset),
+            slot_rect.y0 + top_gap + header_height,
+        );
+        let content_rect = kurbo::Rect::new(
+            slot_rect.x0 + header_horizontal_inset,
+            slot_rect.y0 + top_gap,
+            (slot_rect.x1 - header_horizontal_inset).max(slot_rect.x0 + header_horizontal_inset),
+            slot_rect.y0 + top_gap + header_height,
+        );
+        if expanded.is_some() {
+            visible_header_ids.push(first_row_id);
+        }
+        draw_section_header(
+            ctx,
+            state,
+            first_row_id,
+            header,
+            expanded,
+            hit_rect,
+            content_rect,
+            env,
+        );
+    }
+
     for (index, row_id, resting_y, row_height, content_size) in rows {
         // The row's environment carries the naming its content declared,
         // hoisted when the row was realized; a selectable row also carries its
@@ -2516,13 +3041,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
                 row.subtree_env.clone(),
             )
         };
-        // Interaction slots per row: 0 and 1 are the reorder handle's up/down
-        // press slots, 2 the delete control's, 3 the row's own selection
-        // press, 4 the row's anchor — the key `list_accessibility` links the
-        // row node to and this pass resolves it through below.
-        let row_interaction_base = (crate::num_cast::i32_as_u32(i32::from(row_id)) as usize)
-            .checked_mul(5)
-            .expect("hydrolysis List interaction identity overflow");
+        let row_interaction_base = row_interaction_base(row_id);
         let chrome = state.borrow().section_chrome(index);
         // Where the row's slot is (the gap it occupies in the list): a swipe
         // or a reorder drag displaces the row's layer live and never moves
@@ -2589,13 +3108,31 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         }
         let horizontal_inset = f64::from(list_metrics.horizontal_inset) + outer_inset;
         if let Some(header) = chrome.header.clone() {
+            let header_hit_rect = kurbo::Rect::new(
+                slot_rect.x0 + outer_inset,
+                slot_rect.y0 + top_gap,
+                (slot_rect.x1 - outer_inset).max(slot_rect.x0 + outer_inset),
+                slot_rect.y0 + top_gap + header_height,
+            );
             let header_rect = kurbo::Rect::new(
                 slot_rect.x0 + horizontal_inset,
                 slot_rect.y0 + top_gap,
                 (slot_rect.x1 - horizontal_inset).max(slot_rect.x0 + horizontal_inset),
                 slot_rect.y0 + top_gap + header_height,
             );
-            draw_section_label(ctx, header, header_rect, true, &row_env);
+            if chrome.header_expanded.is_some() {
+                visible_header_ids.push(row_id);
+            }
+            draw_section_header(
+                ctx,
+                state,
+                row_id,
+                header,
+                chrome.header_expanded.clone(),
+                header_hit_rect,
+                header_rect,
+                &row_env,
+            );
         }
         if let Some(footer) = chrome.footer.clone() {
             let footer_rect = kurbo::Rect::new(
@@ -3061,6 +3598,11 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         .row_gestures
         .borrow_mut()
         .retain(|id, _| visible_ids.contains(id));
+    state
+        .borrow()
+        .section_toggles
+        .borrow_mut()
+        .retain(|id, _| visible_header_ids.contains(id));
 
     if state
         .borrow()
@@ -3623,6 +4165,84 @@ impl RowGestures {
             },
         }
     }
+}
+
+/// Draws a section header — plain text for static sections, or text paired with
+/// an animated theme disclosure indicator and pointer toggle target for
+/// collapsible sections.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "header drawing receives render context, list state, stable id, text, expansion binding, hit/content rects, and env"
+)]
+fn draw_section_header<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<ListRenderState<E>>>,
+    first_row_id: ListItemId,
+    header: Text,
+    expanded: Option<Binding<bool>>,
+    hit_rect: kurbo::Rect,
+    content_rect: kurbo::Rect,
+    env: &Environment,
+) {
+    let Some(binding) = expanded else {
+        draw_section_label(ctx, header, content_rect, true, env);
+        return;
+    };
+    let disclosure_look = state.borrow().disclosure_look(&ctx.theme(), env);
+    let direction = layout_direction(env).snapshot();
+    let control = disclosure_look.control();
+    let indicator_size = control.size();
+    let spacing = f64::from(control.get_label_spacing());
+    let ind_y0 = content_rect.y0 + ((content_rect.height() - indicator_size.height) * 0.5).max(0.0);
+    let indicator_ltr = kurbo::Rect::new(
+        (content_rect.x1 - indicator_size.width).max(content_rect.x0),
+        ind_y0,
+        content_rect.x1,
+        (ind_y0 + indicator_size.height).min(content_rect.y1),
+    );
+    let label_ltr = kurbo::Rect::new(
+        content_rect.x0,
+        content_rect.y0,
+        (indicator_ltr.x0 - spacing).max(content_rect.x0),
+        content_rect.y1,
+    );
+    let (indicator_rect, label_rect) = match direction {
+        waterui_core::layout::LayoutDirection::LeftToRight => (indicator_ltr, label_ltr),
+        waterui_core::layout::LayoutDirection::RightToLeft => (
+            crate::widgets::util::mirrored_in(indicator_ltr, content_rect),
+            crate::widgets::util::mirrored_in(label_ltr, content_rect),
+        ),
+    };
+    draw_section_label(ctx, header, label_rect, true, env);
+    let key = crate::renderer::InteractionKey::for_rc(
+        state,
+        row_interaction_base(first_row_id) + INTERACTION_SLOT_SECTION_HEADER,
+    );
+    let (_, press_slot, handles) =
+        ctx.renderer_mut()
+            .bind_live_toggle_target(key.clone(), hit_rect, env, false, control);
+    let flags = ctx.renderer_mut().reported_interaction_state(&key);
+    let parts = {
+        let state_ref = state.borrow();
+        let mut toggles = state_ref.section_toggles.borrow_mut();
+        let slot = toggles.entry(first_row_id).or_insert(None);
+        LiveToggleParts::ensure(slot, control, indicator_rect, flags, &binding).clone()
+    };
+    handles.attach_live_toggle(Rc::clone(parts.toggle()));
+    let ind_ctx = ctx.render_context();
+    parts.push_keyed(
+        ctx.renderer_mut(),
+        ind_ctx,
+        u64::from(crate::num_cast::i32_as_u32(i32::from(first_row_id))),
+    );
+    ctx.renderer_mut().register_interactive_pointer_target(
+        hit_rect,
+        press_slot,
+        move |_renderer, _point, _env| {
+            binding.toggle();
+            true
+        },
+    );
 }
 
 /// Draws a section header or footer.

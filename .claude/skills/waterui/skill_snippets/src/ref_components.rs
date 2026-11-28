@@ -1165,8 +1165,11 @@ pub fn components_list_item_prose(records: StateList<Record>) {
         row("Storage", "3 GB"), // untagged: not selectable
     ))
     .multi_selection(&multi);
+    let records_open = Binding::new(true);
     let _ = List::content(
-        Section::new("Records").content(ForEach::new(records, |r: Record| text(r.title))),
+        Section::new("Records")
+            .expanded(&records_open)
+            .content(ForEach::new(records, |r: Record| text(r.title))),
     )
     .selection(&record_selection);
     // A row under `.disabled(true)` is inert to selection; there is no

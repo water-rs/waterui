@@ -22,50 +22,26 @@ use mdi::numeric;
 use mdi::text_box_outline;
 use mdi::toggle_switch;
 use mdi::tune;
-use waterui::Color;
-use waterui::Handler;
-use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 use waterui::app::{App, Windows};
-use waterui::layout::stack::VStack;
 use waterui::navigation::{NavigationSplitView, NavigationView};
 use waterui::prelude::slider::slider;
 use waterui::prelude::stepper::stepper;
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::reactive::Computed;
 use waterui::reactive::binding;
-use waterui::theme::color::{Foreground, MutedForeground, SurfaceVariant};
-use waterui::widget::Disclosure;
+use waterui::theme::color::Foreground;
 use waterui_icons_material_icon as mdi;
 
-// Material 3 navigation-drawer metrics (M3 reference: list-item / nav-drawer).
-// Material 3 navigation-drawer metrics (`NavigationDrawerTokens`, plus the
-// drawer's layout spec for internal spacing).
-/// `ActiveIndicatorHeight`.
-const DRAWER_ITEM_HEIGHT: f32 = 56.0;
-/// `IconSize`.
-const DRAWER_ICON_SIZE: f32 = 24.0;
-/// The drawer's leading space before an item's icon.
-const DRAWER_ITEM_LEADING_SPACE: f32 = 16.0;
-/// The drawer's trailing space after an item's label or badge.
-const DRAWER_ITEM_TRAILING_SPACE: f32 = 24.0;
-/// The gap between an item's icon and its label.
-const DRAWER_ICON_LABEL_SPACING: f32 = 12.0;
-/// Half the difference between `ContainerWidth` (360) and
-/// `ActiveIndicatorWidth` (336): the indicator is the drawer inset by this much
-/// on each side, which is the drawer's own horizontal padding.
-const DRAWER_INDICATOR_INSET: f32 = 12.0;
-
-/// A category grouping in the navigation drawer.
+/// A category grouping in the navigation sidebar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Section {
+enum Category {
     Actions,
     Inputs,
     Selection,
     Display,
 }
 
-impl Section {
+impl Category {
     const ALL: [Self; 4] = [Self::Actions, Self::Inputs, Self::Selection, Self::Display];
 
     const fn title(self) -> &'static str {
@@ -78,13 +54,13 @@ impl Section {
     }
 }
 
-/// The control indices belonging to a drawer group, in catalog order.
+/// The control indices belonging to a sidebar group, in catalog order.
 fn group_item_indices(group: usize) -> Vec<usize> {
-    let section = Section::ALL[group];
+    let category = Category::ALL[group];
     controls()
         .iter()
         .enumerate()
-        .filter(|(_, control)| control.section == section)
+        .filter(|(_, control)| control.category == category)
         .map(|(index, _)| index)
         .collect()
 }
@@ -120,7 +96,7 @@ impl DemoState {
 struct Control {
     title: &'static str,
     icon: fn() -> Icon,
-    section: Section,
+    category: Category,
     demo: fn(&DemoState) -> AnyView,
 }
 
@@ -130,56 +106,56 @@ fn controls() -> Vec<Control> {
         Control {
             title: "Buttons",
             icon: gesture_tap_button,
-            section: Section::Actions,
+            category: Category::Actions,
             demo: |s| AnyView::new(buttons_demo(&s.taps)),
         },
         Control {
             title: "Text Field",
             icon: form_textbox,
-            section: Section::Inputs,
+            category: Category::Inputs,
             demo: |s| AnyView::new(text_field_demo(&s.name)),
         },
         Control {
             title: "Slider",
             icon: tune,
-            section: Section::Inputs,
+            category: Category::Inputs,
             demo: |s| AnyView::new(slider_demo(&s.volume)),
         },
         Control {
             title: "Stepper",
             icon: numeric,
-            section: Section::Inputs,
+            category: Category::Inputs,
             demo: |s| AnyView::new(stepper_demo(&s.quantity)),
         },
         Control {
             title: "Toggle",
             icon: toggle_switch,
-            section: Section::Selection,
+            category: Category::Selection,
             demo: |s| AnyView::new(toggle_demo(&s.wifi, &s.bluetooth)),
         },
         Control {
             title: "Picker",
             icon: format_list_bulleted,
-            section: Section::Selection,
+            category: Category::Selection,
             demo: |s| AnyView::new(picker_demo(&s.size)),
         },
         Control {
             title: "Label",
             icon: text_box_outline,
-            section: Section::Display,
+            category: Category::Display,
             demo: |_| AnyView::new(label_demo()),
         },
         Control {
             title: "Progress",
             icon: gauge,
-            section: Section::Display,
+            category: Category::Display,
             demo: |_| AnyView::new(progress_demo()),
         },
     ]
 }
 
 // ---------------------------------------------------------------------------
-// Layout: collapsible grouped navigation drawer + detail
+// Layout: collapsible grouped navigation sidebar + detail
 // ---------------------------------------------------------------------------
 
 /// The whole catalog: a single, stable [`NavigationSplitView`] (no `watch` at the
@@ -200,132 +176,33 @@ fn catalog(
     .placeholder(placeholder)
 }
 
-/// One Material 3 navigation-drawer item: a 56dp line with a leading 24dp icon
-/// and label, on a fully-rounded active indicator.
-///
-/// `NavigationDrawerTokens` sizes the indicator 336dp wide inside a 360dp
-/// container, so it is the drawer inset by 12dp on each side — which is the
-/// drawer's own horizontal padding, not something the row adds. Active takes
-/// `SecondaryContainer` with `OnSecondaryContainer` content; inactive sits in
-/// `OnSurfaceVariant`.
-///
-/// The row itself is the tap target, not a button sitting inside it. A drawer
-/// item is a full-width list row with an active indicator, and building it out
-/// of a button gave the wrong result twice over: a button is content-sized, so
-/// only the label was clickable, and it drew its own hover, focus and press
-/// layers inside the row's pill, leaving an indicator nested in an indicator.
-fn drawer_item<F, Args>(
-    title: &'static str,
-    icon: fn() -> Icon,
-    active: &Computed<bool>,
-    action: F,
-) -> impl View + use<F, Args>
-where
-    F: Handler<Args, ()> + 'static,
-    Args: 'static,
-{
-    let indicator: Color = SurfaceVariant.into();
-    let clear: Color = Srgb::WHITE.with_opacity(0.0).into();
-    let pill = active.select(indicator, clear);
-    let active_content: Color = Foreground.into();
-    let resting_content: Color = MutedForeground.into();
-    let content = active.select(active_content, resting_content);
-    let state = active.map(|active| AccessibilityState::new().selected(active));
-    // The row is one accessibility node carrying the title, so its own label
-    // stays out of the tree rather than repeating it.
-    hstack((
-        icon().width(DRAWER_ICON_SIZE).height(DRAWER_ICON_SIZE),
-        text(title),
-        spacer(),
-    ))
-    .spacing(DRAWER_ICON_LABEL_SPACING)
-    .foreground(content)
-    .a11y_hidden(true)
-    .height(DRAWER_ITEM_HEIGHT)
-    .max_width(f32::INFINITY)
-    .padding_with([
-        0.0,
-        DRAWER_ITEM_LEADING_SPACE,
-        0.0,
-        DRAWER_ITEM_TRAILING_SPACE,
-    ])
-    .background(pill)
-    // `ActiveIndicatorShape` is `CornerFull`, whose caps are half the row
-    // height. `Capsule` says that directly and stays correct at any row
-    // height, where a fractional `RoundedRectangle` radius would not.
-    .clip(Capsule)
-    .on_tap(action)
-    .a11y_role(AccessibilityRole::Button)
-    .a11y_label(title)
-    .a11y_state(state)
-}
-
-/// Sidebar: a fixed title above a stack of collapsible [`Disclosure`] groups.
+/// Sidebar: a native collapsible-section [`List`] bound to `selected` and each
+/// category's `groups_open` binding.
 fn sidebar(selected: &Binding<Option<usize>>, groups_open: &[Binding<bool>]) -> impl View + use<> {
-    let drawer = VStack::from_iter(
-        (0..Section::ALL.len())
-            .map(|group| AnyView::new(group_section(group, &groups_open[group], selected))),
-    )
-    .spacing(4.0)
-    .leading();
+    let section_for = |group: usize| {
+        let category = Category::ALL[group];
+        let rows: Vec<_> = group_item_indices(group)
+            .into_iter()
+            .map(|index| {
+                let control = &controls()[index];
+                let title = control.title;
+                let icon = control.icon;
+                (move || hstack((icon().width(20.0).height(20.0), text(title))).spacing(10.0))
+                    .tag(index)
+            })
+            .collect();
+        Section::new(category.title())
+            .expanded(&groups_open[group])
+            .content(rows)
+    };
 
-    scroll(
-        vstack((
-            text("WaterUI Controls")
-                .subheadline()
-                .bold(true)
-                .foreground(Foreground)
-                .padding_with([20.0, 28.0, 12.0, 16.0]),
-            drawer,
-        ))
-        .spacing(4.0)
-        .leading()
-        .padding_with(EdgeInsets::symmetric(8.0, DRAWER_INDICATOR_INSET)),
-    )
-}
-
-/// A collapsible group section realized with [`Disclosure`].
-fn group_section(
-    group: usize,
-    open: &Binding<bool>,
-    selected: &Binding<Option<usize>>,
-) -> impl View + use<> {
-    let section = Section::ALL[group];
-    let indices = group_item_indices(group);
-    let selected = selected.clone();
-    Disclosure::new(
-        text(section.title()).subheadline().color(MutedForeground),
-        move || {
-            VStack::from_iter(
-                indices
-                    .iter()
-                    .copied()
-                    .map(|index| AnyView::new(item_row(index, &selected))),
-            )
-            .spacing(2.0)
-            .leading()
-        },
-    )
-    .expanded(open)
-}
-
-/// A selectable control row, nested under its group header. Tapping selects the
-/// control; the Material 3 active-indicator pill (a `SurfaceVariant` fill — the
-/// default scheme's surface-variant matches secondary-container) tracks the
-/// selection through a fine-grained reactive opacity. A [`button`] keeps the row
-/// a single accessibility node that survives the reactive collection.
-fn item_row(index: usize, selected: &Binding<Option<usize>>) -> impl View + use<> {
-    let control = &controls()[index];
-    let is_selected = selected.equal_to(Some(index)).computed();
-    drawer_item(
-        control.title,
-        control.icon,
-        &is_selected,
-        move |State(selected): State<Binding<Option<usize>>>| {
-            selected.set(Some(index));
-        },
-    )
-    .state(selected)
+    List::content((
+        section_for(0),
+        section_for(1),
+        section_for(2),
+        section_for(3),
+    ))
+    .selection(selected)
 }
 
 /// The detail pane for the selected control: its title (in the navigation bar)
@@ -503,7 +380,7 @@ type CatalogState = (Binding<Option<usize>>, Vec<Binding<bool>>, DemoState);
 /// group starts expanded, and the demo state starts at its defaults.
 fn new_state() -> CatalogState {
     let selected = Binding::new(Some(0));
-    let groups_open = Section::ALL.iter().map(|_| binding(true)).collect();
+    let groups_open = Category::ALL.iter().map(|_| binding(true)).collect();
     (selected, groups_open, DemoState::new())
 }
 
@@ -551,7 +428,7 @@ mod tests {
             ("Buttons", "Bordered Prominent"),
         ];
         for (item, confirm) in controls {
-            app.query().label(item).tap();
+            app.query().role(Role::LIST_ITEM).label(item).tap();
             assert!(
                 app.query()
                     .label_contains(confirm)
@@ -583,7 +460,7 @@ mod tests {
     fn selecting_control_shows_demo(ui: UiBuilder) {
         let (selected, groups_open, state) = new_state();
         let mut app = ui.mount(move || catalog(&selected, groups_open.clone(), state.clone()));
-        app.query().label("Toggle").tap();
+        app.query().role(Role::LIST_ITEM).label("Toggle").tap();
         assert!(
             app.query()
                 .label_contains("Bluetooth")
@@ -665,7 +542,7 @@ mod tests {
         let bluetooth = state.bluetooth.clone();
         let mut app = ui.mount(move || catalog(&selected, groups_open.clone(), state.clone()));
 
-        app.query().label("Toggle").tap();
+        app.query().role(Role::LIST_ITEM).label("Toggle").tap();
         assert!(
             app.query()
                 .role(Role::SWITCH)
@@ -718,7 +595,7 @@ mod tests {
         let volume = state.volume.clone();
         let mut app = ui.mount(move || catalog(&selected, groups_open.clone(), state.clone()));
 
-        app.query().label("Slider").tap();
+        app.query().role(Role::LIST_ITEM).label("Slider").tap();
         assert!(
             app.query()
                 .role(Role::SLIDER)
@@ -768,7 +645,7 @@ mod tests {
         let quantity = state.quantity.clone();
         let mut app = ui.mount(move || catalog(&selected, groups_open.clone(), state.clone()));
 
-        app.query().label("Stepper").tap();
+        app.query().role(Role::LIST_ITEM).label("Stepper").tap();
         assert!(
             app.query()
                 .label("Quantity")
@@ -814,7 +691,7 @@ mod tests {
         let name = state.name.clone();
         let mut app = ui.mount(move || catalog(&selected, groups_open.clone(), state.clone()));
 
-        app.query().label("Text Field").tap();
+        app.query().role(Role::LIST_ITEM).label("Text Field").tap();
         assert!(
             app.query()
                 .role(Role::TEXT_INPUT)
@@ -877,7 +754,7 @@ mod tests {
         );
 
         // Selecting Toggle from the re-expanded group swaps the detail heading.
-        app.query().label("Toggle").tap();
+        app.query().role(Role::LIST_ITEM).label("Toggle").tap();
         assert!(
             app.query()
                 .role(Role::HEADER)
@@ -903,7 +780,7 @@ mod tests {
         let (selected, groups_open, state) = new_state();
         let mut app: waterui_testing::OffscreenApp =
             ui.mount_offscreen(move || catalog(&selected, groups_open.clone(), state.clone()));
-        app.query().label("Stepper").tap();
+        app.query().role(Role::LIST_ITEM).label("Stepper").tap();
         assert!(
             app.query()
                 .label_contains("Quantity")

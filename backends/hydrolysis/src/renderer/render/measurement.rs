@@ -601,12 +601,21 @@ pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
         row_width += f64::from(metrics.delete_control_width + metrics.trailing_control_spacing);
     }
     // Section chrome is part of the list's own height: each section holding
-    // rows draws its header and footer once. The sections come from row ids,
-    // so no row is materialized for them.
+    // rows draws its header (and, while expanded, its rows and footer) once.
+    // The sections come from row ids, so no row is materialized for them.
+    let mut visible_rows = 0usize;
     let mut section_height = 0.0;
     for (section_index, span) in list.sections().spans(contents).into_iter().enumerate() {
         if section_index > 0 {
             section_height += style_geom.inter_section_gap;
+        }
+        let expanded = span
+            .section
+            .as_ref()
+            .and_then(waterui_controls::list::ListSection::expanded)
+            .is_none_or(|binding| state.measure_signal(binding));
+        if expanded {
+            visible_rows += span.rows.len();
         }
         let Some(section) = span.section else {
             continue;
@@ -614,12 +623,13 @@ pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
         if section.label().is_some() {
             section_height += f64::from(metrics.section_header_height);
         }
-        if section.footer().is_some() {
+        if expanded && section.footer().is_some() {
             section_height += f64::from(metrics.section_footer_height);
         }
     }
 
-    let total_height = row_height.mul_add(crate::num_cast::usize_as_f64(row_count), section_height);
+    let total_height =
+        row_height.mul_add(crate::num_cast::usize_as_f64(visible_rows), section_height);
     let max_width = row_width.max(horizontal_inset.mul_add(2.0, outer_inset));
 
     LayoutSize::new(

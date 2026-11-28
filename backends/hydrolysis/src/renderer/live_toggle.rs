@@ -511,7 +511,19 @@ impl LiveToggleParts {
         renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
     ) {
-        push_runs(renderer, ctx, &self.below, "toggle-below-part");
+        self.push_keyed(renderer, ctx, 0);
+    }
+
+    /// Lists the control's parts in `ctx` under a caller-supplied `item_prefix`
+    /// so one widget can mount multiple live toggles in the same record without
+    /// colliding on scope keys.
+    pub(crate) fn push_keyed<E: crate::text::TextEngine>(
+        &self,
+        renderer: &mut HydrolysisRenderer<E>,
+        ctx: RenderContext,
+        item_prefix: u64,
+    ) {
+        push_runs(renderer, ctx, &self.below, "toggle-below-part", item_prefix);
         if let Some(backdrop) = &self.toggle.backdrop {
             renderer.draw_context(ctx, |recorder| {
                 recorder.backdrop_material(
@@ -522,22 +534,23 @@ impl LiveToggleParts {
                 );
             });
         }
-        push_runs(renderer, ctx, &self.above, "toggle-above-part");
+        push_runs(renderer, ctx, &self.above, "toggle-above-part", item_prefix);
     }
 }
 
 /// Lists `runs` in `ctx`, in paint order, a run with an opacity in a live
-/// scope keyed `role` and its index.
+/// scope keyed `role` and its index (shifted under `item_prefix`).
 fn push_runs<E: crate::text::TextEngine>(
     renderer: &mut HydrolysisRenderer<E>,
     ctx: RenderContext,
     runs: &[ToggleRun],
     role: &'static str,
+    item_prefix: u64,
 ) {
     for (index, (opacity, source)) in runs.iter().enumerate() {
         let key = crate::renderer::mount::ScopeKey {
             role,
-            item: index as u64,
+            item: (item_prefix << 8) | (index as u64),
         };
         renderer.with_part_opacity(key, opacity.as_ref(), ctx, |renderer| {
             renderer.push_live(ctx, source);
