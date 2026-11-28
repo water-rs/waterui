@@ -312,7 +312,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             let selection_paint = cherenkov_record::Paint::Solid(
                                 selection_color.with_alpha(highlight_alpha),
                             );
-                            Some(crate::renderer::CaretPaints::selection_only(
+                            Some(crate::renderer::text_editing::CaretPaints::selection_only(
                                 selection_paint,
                             ))
                         };

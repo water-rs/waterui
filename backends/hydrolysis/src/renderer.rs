@@ -290,8 +290,8 @@ pub use accessibility::{
     ScopedAccessibilitySemantics, accessibility_container_child_environment,
 };
 pub use input::{
-    CaretPaints, TextInputModel, TextInputTargetRegistration, TextSelectionSlot,
-    clamp_to_char_boundary, text_editing,
+    TextInputModel, TextInputTargetRegistration, TextSelectionSlot, clamp_to_char_boundary,
+    text_editing,
 };
 
 /// Which pass attributed the current [`Reader`]: a signal guard's mark
