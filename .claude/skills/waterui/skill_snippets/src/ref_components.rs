@@ -467,6 +467,12 @@ pub fn components_block_14() {
         Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)
     };
     let _ = {
+        let all = Binding::new(false);
+        let some_selected = Binding::new(true);
+        // impl IntoComputed<bool>; dash indicator + mixed a11y, tap sets true
+        toggle("Select all", &all).checkbox().mixed(some_selected)
+    };
+    let _ = {
         slider("Volume", &level).range(0.0..=1.0) // &Binding<T: SliderValue>; range/step accept signals
     };
     let _ = {
@@ -642,7 +648,7 @@ pub fn components_custom_control_styles() {
             &self,
             configuration: ToggleStyleConfiguration<L>,
         ) -> impl View + use<L> {
-            let (label, is_on, _, _) = configuration.into_parts();
+            let (label, is_on, _, _, _) = configuration.into_parts();
             hstack((
                 label,
                 spacer(),
@@ -1153,7 +1159,14 @@ pub fn components_list_item_prose(records: StateList<Record>) {
     let _ = text("a").list_row_deletable(signal.clone());
     let _ = text("a").list_row_insets(EdgeInsets::all(4.0));
     let _ = text("a").list_min_row_height(0.0);
-    let _ = List::for_each(records.clone(), |r: Record| text(r.title)).selection(&record_selection);
+    let _ = List::for_each(records.clone(), |r: Record| text(r.title))
+        .style(ListStyle::Plain)
+        .selection(&record_selection);
+    let _ = vstack((
+        List::for_each(records.clone(), |r: Record| text(r.title)),
+        List::content((|| text("Row"),)).style(ListStyle::Sidebar),
+    ))
+    .list_style(ListStyle::InsetGrouped);
     let _ = List::content((
         (|| text("Inbox")).tag(Mailbox::Inbox),
         row("Archive", "12").tag(Mailbox::Archive),

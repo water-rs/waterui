@@ -6,22 +6,26 @@ use crate::renderer::{
     TrackAction, WidgetRenderContext,
 };
 use crate::theme::{
-    CheckboxLook, SpecTint, SwitchDrag, SwitchLook, ToggleControl, ToggleSpec, WidgetTheme,
+    CheckboxLook, Custom, DISABLED_FOREGROUND_ALPHA, Driven, Inputs, SpecTint, SwitchDrag,
+    SwitchLook, ToggleControl, ToggleSpec, WidgetTheme,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
     Toggled as AccessibilityToggled,
 };
-use kurbo::{Point, Vec2};
-use nami::Signal as _;
+use cherenkov_record::{Draw as _, Paint};
+use kurbo::{BezPath, PathEl, Point, RoundedRect, RoundedRectRadii, Stroke, Vec2};
+use nami::{Signal as _, SignalExt as _};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use waterui_controls::theme::color::{AccentForeground, Foreground, Surface};
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::Environment;
 use waterui_core::contract_violation;
 use waterui_core::layout::{LayoutDirection, Size as LayoutSize};
 use waterui_core::layout::{ProposalSize, StretchAxis, ViewDimensions};
+use waterui_graphics::color::Color;
 use waterui_interaction::interaction::InteractionState;
 
 use crate::widgets::util::{label_beside_control_bounds, mirrored_in, widget_disabled};
@@ -30,14 +34,24 @@ use crate::widgets::util::{label_beside_control_bounds, mirrored_in, widget_disa
 #[derive(Clone)]
 enum ToggleLook {
     Switch(SwitchLook),
-    Checkbox(CheckboxLook),
+    Checkbox {
+        look: CheckboxLook,
+        mixed: ToggleControl,
+    },
 }
 
 impl ToggleLook {
     /// The look `theme` gives a toggle of `spec` in `env`.
     fn resolve(theme: &Rc<dyn WidgetTheme>, spec: &ToggleSpec, env: &Environment) -> Self {
         match drawn_style(spec.style()) {
-            ToggleStyle::Checkbox => Self::Checkbox(theme.checkbox(spec, env)),
+            ToggleStyle::Checkbox => {
+                let look = theme.checkbox(spec, env);
+                let mixed = look
+                    .mixed_control()
+                    .cloned()
+                    .unwrap_or_else(|| default_mixed_checkbox_control(look.control(), spec, env));
+                Self::Checkbox { look, mixed }
+            }
             _ => Self::Switch(theme.switch(spec, env)),
         }
     }
@@ -45,9 +59,78 @@ impl ToggleLook {
     const fn control(&self) -> &ToggleControl {
         match self {
             Self::Switch(look) => look.control(),
-            Self::Checkbox(look) => look.control(),
+            Self::Checkbox { look, .. } => look.control(),
         }
     }
+
+    const fn active_control(&self, mixed: bool) -> &ToggleControl {
+        match self {
+            Self::Checkbox {
+                mixed: mixed_control,
+                ..
+            } if mixed => mixed_control,
+            _ => self.control(),
+        }
+    }
+}
+
+/// Synthesizes a theme-token-driven mixed (indeterminate) checkbox control
+/// matching `base`'s geometry, hit region, and motion when the active theme's
+/// [`CheckboxLook`] does not supply a bespoke [`CheckboxLook::mixed_control`].
+fn default_mixed_checkbox_control(
+    base: &ToggleControl,
+    spec: &ToggleSpec,
+    env: &Environment,
+) -> ToggleControl {
+    let container_paint = Driven::follow(
+        spec.tint().resolve(env).zip(
+            &Color::new(Foreground)
+                .with_opacity(DISABLED_FOREGROUND_ALPHA)
+                .resolve(env),
+        ),
+        |&(tint, dim), inputs: &Inputs<'_, bool>| {
+            Paint::from(if inputs.state.contains(InteractionState::DISABLED) {
+                dim
+            } else {
+                tint
+            })
+        },
+    );
+    let dash_paint = Driven::follow(
+        Color::new(AccentForeground)
+            .resolve(env)
+            .zip(&Color::new(Surface).resolve(env)),
+        |&(fg, dim), inputs: &Inputs<'_, bool>| {
+            Paint::from(if inputs.state.contains(InteractionState::DISABLED) {
+                dim
+            } else {
+                fg
+            })
+        },
+    );
+    let part = Custom::new(
+        (container_paint, dash_paint),
+        |recorder, frame, (fill, dash)| {
+            let side = frame.width().min(frame.height());
+            let radius = (side / 9.0).max(2.0);
+            recorder.fill(
+                RoundedRect::from_rect(frame, RoundedRectRadii::from_single_radius(radius)),
+                fill,
+            );
+            let inset = frame.width() * 0.22;
+            let mid_y = frame.center().y;
+            let path = BezPath::from_vec(vec![
+                PathEl::MoveTo(Point::new(frame.x0 + inset, mid_y)),
+                PathEl::LineTo(Point::new(frame.x1 - inset, mid_y)),
+            ]);
+            recorder.stroke(path, Stroke::new((side / 9.0).max(2.0)), dash);
+        },
+    );
+    ToggleControl::new(base.size(), base.motion().clone())
+        .label_spacing(base.get_label_spacing())
+        .reach(base.get_reach())
+        .hit(*base.get_hit())
+        .part(part)
 }
 
 /// The spec of the toggle `config` describes in `env`.
@@ -178,7 +261,14 @@ pub fn toggle_accessibility<E: crate::text::TextEngine, S>(
             node.set_value(value);
         }
         let checked = renderer.read_signal(toggle.toggle());
-        node.set_toggled(AccessibilityToggled::from(checked));
+        let is_checkbox = matches!(drawn_style(toggle.style()), ToggleStyle::Checkbox);
+        let is_mixed = is_checkbox && renderer.read_signal(toggle.mixed());
+        let toggled = if is_mixed {
+            AccessibilityToggled::Mixed
+        } else {
+            AccessibilityToggled::from(checked)
+        };
+        node.set_toggled(toggled);
         node.add_action(AccessibilityAction::Focus);
         // A disabled toggle stays in the tree (focusable, announced as
         // disabled) but exposes no click action and no action target.
@@ -190,6 +280,7 @@ pub fn toggle_accessibility<E: crate::text::TextEngine, S>(
             node.add_action(AccessibilityAction::Click);
             Some(AccessibilityActionTarget::Toggle {
                 binding: toggle.toggle().clone(),
+                mixed: is_checkbox.then(|| toggle.mixed().clone()),
             })
         };
         if let Some(node_id) = renderer.register_accessibility_leaf(ctx, node, env, action_target) {
@@ -354,21 +445,42 @@ pub fn render_toggle_parts<E: crate::text::TextEngine>(
     }
 
     let binding = state.config.toggle().clone();
-    let target = control.target(control_bounds);
+    let is_checkbox = matches!(drawn_style(style), ToggleStyle::Checkbox);
+    let mixed_signal = state.config.mixed().clone();
+    let is_mixed = is_checkbox && ctx.renderer_mut().read_signal(&mixed_signal);
+    let active_control = look.active_control(is_mixed);
+    let target = active_control.target(control_bounds);
     let (_, press_slot, handles) = ctx.renderer_mut().bind_live_toggle_target(
         visual_interaction_key.clone(),
         target,
         env,
         disabled,
-        control,
+        active_control,
     );
     let flags = ctx
         .renderer_mut()
         .reported_interaction_state(&visual_interaction_key);
     // The parts read the toggle's value through its binding: a toggle, hover,
     // press or drag moves their operands and records nothing.
-    let parts =
-        LiveToggleParts::ensure(&mut state.parts, control, control_bounds, flags, &binding).clone();
+    let parts = if is_mixed {
+        LiveToggleParts::ensure(
+            &mut state.parts,
+            active_control,
+            control_bounds,
+            flags,
+            &mixed_signal,
+        )
+        .clone()
+    } else {
+        LiveToggleParts::ensure(
+            &mut state.parts,
+            active_control,
+            control_bounds,
+            flags,
+            &binding,
+        )
+        .clone()
+    };
     handles.attach_live_toggle(Rc::clone(parts.toggle()));
     push_control(ctx, &parts, flags, target);
     // A disabled toggle registers no tap target: the pointer neither presses
@@ -377,6 +489,36 @@ pub fn render_toggle_parts<E: crate::text::TextEngine>(
     if disabled {
         return;
     }
+    register_toggle_targets(
+        ctx,
+        &look,
+        &parts,
+        binding,
+        is_checkbox.then_some(mixed_signal),
+        label_bounds,
+        target,
+        press_slot,
+        visual_interaction_key,
+        activation_interaction_key,
+    );
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "registers label and control hit targets from the toggle's resolved layout and interaction slots"
+)]
+fn register_toggle_targets<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    look: &ToggleLook,
+    parts: &LiveToggleParts,
+    binding: nami::Binding<bool>,
+    mixed: Option<nami::Computed<bool>>,
+    label_bounds: kurbo::Rect,
+    target: kurbo::Rect,
+    press_slot: crate::renderer::PressSlot,
+    visual_interaction_key: InteractionKey,
+    activation_interaction_key: InteractionKey,
+) {
     // Keep the label row as an activation target without attaching it to the
     // switch's visual interaction. An associated the Material label toggles the switch
     // but does not originate a switch ripple or pressed thumb from the label's
@@ -390,13 +532,17 @@ pub fn render_toggle_parts<E: crate::text::TextEngine>(
                 row,
                 activation_press_slot,
                 false,
-                toggle_binding_action(binding.clone(), visual_interaction_key.clone()),
+                toggle_binding_action(
+                    binding.clone(),
+                    mixed.clone(),
+                    visual_interaction_key.clone(),
+                ),
             );
     }
     // Register the visual control last so it wins hit testing where the full-row
     // activation target overlaps it.
-    let action = toggle_binding_action(binding.clone(), visual_interaction_key);
-    match &look {
+    let action = toggle_binding_action(binding.clone(), mixed, visual_interaction_key);
+    match look {
         ToggleLook::Switch(switch) => {
             let track = switch_track(
                 *switch.drag(),
@@ -407,7 +553,7 @@ pub fn render_toggle_parts<E: crate::text::TextEngine>(
             ctx.renderer_mut()
                 .register_tracked_pointer_target(target, press_slot, track, action);
         }
-        ToggleLook::Checkbox(_) => {
+        ToggleLook::Checkbox { .. } => {
             ctx.renderer_mut()
                 .register_interactive_pointer_target(target, press_slot, action);
         }
@@ -498,6 +644,7 @@ fn switch_track(
 
 fn toggle_binding_action<E: crate::text::TextEngine>(
     binding: nami::Binding<bool>,
+    mixed: Option<nami::Computed<bool>>,
     visual_interaction_key: InteractionKey,
 ) -> impl FnMut(&mut crate::renderer::SemanticCore<E>, kurbo::Point, &Environment) -> bool {
     move |renderer, _point, _env| {
@@ -505,7 +652,12 @@ fn toggle_binding_action<E: crate::text::TextEngine>(
         // interaction-only key. Restore semantic keyboard focus to the switch
         // itself when the label activates it.
         renderer.set_keyboard_focus(Some(visual_interaction_key.clone()), false);
-        binding.toggle();
+        let next = if mixed.as_ref().is_some_and(nami::Signal::snapshot) {
+            true
+        } else {
+            !binding.snapshot()
+        };
+        binding.set(next);
         true
     }
 }

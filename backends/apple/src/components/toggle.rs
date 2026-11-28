@@ -193,8 +193,13 @@ impl SubView for ToggleSubView {
 pub fn realize_toggle_config(config: ToggleConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let stretch = waterui_core::NativeView::stretch_axis(&config);
-    let (label, binding, style, size) = config.into_parts();
-    let toggle = Toggle::new(mtm, kind(style), binding.snapshot());
+    let (label, binding, style, size, mixed) = config.into_parts();
+    let toggle_kind = kind(style);
+    let is_checkbox = matches!(toggle_kind, Kind::Checkbox);
+    let toggle = Toggle::new(mtm, toggle_kind, binding.snapshot());
+    if is_checkbox && mixed.snapshot() {
+        toggle.set_state(binding.snapshot(), true, StateChange::Immediate);
+    }
     // `Toggle`'s documented default size is `Small`; the mapping is
     // relative to it, so a bare toggle draws at the platform's regular
     // size like a bare `NSSwitch` or checkbox. `AppKit` honours every
@@ -227,15 +232,41 @@ pub fn realize_toggle_config(config: ToggleConfig<Held>, ctx: &RenderContext<'_>
     // Signal → control, under the watcher metadata's animation.
     leaf.watch(&binding, {
         let toggle = toggle.clone();
+        let mixed = mixed.clone();
         move |ctx| {
-            toggle.set_on(*ctx.value(), state_change(ctx.metadata()));
+            let is_mixed = is_checkbox && mixed.snapshot();
+            toggle.set_state(*ctx.value(), is_mixed, state_change(ctx.metadata()));
         }
     });
 
+    if is_checkbox {
+        leaf.watch(&mixed, {
+            let toggle = toggle.clone();
+            let binding = binding.clone();
+            move |ctx| {
+                toggle.set_state(
+                    binding.snapshot(),
+                    *ctx.value(),
+                    state_change(ctx.metadata()),
+                );
+            }
+        });
+    }
+
     // Control → binding: user edits write back through the action.
+    // Activating a mixed checkbox resolves to `true` (`on`) rather than
+    // cycling through `Off -> Mixed -> On`.
     leaf.keep(toggle.on_change({
         let toggle = toggle.clone();
-        move |_| binding.set(toggle.is_on())
+        let mixed = mixed.clone();
+        move |_| {
+            if is_checkbox && mixed.snapshot() {
+                binding.set(true);
+                toggle.set_state(binding.snapshot(), mixed.snapshot(), StateChange::Immediate);
+            } else {
+                binding.set(toggle.is_on());
+            }
+        }
     }));
 
     leaf.bind(&disabled, {

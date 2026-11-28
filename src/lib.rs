@@ -57,7 +57,7 @@ pub mod prelude {
     // Re-export core modules from super, excluding `background` to avoid conflict with layout::background
     #[cfg(feature = "effects")]
     pub use super::FilterViewExt;
-    pub use super::app::{App, AppMenuBar, Windows};
+    pub use super::app::{App, AppMenuBar, AppPhase, Windows};
     pub use super::env::Environment;
     #[cfg(feature = "form")]
     pub use super::form;
@@ -120,7 +120,7 @@ pub mod prelude {
     pub use super::component::link::{Link, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
-        ForEachExt, List, ListContent, ListMinRowHeight, Row, Section, detail_row,
+        ForEachExt, List, ListContent, ListMinRowHeight, ListStyle, Row, Section, detail_row,
     };
     #[cfg(feature = "menu")]
     pub use super::component::menu::{Command, CommandExt, Menu, MenuItem};
@@ -543,5 +543,6 @@ mod prelude_tests {
         );
         assert_eq!(*press.key(), Key::Named(NamedKey::Escape));
         assert_eq!(KeyHandling::Handled, KeyHandling::Handled);
+        assert_eq!(AppPhase::default(), AppPhase::Active);
     }
 }

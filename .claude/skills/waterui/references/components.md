@@ -345,6 +345,7 @@ hstack((
 
 toggle("Wi-Fi", &enabled)                   // &Binding<bool>
 Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)     // Automatic | Switch | Checkbox; .switch() / .checkbox()
+toggle("Select all", &all).checkbox().mixed(some_selected)    // impl IntoComputed<bool>; dash indicator + mixed a11y, tap sets true
 slider("Volume", &level).range(0.0..=1.0)   // &Binding<T: SliderValue> (f32, f64, ints); range/step accept signals
 slider("Volume", &level).size(ControlSize::Large)      // sliders default ExtraSmall
     .value_formatter(|v| Str::from(format!("{v:.0}"))) // shown above the thumb while dragging
@@ -400,7 +401,9 @@ tests. `ToggleStyle::Automatic` reads the ambient `ToggleStyle` installed in the
 Hydrolysis and iOS, `Checkbox` on macOS AppKit). On Hydrolysis, `Role::toggle(ToggleStyle::Automatic)`
 maps to `Role::SWITCH`. A switch with a visible label fills the
 width it is offered (label leading, switch trailing); a checkbox and a toggle with a
-hidden label are content-sized.
+hidden label are content-sized. Chaining `.mixed(signal)` (`impl IntoComputed<bool>`) on a
+checkbox renders the indeterminate dash and reports `CheckedState::Mixed` while the signal
+is `true`, and activating it resolves the binding to `true`.
 
 ### Custom button and toggle styles
 
@@ -408,7 +411,7 @@ Implement `CustomButtonStyle`, `PrimitiveButtonStyle`, or `CustomToggleStyle`, a
 instance either to a single control with `.style(..)` or to an entire subtree with
 `.button_style(..)` / `.toggle_style(..)`. `CustomButtonStyle` and `CustomToggleStyle`
 receive the semantic `label()` / `into_label()`, interaction-state signals (`is_pressed()`,
-`is_hovered()`, `is_focused()`, `is_disabled()`, `interaction_state()`), `role()` / `is_on()`,
+`is_hovered()`, `is_focused()`, `is_disabled()`, `interaction_state()`), `role()` / `is_on()` / `mixed()`,
 and automatically preserve tap activation, disabled gating, and accessibility semantics;
 `PrimitiveButtonStyle` receives `trigger()` so the style owns its gesture.
 An explicit `.style(..)` on a control wins over an enclosing subtree hook, and an inner
@@ -810,7 +813,11 @@ with a `Section` per group, each over its own `SignalCollection`; sections do no
 
 Row modifiers: `.list_row_deletable(signal)`, `.list_row_insets(insets)`; `.list_min_row_height(h)` on
 any ancestor sets the row-height floor for every list inside (`0.0` sizes rows to their
-content). Selection lives on the
+content). List presentation style is chosen with `.style(ListStyle::...)` on `List` / `ListBuilder`
+or ambiently across a subtree with `.list_style(ListStyle::...)` (`Automatic`, `Plain`, `Inset`,
+`InsetGrouped`, `Grouped`, `Sidebar`). `ListStyle::Automatic` keeps each platform's default and
+resolves to `ListStyle::Sidebar` inside a `NavigationSplitView`'s sidebar column; an explicit
+`.style(...)` wins over an ambient `.list_style(...)`. Selection lives on the
 list itself and holds the app's own values — `.selection(&Binding<Option<T>>)` or
 `.multi_selection(&Binding<BTreeSet<T>>)` on both `List` and `ListBuilder`, `T: Ord + Clone`.
 A `ForEach` row — every row of `List::for_each`, or a `ForEach` inside `List::content` —

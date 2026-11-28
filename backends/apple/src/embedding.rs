@@ -346,6 +346,7 @@ pub unsafe fn mount<W: Windows, M: AppMenuBar>(
     // process without notice — so the termination machine is never started.
     let _ = parts.termination;
     let env = parts.env;
+    keepalive.keep(crate::phase::start(parts.phase, &env, mtm));
     let mut windows = crate::windows::connect_windows(parts.windows, &env).into_iter();
     let Some(declaration) = windows.next() else {
         waterui_core::contract_violation!(

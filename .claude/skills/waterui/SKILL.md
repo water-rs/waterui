@@ -144,7 +144,7 @@ struct Row { #[id] id: u64, title: Str }
 let rows = StateList::from(seed_rows);                 // bulk-seed; .push/.insert/.remove (&mut self) diff by id
 
 scroll(VStack::for_each(rows.clone(), |row| text(row.title))) // virtualized inside scroll
-List::for_each(rows.clone(), |row| text(row.title))           // platform list: lazy, editable
+List::for_each(rows.clone(), |row| text(row.title))           // platform list: lazy, editable; .style(ListStyle::...) or .list_style(...)
 ```
 
 Note the shape: **`ForEach` is a *collection of views*, not a view.** A container consumes
@@ -196,7 +196,7 @@ pub fn app(env: Environment) -> App<impl Windows> {
 ```
 
 `use waterui::prelude::*;` brings in views, layout, colors, text (`IntoText`), controls,
-navigation, menus, `Binding`, `Computed`, `binding` (the general constructor), `StateList`,
+navigation, menus, `App`, `AppPhase`, `Window`, `Binding`, `Computed`, `binding` (the general constructor), `StateList`,
 `SignalCollection`, `State`, `Str`, `AnyView`, `Identifiable` (derive and trait),
 `IntoComputed`, `IntoSignal`, `IntoSignalF32`, `SignalExt`, `Animation`, `AnimationExt`,
 built-in shapes (`Circle`, `Capsule`, `Rectangle`, `RoundedRectangle`, `ShapeExt`), keyboard

@@ -195,12 +195,14 @@ impl ButtonAttributes {
     }
 }
 
-/// `<Toggle>`: a two-state switch.
+/// `<Toggle>`: a two-state switch or tri-state checkbox.
 #[derive(Debug, TsType)]
 #[non_exhaustive]
 pub struct ToggleAttributes {
     /// The state the switch reads and writes.
     value: Binding<bool>,
+    /// Whether a checkbox toggle shows the mixed (indeterminate) state.
+    mixed: Option<Computed<bool>>,
     /// The label, when it is not the children.
     label: Option<AnyView>,
 }
@@ -212,6 +214,12 @@ impl ToggleAttributes {
         &self.value
     }
 
+    /// Whether a checkbox toggle shows the mixed (indeterminate) state.
+    #[must_use]
+    pub const fn mixed(&self) -> Option<&Computed<bool>> {
+        self.mixed.as_ref()
+    }
+
     /// The label, when it is not the children.
     #[must_use]
     pub const fn label(&self) -> Option<&AnyView> {
@@ -221,6 +229,12 @@ impl ToggleAttributes {
     /// Takes the label out, leaving none behind.
     pub const fn take_label(&mut self) -> Option<AnyView> {
         self.label.take()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Binding<bool>, Option<Computed<bool>>, Option<AnyView>) {
+        (self.value, self.mixed, self.label)
     }
 }
 

@@ -469,9 +469,13 @@ fn controls(
             ))
         }
         "Toggle" => {
-            let mut attributes = ToggleAttributes::from_js(config, bridge)?;
-            let label = children::label(bridge, component, attributes.take_label(), children)?;
-            Ok(AnyView::new(Toggle::new(label, attributes.value())))
+            let (value, mixed, label) = ToggleAttributes::from_js(config, bridge)?.into_parts();
+            let label = children::label(bridge, component, label, children)?;
+            let toggle = Toggle::new(label, &value);
+            Ok(AnyView::new(match mixed {
+                Some(mixed) => toggle.mixed(mixed),
+                None => toggle,
+            }))
         }
         "Slider" => {
             let mut attributes = SliderAttributes::from_js(config, bridge)?;

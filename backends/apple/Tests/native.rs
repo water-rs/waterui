@@ -321,6 +321,20 @@ fn chrome_trials() -> Vec<Trial> {
             Ok(())
         }),
         Trial::test(
+            "split::explicit_and_ambient_list_styles_map_to_appkit_table_styles",
+            || {
+                split::explicit_and_ambient_list_styles_map_to_appkit_table_styles();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "split::sidebar_explicit_style_overrides_automatic_sidebar_default",
+            || {
+                split::sidebar_explicit_style_overrides_automatic_sidebar_default();
+                Ok(())
+            },
+        ),
+        Trial::test(
             "material_vibrancy::a_window_material_hosts_its_content_and_releases_it",
             || {
                 material_vibrancy::a_window_material_hosts_its_content_and_releases_it();
@@ -515,6 +529,13 @@ fn base_trials() -> Vec<Trial> {
             resolve::toggle_rows_place_the_control_by_kind();
             Ok(())
         }),
+        Trial::test(
+            "resolve::mixed_checkbox_renders_mixed_and_activates_to_on",
+            || {
+                resolve::mixed_checkbox_renders_mixed_and_activates_to_on();
+                Ok(())
+            },
+        ),
         Trial::test("resolve::a_label_leaves_8pt_between_icon_and_title", || {
             resolve::a_label_leaves_8pt_between_icon_and_title();
             Ok(())
@@ -1527,6 +1548,121 @@ mod resolve {
                     name,
                 );
             }
+        }
+    }
+
+    /// water-rs/waterui#4336: a mixed checkbox renders its mixed state
+    /// (`NSControlStateValueMixed` on `AppKit`, `"Mixed"` accessibility value on
+    /// `UIKit`), follows reactive changes to `mixed`, resolves activation while
+    /// mixed to `true`, and never cycles `Off -> Mixed -> On` once unmixed.
+    pub fn mixed_checkbox_renders_mixed_and_activates_to_on() {
+        use nami::{Binding, Signal as _, SignalExt as _};
+
+        let items = Binding::new([true, false, false]);
+        let all = Binding::mapping(
+            &items,
+            |list| list.iter().all(|&done| done),
+            |source, on| source.set([on, on, on]),
+        );
+        let some_but_not_all = items
+            .map(|list| list.iter().any(|&done| done) && !list.iter().all(|&done| done))
+            .computed();
+
+        let leaf = render(
+            Toggle::new("Select all", &all)
+                .checkbox()
+                .mixed(some_but_not_all.clone()),
+        );
+        let subviews = cocoa_ui::view::subviews(leaf.view());
+        assert_eq!(subviews.len(), 2, "checkbox row holds label and control");
+        let control = &subviews[1];
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2_app_kit::{
+                NSButton, NSControlStateValueMixed, NSControlStateValueOff, NSControlStateValueOn,
+            };
+
+            let button = control
+                .downcast_ref::<NSButton>()
+                .expect("AppKit checkbox control is an NSButton");
+            assert!(
+                button.allowsMixedState(),
+                "mixed checkbox enables allowsMixedState"
+            );
+            assert_eq!(
+                button.state(),
+                NSControlStateValueMixed,
+                "mixed checkbox starts in NSControlStateValueMixed (-1)"
+            );
+
+            // Clicking while mixed resolves the binding to `true` (all selected),
+            // leaving mixed state and disabling `allowsMixedState`.
+            // SAFETY: `performClick:` is a main-thread `NSControl` action trigger with nil sender.
+            unsafe { button.performClick(None) };
+            assert!(
+                all.snapshot(),
+                "clicking a mixed checkbox must resolve binding to true"
+            );
+            assert!(!some_but_not_all.snapshot());
+            assert_eq!(items.snapshot(), [true, true, true]);
+            assert_eq!(button.state(), NSControlStateValueOn);
+            assert!(!button.allowsMixedState());
+
+            // Clicking again turns all items off.
+            // SAFETY: `performClick:` is a main-thread `NSControl` action trigger with nil sender.
+            unsafe { button.performClick(None) };
+            assert!(!all.snapshot());
+            assert_eq!(items.snapshot(), [false, false, false]);
+            assert_eq!(button.state(), NSControlStateValueOff);
+            assert!(!button.allowsMixedState());
+
+            // Clicking while off and unmixed goes straight Off -> On (never Mixed).
+            // SAFETY: `performClick:` is a main-thread `NSControl` action trigger with nil sender.
+            unsafe { button.performClick(None) };
+            assert!(all.snapshot());
+            assert_eq!(button.state(), NSControlStateValueOn);
+            assert!(!button.allowsMixedState());
+
+            // Partial selection reactively restores NSControlStateValueMixed.
+            items.set([false, true, false]);
+            assert!(button.allowsMixedState());
+            assert_eq!(button.state(), NSControlStateValueMixed);
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::{NSObjectUIAccessibility, UIButton, UIControlEvents};
+
+            let mtm = mtm();
+            let button = control
+                .downcast_ref::<UIButton>()
+                .expect("UIKit checkbox control is a UIButton");
+            assert!(!button.isSelected(), "mixed checkbox is not selected");
+            assert_eq!(
+                button.accessibilityValue(mtm).map(|v| v.to_string()),
+                Some("Mixed".to_owned()),
+                "mixed checkbox announces accessibilityValue Mixed"
+            );
+
+            // Tapping while mixed resolves the binding to `true` (all selected)
+            // and clears the `"Mixed"` accessibility value.
+            button.sendActionsForControlEvents(UIControlEvents::PrimaryActionTriggered);
+            assert!(
+                all.snapshot(),
+                "tapping a mixed checkbox must resolve binding to true"
+            );
+            assert!(!some_but_not_all.snapshot());
+            assert!(button.isSelected());
+            assert_eq!(button.accessibilityValue(mtm), None);
+
+            // Partial selection reactively restores mixed accessibility state.
+            items.set([false, true, false]);
+            assert!(!button.isSelected());
+            assert_eq!(
+                button.accessibilityValue(mtm).map(|v| v.to_string()),
+                Some("Mixed".to_owned())
+            );
         }
     }
 
@@ -3350,17 +3486,19 @@ mod navigation {
     }
 }
 
-/// A `NavigationSplitView` sidebar column is marked `SidebarContent`: the
-/// lists inside take the source-list chrome — clear background over the
-/// split's material and the unemphasised selection pill — while a list
-/// outside the sidebar keeps the regular fill (water-rs/waterui#1495).
+/// A `NavigationSplitView` sidebar column resolves `ListStyle::Automatic` to
+/// `ListStyle::Sidebar`: the lists inside take the source-list chrome — clear
+/// background over the split's material and the unemphasised selection pill —
+/// while a list outside the sidebar keeps the regular fill (`water-rs/waterui#1495`,
+/// `water-rs/waterui#4421`).
 #[cfg(target_os = "macos")]
 mod split {
-    use cocoa_ui::appkit::ListTableView;
+    use cocoa_ui::appkit::{ListTableView, TableStyle};
     use cocoa_ui::objc2_app_kit::NSTableViewStyle;
     use cocoa_ui::{PlatformView, view};
     use waterui::ViewExt as _;
-    use waterui::component::list::List;
+    use waterui::component::list::{List, ListStyle, Section};
+    use waterui::layout::stack::vstack;
     use waterui::navigation::{NavigationSplitView, NavigationView};
     use waterui::prelude::text;
     use waterui::reactive::binding;
@@ -3379,8 +3517,8 @@ mod split {
         None
     }
 
-    /// The split's sidebar list is the one `set_sidebar` marks — the
-    /// source-list style is what draws the grey selection pill.
+    /// The split's sidebar list resolves `ListStyle::Automatic` to `Sidebar` —
+    /// the source-list style draws the unemphasised selection pill.
     pub fn a_sidebar_list_takes_the_source_list_chrome() {
         let selection = binding(Some(0_i32));
         let leaf = resolve::render(NavigationSplitView::new(
@@ -3395,6 +3533,7 @@ mod split {
             table.is_sidebar(),
             "the sidebar list draws source-list chrome"
         );
+        assert_eq!(table.style(), TableStyle::Sidebar);
         assert_eq!(
             table.table_view().style(),
             NSTableViewStyle::SourceList,
@@ -3412,6 +3551,83 @@ mod split {
             !table.is_sidebar(),
             "a list outside a sidebar keeps the regular fill"
         );
+        assert_eq!(table.style(), TableStyle::Automatic);
+    }
+
+    /// Every `ListStyle` variant maps to its `AppKit` `TableStyle` / `NSTableViewStyle`,
+    /// and subtree `.list_style(...)` applies to descendants unless overridden.
+    pub fn explicit_and_ambient_list_styles_map_to_appkit_table_styles() {
+        let cases = [
+            (
+                ListStyle::Automatic,
+                TableStyle::Automatic,
+                NSTableViewStyle::FullWidth,
+            ),
+            (ListStyle::Plain, TableStyle::Plain, NSTableViewStyle::Plain),
+            (ListStyle::Inset, TableStyle::Inset, NSTableViewStyle::Inset),
+            (
+                ListStyle::InsetGrouped,
+                TableStyle::InsetGrouped,
+                NSTableViewStyle::Inset,
+            ),
+            (
+                ListStyle::Grouped,
+                TableStyle::Grouped,
+                NSTableViewStyle::FullWidth,
+            ),
+            (
+                ListStyle::Sidebar,
+                TableStyle::Sidebar,
+                NSTableViewStyle::SourceList,
+            ),
+        ];
+        for (style, expected_kit, expected_ns) in cases {
+            let leaf = resolve::render(
+                List::content((
+                    Section::new("Group A").content((|| text("One"), || text("Two"))),
+                    Section::new("Group B").content((|| text("Three"),)),
+                ))
+                .style(style),
+            );
+            let table = sidebar_table(leaf.view()).expect("the list mounts a table");
+            assert_eq!(table.style(), expected_kit, "explicit {style:?}");
+            assert_eq!(
+                table.table_view().style(),
+                expected_ns,
+                "explicit NSTableViewStyle for {style:?}"
+            );
+        }
+
+        // Subtree `.list_style(...)` propagates to descendants.
+        let ambient_leaf = resolve::render(
+            vstack((List::content((|| text("Row"),)),)).list_style(ListStyle::InsetGrouped),
+        );
+        let ambient_table = sidebar_table(ambient_leaf.view()).expect("ambient list mounts");
+        assert_eq!(ambient_table.style(), TableStyle::InsetGrouped);
+
+        // Explicit `.style(...)` overrides subtree `.list_style(...)`.
+        let overridden_leaf = resolve::render(
+            vstack((List::content((|| text("Row"),)).style(ListStyle::Plain),))
+                .list_style(ListStyle::InsetGrouped),
+        );
+        let overridden_table =
+            sidebar_table(overridden_leaf.view()).expect("overridden list mounts");
+        assert_eq!(overridden_table.style(), TableStyle::Plain);
+    }
+
+    /// Explicit `.style(ListStyle::Plain)` inside `NavigationSplitView`'s sidebar
+    /// overrides the automatic `Sidebar` default.
+    pub fn sidebar_explicit_style_overrides_automatic_sidebar_default() {
+        let selection = binding(Some(0_i32));
+        let leaf = resolve::render(NavigationSplitView::new(
+            &selection,
+            move || List::content(((|| text("row")).tag(0_usize),)).style(ListStyle::Plain),
+            |_id: i32| NavigationView::new("Detail", text("detail")),
+        ));
+        let table = sidebar_table(leaf.view()).expect("the sidebar mounts a list");
+        assert_eq!(table.style(), TableStyle::Plain);
+        assert_eq!(table.table_view().style(), NSTableViewStyle::Plain);
+        assert!(!table.is_sidebar());
     }
 }
 
