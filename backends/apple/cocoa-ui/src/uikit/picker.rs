@@ -303,8 +303,6 @@ impl RadioRowView {
             .map(|img| img.imageWithRenderingMode(UIImageRenderingMode::AlwaysTemplate));
         let selected = UIImage::systemImageNamed(ns_string!("largecircle.fill.circle"))
             .map(|img| img.imageWithRenderingMode(UIImageRenderingMode::AlwaysTemplate));
-        *this.ivars().unselected_image.borrow_mut() = unselected.clone();
-        *this.ivars().selected_image.borrow_mut() = selected;
 
         let icon = UIImageView::new(mtm);
         // SAFETY: `UIFontTextStyleBody` is an immutable UIKit shared text style.
@@ -314,6 +312,8 @@ impl RadioRowView {
         icon.setImage(unselected.as_deref());
         icon.setUserInteractionEnabled(false);
         this.addSubview(&icon);
+        *this.ivars().unselected_image.borrow_mut() = unselected;
+        *this.ivars().selected_image.borrow_mut() = selected;
         *this.ivars().icon.borrow_mut() = Some(icon);
 
         let label = UILabel::new(mtm);
