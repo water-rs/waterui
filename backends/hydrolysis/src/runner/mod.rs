@@ -225,8 +225,7 @@ use crate::platform::{OffscreenPainter, OffscreenWindow};
 use crate::readback::readback_surface_texture_rgba8;
 #[cfg(hydrolysis_cherenkov)]
 use crate::renderer::FontFamilyResolution;
-#[cfg(hydrolysis_cherenkov)]
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
+#[cfg(all(hydrolysis_cherenkov, feature = "menu"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use crate::renderer::HydrolysisWindowOrigin;
@@ -537,7 +536,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
     {
         menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env);
     }
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
+    #[cfg(feature = "menu")]
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     // A headless host has no platform appearance: the scheme is Light
     // unless the application installs its own.

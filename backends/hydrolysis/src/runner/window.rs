@@ -1982,7 +1982,6 @@ pub(super) fn pump_window_scene<P: PlatformWindow, E: crate::text::TextEngine>(
     let mut built = false;
     match runtime.mode {
         FrameMode::Idle => {
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             runtime
                 .renderer
                 .record_text_input_overlay(env, kurbo::Affine::IDENTITY);
@@ -3367,16 +3366,8 @@ where
             }
             InputEvent::TextInput { text } => {
                 let changed = !ime_owned
-                    && (runtime.renderer.handle_embedded_text_input(text.as_str()) || {
-                        #[cfg(any(feature = "text-field", feature = "secure-field"))]
-                        {
-                            runtime.renderer.handle_text_input(text.as_str())
-                        }
-                        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
-                        {
-                            false
-                        }
-                    });
+                    && (runtime.renderer.handle_embedded_text_input(text.as_str())
+                        || runtime.renderer.handle_text_input(text.as_str()));
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "text_input",
@@ -3392,16 +3383,8 @@ where
             InputEvent::KeyText { text } => {
                 let changed = !ime_owned
                     && !key_consumed
-                    && (runtime.renderer.handle_embedded_text_input(text.as_str()) || {
-                        #[cfg(any(feature = "text-field", feature = "secure-field"))]
-                        {
-                            runtime.renderer.handle_text_input(text.as_str())
-                        }
-                        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
-                        {
-                            false
-                        }
-                    });
+                    && (runtime.renderer.handle_embedded_text_input(text.as_str())
+                        || runtime.renderer.handle_text_input(text.as_str()));
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "text_input",
@@ -3468,16 +3451,7 @@ where
                 let changed = runtime
                     .renderer
                     .handle_embedded_ime_preedit(text.as_str(), caret)
-                    || {
-                        #[cfg(any(feature = "text-field", feature = "secure-field"))]
-                        {
-                            runtime.renderer.handle_ime_preedit(text.as_str(), caret)
-                        }
-                        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
-                        {
-                            false
-                        }
-                    };
+                    || runtime.renderer.handle_ime_preedit(text.as_str(), caret);
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "ime_preedit",
@@ -3488,16 +3462,8 @@ where
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::ImeCommit { text } => {
-                let changed = runtime.renderer.handle_embedded_ime_commit(text.as_str()) || {
-                    #[cfg(any(feature = "text-field", feature = "secure-field"))]
-                    {
-                        runtime.renderer.handle_ime_commit(text.as_str())
-                    }
-                    #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
-                    {
-                        false
-                    }
-                };
+                let changed = runtime.renderer.handle_embedded_ime_commit(text.as_str())
+                    || runtime.renderer.handle_ime_commit(text.as_str());
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "ime_commit",
@@ -3508,16 +3474,8 @@ where
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::ImeDisabled => {
-                let changed = runtime.renderer.handle_embedded_ime_disabled() || {
-                    #[cfg(any(feature = "text-field", feature = "secure-field"))]
-                    {
-                        runtime.renderer.handle_ime_disabled()
-                    }
-                    #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
-                    {
-                        false
-                    }
-                };
+                let changed = runtime.renderer.handle_embedded_ime_disabled()
+                    || runtime.renderer.handle_ime_disabled();
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "ime_disabled",
@@ -3758,7 +3716,6 @@ pub(super) fn advance_runtime<P: PlatformWindow, E: crate::text::TextEngine>(
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     if runtime.renderer.advance_text_caret_animation(now) {
         tracing::debug!("wake cause: text caret animation");
         runtime.renderer.request_redraw();

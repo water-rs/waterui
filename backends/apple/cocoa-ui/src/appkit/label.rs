@@ -296,9 +296,27 @@ impl Label {
 
     /// Replaces the text the label draws, and reports that its size changed.
     pub fn set_attributed_text(&self, text: &NSAttributedString) {
+        if self.currentEditor().is_some() {
+            let _ = self.abortEditing();
+        }
         self.ivars().source_text.replace(Some(text.into()));
         self.setAttributedStringValue(text);
         self.invalidate_layout();
+    }
+
+    /// Sets whether the user can select and copy the label's text without editing it.
+    pub fn set_selectable(&self, selectable: bool) {
+        if !selectable && self.currentEditor().is_some() {
+            let _ = self.abortEditing();
+        }
+        self.setSelectable(selectable);
+        self.setEditable(false);
+    }
+
+    /// Whether the label currently allows read-only text selection.
+    #[must_use]
+    pub fn is_selectable(&self) -> bool {
+        self.isSelectable()
     }
 
     /// The attributed string measurement runs against: the caller's own

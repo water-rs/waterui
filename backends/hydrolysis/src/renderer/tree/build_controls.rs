@@ -224,7 +224,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         // pass paints it with the theme and builds it before first measure.
         state.init_label();
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(renderer, state, StretchAxis::None, env)
+        // Interactive button labels must never hijack pointer clicks for text
+        // selection even when placed inside an enclosing `.text_selectable(true)`.
+        let button_env = env.extending(waterui_text::TextSelectable::new(false));
+        Self::build_widget(renderer, state, StretchAxis::None, &button_env)
     }
 
     /// Build a persistent link node: retains the label and reactive destination
@@ -239,7 +242,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let mut state = LinkRenderState::from_config(config);
         state.init_label();
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(renderer, state, StretchAxis::None, env)
+        // Interactive link labels must never hijack pointer clicks for text
+        // selection even when placed inside an enclosing `.text_selectable(true)`.
+        let link_env = env.extending(waterui_text::TextSelectable::new(false));
+        Self::build_widget(renderer, state, StretchAxis::None, &link_env)
     }
 
     /// Build a persistent toggle node: its main label is pre-built into a

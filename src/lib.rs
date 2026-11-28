@@ -108,7 +108,7 @@ pub mod prelude {
 
     pub use super::theme::{self, ColorScheme, ColorSettings, FontSettings, Theme, Tint};
 
-    pub use super::text::{TextConfig, font, highlight, styled};
+    pub use super::text::{TextConfig, TextSelectable, font, highlight, styled};
 
     #[cfg(feature = "link")]
     pub use super::component::link::{Link, link};

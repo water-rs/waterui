@@ -13,6 +13,7 @@ use suiteki::Str;
 use waterui_color::Color;
 use waterui_core::configurable;
 use waterui_core::layout::HorizontalAlignment;
+use waterui_core::plugin::Plugin;
 use waterui_core::{Environment, View, contract_violation, flatten_signal};
 use waterui_locale::{Locale, TranslationCatalog, locale_binding};
 
@@ -20,6 +21,46 @@ use crate::font::FontWeight;
 use crate::{font::Font, styled::StyledStr};
 
 type ConfigResolver = dyn Fn(&Environment) -> Computed<TextConfig>;
+
+/// Environment plugin controlling whether static [`Text`] in a subtree is
+/// selectable for copying.
+///
+/// Installed on a subtree via `ViewExt::text_selectable`. An explicit
+/// [`Text::selectable`] call on a leaf overrides any enclosing scope, and a
+/// nested `TextSelectable` replaces the outer scope for its descendants. When
+/// neither a scope nor a leaf modifier is present, static text defaults to
+/// non-selectable (`false`).
+#[derive(Debug, Clone)]
+pub struct TextSelectable(Computed<bool>);
+
+impl TextSelectable {
+    /// Creates a text-selectability scope from a reactive boolean signal.
+    #[must_use]
+    pub fn new(selectable: impl IntoComputed<bool>) -> Self {
+        Self(selectable.into_computed())
+    }
+
+    /// The reactive selectability signal carried by this scope.
+    #[must_use]
+    pub const fn signal(&self) -> &Computed<bool> {
+        &self.0
+    }
+
+    /// Resolves the effective selectability signal in `env`.
+    ///
+    /// An explicit `local` signal wins over any enclosing [`TextSelectable`]
+    /// scope; when neither is set, resolves to `false`.
+    #[must_use]
+    pub fn resolve(env: &Environment, local: Option<&Computed<bool>>) -> Computed<bool> {
+        if let Some(local) = local {
+            return local.clone();
+        }
+        env.get::<Self>()
+            .map_or_else(|| Computed::constant(false), |scope| scope.0.clone())
+    }
+}
+
+impl Plugin for TextSelectable {}
 
 /// Formats signal values for [`Text::format`].
 pub trait Formatter<T>: Clone {
@@ -51,6 +92,12 @@ pub struct TextConfig {
     /// so [`Text::default_line_limit`] never overrides an explicit `None` or
     /// reactive limit signal.
     has_explicit_line_limit: bool,
+    /// Whether the user can select and copy this text without editing it.
+    selectable: Computed<bool>,
+    /// Whether [`Self::selectable`] was already explicitly resolved (by
+    /// [`Text::selectable`] or an inner [`Text::resolve`]), so an outer
+    /// [`TextSelectable`] scope does not overwrite it.
+    has_explicit_selectable: bool,
 }
 
 impl TextConfig {
@@ -86,6 +133,12 @@ impl TextConfig {
         &self.line_limit
     }
 
+    /// Whether the user can select and copy this text without editing it.
+    #[must_use]
+    pub const fn selectable(&self) -> &Computed<bool> {
+        &self.selectable
+    }
+
     /// Takes the rich text content out of the value, as [`Self::content`]
     /// returns it.
     #[must_use]
@@ -94,7 +147,7 @@ impl TextConfig {
     }
 
     /// Takes the value apart into its content as [`Self::content`] returns
-    /// it, its paragraph alignment and its line limit.
+    /// it, its paragraph alignment, its line limit and its selectability.
     #[must_use]
     pub fn into_parts(
         self,
@@ -102,19 +155,28 @@ impl TextConfig {
         Computed<StyledStr>,
         Computed<HorizontalAlignment>,
         Computed<Option<NonZeroUsize>>,
+        Computed<bool>,
     ) {
-        (self.content(), self.paragraph_alignment, self.line_limit)
+        (
+            self.content(),
+            self.paragraph_alignment,
+            self.line_limit,
+            self.selectable,
+        )
     }
 }
 
 /// Flattens a config signal into one config whose fields follow it.
 fn flatten_config(config: &Computed<TextConfig>) -> TextConfig {
+    let snapshot = config.snapshot();
     TextConfig {
         content: flatten_signal(config.map(|config| config.content)),
         font: flatten_signal(config.map(|config| config.font)),
         paragraph_alignment: flatten_signal(config.map(|config| config.paragraph_alignment)),
         line_limit: flatten_signal(config.map(|config| config.line_limit)),
-        has_explicit_line_limit: config.snapshot().has_explicit_line_limit,
+        has_explicit_line_limit: snapshot.has_explicit_line_limit,
+        selectable: flatten_signal(config.map(|config| config.selectable)),
+        has_explicit_selectable: snapshot.has_explicit_selectable,
     }
 }
 
@@ -137,6 +199,8 @@ impl TextConfig {
             paragraph_alignment: Computed::constant(HorizontalAlignment::Leading),
             line_limit: Computed::constant(None),
             has_explicit_line_limit: false,
+            selectable: Computed::constant(false),
+            has_explicit_selectable: false,
         }
     }
 }
@@ -156,7 +220,10 @@ enum TextKind {
 /// Semantic text view with integrated localization support.
 #[must_use]
 #[derive(Clone)]
-pub struct Text(TextKind);
+pub struct Text {
+    kind: TextKind,
+    selectable: Option<Computed<bool>>,
+}
 
 impl fmt::Debug for Text {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -195,7 +262,7 @@ impl IntoText for Text {
 
 impl From<TextConfig> for Text {
     fn from(config: TextConfig) -> Self {
-        Self(TextKind::Raw(config))
+        Self::from_raw(config)
     }
 }
 
@@ -306,6 +373,8 @@ where
                     paragraph_alignment: lhs.paragraph_alignment,
                     line_limit: lhs.line_limit,
                     has_explicit_line_limit: lhs.has_explicit_line_limit,
+                    selectable: lhs.selectable,
+                    has_explicit_selectable: lhs.has_explicit_selectable,
                 })
                 .computed()
         })
@@ -328,6 +397,13 @@ impl Default for Text {
 }
 
 impl Text {
+    const fn from_raw(config: TextConfig) -> Self {
+        Self {
+            kind: TextKind::Raw(config),
+            selectable: None,
+        }
+    }
+
     /// Creates semantic text using the default conversion rules.
     pub fn new(content: impl IntoText) -> Self {
         content.into_text()
@@ -335,7 +411,7 @@ impl Text {
 
     /// Creates raw text from a computed styled string.
     pub fn computed(content: impl IntoComputed<StyledStr>) -> Self {
-        Self(TextKind::Raw(TextConfig::new(content)))
+        Self::from_raw(TextConfig::new(content))
     }
 
     /// Creates verbatim text that never consults the translation catalog.
@@ -387,9 +463,12 @@ impl Text {
     fn from_config_signal(
         resolver: impl Fn(&Environment) -> Computed<TextConfig> + 'static,
     ) -> Self {
-        Self(TextKind::Signal {
-            resolver: Rc::new(resolver),
-        })
+        Self {
+            kind: TextKind::Signal {
+                resolver: Rc::new(resolver),
+            },
+            selectable: None,
+        }
     }
 
     fn from_signal<S, T>(source: S) -> Self
@@ -402,26 +481,52 @@ impl Text {
             source
                 .clone()
                 .zip(&locale_binding(&env))
-                .map(move |(value, _locale)| value.into_text().resolve(&env))
+                .map(move |(value, _locale)| {
+                    let mut config = value.into_text().resolve(&env);
+                    // Each inner value already resolved against `env`, so an
+                    // outer scope must not clobber it; only an explicit
+                    // `Text::selectable` on the outer `Text` overrides it.
+                    config.has_explicit_selectable = true;
+                    config
+                })
                 .computed()
         })
     }
 
+    fn apply_selectable(
+        mut config: TextConfig,
+        selectable: Option<&Computed<bool>>,
+        env: &Environment,
+    ) -> TextConfig {
+        if let Some(selectable) = selectable {
+            config.selectable = selectable.clone();
+            config.has_explicit_selectable = true;
+        } else if !config.has_explicit_selectable {
+            config.selectable = TextSelectable::resolve(env, None);
+        }
+        config
+    }
+
     fn resolve_signal(&self, env: &Environment) -> Computed<TextConfig> {
-        match &self.0 {
+        let base = match &self.kind {
             TextKind::Raw(config) => Computed::constant(config.clone()),
             TextKind::Signal { resolver } => resolver(env),
-        }
+        };
+        let selectable = self.selectable.clone();
+        let env = env.clone();
+        base.map(move |config| Self::apply_selectable(config, selectable.as_ref(), &env))
+            .computed()
     }
 
     /// Resolves semantic text into a raw config while preserving reactive
-    /// content and alignment updates.
+    /// content, alignment, line limit and selectability updates.
     #[must_use]
     pub fn resolve(&self, env: &Environment) -> TextConfig {
-        match &self.0 {
+        let config = match &self.kind {
             TextKind::Raw(config) => config.clone(),
             TextKind::Signal { resolver } => flatten_config(&resolver(env)),
-        }
+        };
+        Self::apply_selectable(config, self.selectable.as_ref(), env)
     }
 
     /// Converts text into an FFI-ready raw config without an environment.
@@ -431,8 +536,14 @@ impl Text {
     /// violation, and it is resolved in an empty environment instead.
     #[must_use]
     pub fn into_config_without_env(self) -> TextConfig {
-        match self.0 {
-            TextKind::Raw(config) => config,
+        match self.kind {
+            TextKind::Raw(mut config) => {
+                if let Some(selectable) = self.selectable {
+                    config.selectable = selectable;
+                    config.has_explicit_selectable = true;
+                }
+                config
+            }
             TextKind::Signal { .. } => {
                 contract_violation!(
                     "Environment-dependent Text cannot cross FFI directly; resolve it in the component body with Text::resolve(env) before converting to native config; it is resolved in an empty environment"
@@ -464,7 +575,7 @@ impl Text {
     /// empty environment instead.
     #[must_use]
     pub fn content(&self) -> Computed<StyledStr> {
-        match &self.0 {
+        match &self.kind {
             TextKind::Raw(config) => config.content(),
             TextKind::Signal { .. } => {
                 contract_violation!(
@@ -482,7 +593,7 @@ impl Text {
     /// resolved in an empty environment instead.
     #[must_use]
     pub fn paragraph_alignment(&self) -> Computed<HorizontalAlignment> {
-        match &self.0 {
+        match &self.kind {
             TextKind::Raw(config) => config.paragraph_alignment.clone(),
             TextKind::Signal { .. } => {
                 contract_violation!(
@@ -494,12 +605,14 @@ impl Text {
     }
 
     fn map_config(self, f: impl Fn(TextConfig) -> TextConfig + Clone + 'static) -> Self {
-        match self.0 {
-            TextKind::Raw(config) => Self(TextKind::Raw(f(config))),
-            TextKind::Signal { resolver } => {
-                Self::from_config_signal(move |env| resolver(env).map(f.clone()).computed())
-            }
-        }
+        let selectable = self.selectable;
+        let kind = match self.kind {
+            TextKind::Raw(config) => TextKind::Raw(f(config)),
+            TextKind::Signal { resolver } => TextKind::Signal {
+                resolver: Rc::new(move |env| resolver(env).map(f.clone()).computed()),
+            },
+        };
+        Self { kind, selectable }
     }
 
     /// Rewrites the text's font, which every chunk inherits from.
@@ -673,6 +786,15 @@ impl Text {
             config
         })
     }
+
+    /// Controls whether the user can select and copy this text without editing it.
+    ///
+    /// An explicit leaf call overrides any enclosing [`TextSelectable`] scope.
+    /// Defaults to `false` when neither a scope nor a leaf override is present.
+    pub fn selectable(mut self, selectable: impl IntoSignal<bool> + 'static) -> Self {
+        self.selectable = Some(selectable.into_signal().computed());
+        self
+    }
 }
 
 macro_rules! impl_text_font {
@@ -704,10 +826,15 @@ pub fn text(text: impl IntoText) -> Text {
 
 impl View for Text {
     fn body(self, env: &Environment) -> impl View {
-        match self.0 {
-            TextKind::Raw(config) => RawText(config),
-            TextKind::Signal { resolver } => RawText(flatten_config(&resolver(env))),
-        }
+        let config = match self.kind {
+            TextKind::Raw(config) => config,
+            TextKind::Signal { resolver } => flatten_config(&resolver(env)),
+        };
+        RawText(Self::apply_selectable(
+            config,
+            self.selectable.as_ref(),
+            env,
+        ))
     }
 }
 
@@ -1006,6 +1133,100 @@ mod tests {
             defaulted.resolve(&env).line_limit().snapshot(),
             Some(NonZeroUsize::MIN)
         );
+    }
+
+    #[test]
+    fn selectable_defaults_to_false_and_inherits_scope_with_leaf_override() {
+        let env = test_env();
+        assert!(
+            !Text::verbatim("id-001")
+                .resolve(&env)
+                .selectable()
+                .snapshot()
+        );
+        assert!(
+            !Text::localized("greeting")
+                .resolve(&env)
+                .selectable()
+                .snapshot()
+        );
+
+        // Subtree scope makes both verbatim and localized text selectable.
+        let mut scoped_env = env.clone();
+        TextSelectable::new(true).install(&mut scoped_env);
+        assert!(
+            Text::verbatim("id-001")
+                .resolve(&scoped_env)
+                .selectable()
+                .snapshot()
+        );
+        assert!(
+            Text::localized("greeting")
+                .resolve(&scoped_env)
+                .selectable()
+                .snapshot()
+        );
+
+        // Explicit leaf `.selectable(false)` overrides an enclosing `true` scope.
+        assert!(
+            !Text::verbatim("id-001")
+                .selectable(false)
+                .resolve(&scoped_env)
+                .selectable()
+                .snapshot()
+        );
+        assert!(
+            !Text::localized("greeting")
+                .selectable(false)
+                .resolve(&scoped_env)
+                .selectable()
+                .snapshot()
+        );
+
+        // Explicit leaf `.selectable(true)` works without any scope.
+        assert!(
+            Text::verbatim("id-001")
+                .selectable(true)
+                .resolve(&env)
+                .selectable()
+                .snapshot()
+        );
+
+        // Reactive scope signal updates resolved config in place.
+        let scope_flag = Binding::new(false);
+        let mut reactive_env = env.clone();
+        TextSelectable::new(scope_flag.clone()).install(&mut reactive_env);
+        let inherited = Text::verbatim("err").resolve(&reactive_env);
+        let overridden = Text::verbatim("err")
+            .selectable(false)
+            .resolve(&reactive_env);
+        assert!(!inherited.selectable().snapshot());
+        assert!(!overridden.selectable().snapshot());
+        scope_flag.set(true);
+        assert!(inherited.selectable().snapshot());
+        assert!(!overridden.selectable().snapshot());
+
+        // Reactive leaf signal overrides scope dynamically.
+        let leaf_flag = Binding::new(false);
+        let leaf_config = Text::verbatim("err")
+            .selectable(leaf_flag.clone())
+            .resolve(&scoped_env);
+        assert!(!leaf_config.selectable().snapshot());
+        leaf_flag.set(true);
+        assert!(leaf_config.selectable().snapshot());
+    }
+
+    #[test]
+    fn signal_text_preserves_inner_leaf_selectable_override_inside_scope() {
+        let mut scoped_env = test_env();
+        TextSelectable::new(true).install(&mut scoped_env);
+
+        let inner = Binding::new(Text::verbatim("locked").selectable(false));
+        let config = Text::new(inner.clone()).resolve(&scoped_env);
+        assert!(!config.selectable().snapshot());
+
+        inner.set(Text::verbatim("inherited"));
+        assert!(config.selectable().snapshot());
     }
 
     fn test_env() -> Environment {

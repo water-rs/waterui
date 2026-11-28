@@ -17,12 +17,15 @@ use objc2::rc::{Retained, Weak};
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_core_foundation::{CGPoint, CGRect};
-use objc2_foundation::{NSArray, NSAttributedString, NSObjectProtocol, NSString, NSUnionRect};
+use objc2_foundation::{
+    NSArray, NSAttributedString, NSObjectProtocol, NSRange, NSString, NSUnionRect,
+};
 use objc2_ui_kit::{
     NSLineBreakMode, NSObjectUIAccessibility, NSTextAlignment,
     UIAccessibilityConvertFrameToScreenCoordinates, UIAccessibilityElement,
     UIAccessibilityLayoutChangedNotification, UIAccessibilityPostNotification,
-    UIAccessibilityTraitLink, UIAccessibilityTraits, UILabel, UITraitEnvironment,
+    UIAccessibilityTraitLink, UIAccessibilityTraits, UIColor, UIEdgeInsets, UILabel,
+    UIScrollViewContentInsetAdjustmentBehavior, UITextView, UITraitEnvironment,
 };
 
 use crate::callback::guarded;
@@ -51,6 +54,13 @@ pub struct LabelIvars {
     /// tap spans — the full-text element, then one `Link` per span — or
     /// `None`, when the label is an ordinary accessibility element.
     link_elements: RefCell<Option<Retained<NSArray<AnyObject>>>>,
+    /// Whether read-only text selection is currently enabled.
+    selectable: Cell<bool>,
+    /// Whether tap-span interaction requested `userInteractionEnabled`.
+    tap_interaction_enabled: Cell<bool>,
+    /// Read-only selectable `UITextView` mounted over the label's text rect
+    /// only while `selectable` is `true`.
+    selectable_view: RefCell<Option<Retained<UITextView>>>,
     /// How the label was placed as a leaf, and its response rectangle.
     geometry: ResponseGeometry,
 }
@@ -64,6 +74,12 @@ impl fmt::Debug for LabelIvars {
             .field("reported_width", &self.reported_width.get())
             .field("text_handler", &self.text_handler.borrow().is_some())
             .field("link_elements", &self.link_elements.borrow().is_some())
+            .field("selectable", &self.selectable.get())
+            .field(
+                "tap_interaction_enabled",
+                &self.tap_interaction_enabled.get(),
+            )
+            .field("selectable_view", &self.selectable_view.borrow().is_some())
             .field("geometry", &self.geometry)
             .finish()
     }
@@ -84,14 +100,15 @@ define_class!(
     unsafe impl NSObjectProtocol for Label {}
 
     impl Label {
-        // While the text has tap spans the label is a container — its
-        // full text is the first child — so the answer overrides whatever
-        // an accessibility modifier set.
+        // While the text has tap spans or an embedded selectable `UITextView`,
+        // the label is a container rather than an opaque leaf element so
+        // assistive technologies reach its children directly.
         // SAFETY: see the module safety note.
         #[unsafe(method(isAccessibilityElement))]
         fn is_accessibility_element(&self) -> bool {
             guarded("Label isAccessibilityElement", || {
-                self.ivars().link_elements.borrow().is_none()
+                !self.ivars().selectable.get()
+                    && self.ivars().link_elements.borrow().is_none()
                     // SAFETY: see the module safety note.
                     && unsafe { msg_send![super(self), isAccessibilityElement] }
             })
@@ -145,6 +162,13 @@ define_class!(
                 if geometry.response_rect(self) != drawn {
                     self.setNeedsDisplay();
                 }
+                let text_view = self.ivars().selectable_view.borrow().clone();
+                if let Some(text_view) = text_view {
+                    let target = geometry
+                        .response_rect(self)
+                        .map_or_else(|| self.bounds(), CGRect::from);
+                    text_view.setFrame(target);
+                }
             });
         }
 
@@ -191,6 +215,9 @@ define_class!(
         #[unsafe(method(drawTextInRect:))]
         fn draw_text_in_rect(&self, rect: CGRect) {
             guarded("Label drawTextInRect:", || {
+                if self.ivars().selectable.get() {
+                    return;
+                }
                 let rect = self
                     .ivars()
                     .geometry
@@ -222,6 +249,9 @@ impl Label {
             reported_width: Cell::new(0.0),
             text_handler: RefCell::new(None),
             link_elements: RefCell::new(None),
+            selectable: Cell::new(false),
+            tap_interaction_enabled: Cell::new(false),
+            selectable_view: RefCell::new(None),
             geometry: ResponseGeometry::default(),
         });
         // SAFETY: `initWithFrame:` is `UILabel`'s designated initializer.
@@ -242,12 +272,109 @@ impl Label {
         // settings win regardless of call order.
         self.apply_line_limit();
         self.setTextAlignment(self.ivars().text_alignment.get());
+        let text_view = self.ivars().selectable_view.borrow().clone();
+        if let Some(text_view) = text_view {
+            self.sync_selectable_view(&text_view);
+        }
         self.invalidate_layout();
         let handler = self.ivars().text_handler.borrow().clone();
         if let Some(handler) = handler {
             let plain = text.string().to_string();
             handler(&plain);
         }
+    }
+
+    /// Enables or disables touch hit-testing for tap spans without clobbering
+    /// selectable-text interaction.
+    pub fn set_tap_interaction_enabled(&self, enabled: bool) {
+        self.ivars().tap_interaction_enabled.set(enabled);
+        self.sync_user_interaction();
+    }
+
+    /// Sets whether the user can select and copy the label's text without editing it.
+    pub fn set_selectable(&self, selectable: bool) {
+        if self.ivars().selectable.get() == selectable {
+            return;
+        }
+        self.ivars().selectable.set(selectable);
+        if selectable {
+            let mtm = MainThreadMarker::from(self);
+            let frame = self
+                .ivars()
+                .geometry
+                .response_rect(self)
+                .map_or_else(|| self.bounds(), CGRect::from);
+            // SAFETY: `initWithFrame:` is `UITextView`'s designated initializer.
+            let text_view: Retained<UITextView> =
+                unsafe { msg_send![UITextView::alloc(mtm), initWithFrame: frame] };
+            text_view.setEditable(false);
+            text_view.setSelectable(true);
+            text_view.setScrollEnabled(false);
+            text_view.setBounces(false);
+            text_view.setShowsHorizontalScrollIndicator(false);
+            text_view.setShowsVerticalScrollIndicator(false);
+            text_view.setContentInsetAdjustmentBehavior(
+                UIScrollViewContentInsetAdjustmentBehavior::Never,
+            );
+            text_view.setBackgroundColor(Some(&UIColor::clearColor()));
+            text_view.setTextContainerInset(UIEdgeInsets {
+                top: 0.0,
+                left: 0.0,
+                bottom: 0.0,
+                right: 0.0,
+            });
+            text_view.textContainer().setLineFragmentPadding(0.0);
+            self.sync_selectable_view(&text_view);
+            self.addSubview(&text_view);
+            self.ivars().selectable_view.replace(Some(text_view));
+            self.setNeedsLayout();
+        } else {
+            let existing = self.ivars().selectable_view.borrow_mut().take();
+            if let Some(text_view) = existing {
+                let _ = text_view.resignFirstResponder();
+                text_view.setSelectedRange(NSRange::new(0, 0));
+                text_view.removeFromSuperview();
+            }
+        }
+        self.sync_user_interaction();
+        self.setNeedsDisplay();
+        // SAFETY: a null argument is the documented "layout changed" post.
+        unsafe {
+            UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, None);
+        }
+    }
+
+    /// Whether the label currently allows read-only text selection.
+    #[must_use]
+    pub fn is_selectable(&self) -> bool {
+        self.ivars().selectable.get()
+    }
+
+    /// Returns the embedded read-only `UITextView` while selectable mode is active.
+    #[must_use]
+    pub fn selectable_text_view(&self) -> Option<Retained<UITextView>> {
+        self.ivars().selectable_view.borrow().clone()
+    }
+
+    fn sync_user_interaction(&self) {
+        self.setUserInteractionEnabled(
+            self.ivars().selectable.get() || self.ivars().tap_interaction_enabled.get(),
+        );
+    }
+
+    fn sync_selectable_view(&self, text_view: &UITextView) {
+        let limit = self.ivars().line_limit.get();
+        let container = text_view.textContainer();
+        container.setMaximumNumberOfLines(limit);
+        container.setLineBreakMode(if limit == 0 {
+            NSLineBreakMode::ByWordWrapping
+        } else {
+            NSLineBreakMode::ByTruncatingTail
+        });
+        if let Some(attributed) = self.source_text() {
+            text_view.setAttributedText(Some(&attributed));
+        }
+        text_view.setTextAlignment(self.ivars().text_alignment.get());
     }
 
     /// Runs `handler` with the new string after each [`Self::set_attributed_text`].
@@ -268,6 +395,10 @@ impl Label {
     pub fn set_line_limit(&self, limit: usize) {
         self.ivars().line_limit.set(limit);
         self.apply_line_limit();
+        let text_view = self.ivars().selectable_view.borrow().clone();
+        if let Some(text_view) = text_view {
+            self.sync_selectable_view(&text_view);
+        }
         self.invalidate_layout();
     }
 
@@ -287,6 +418,10 @@ impl Label {
     pub fn set_text_alignment(&self, alignment: NSTextAlignment) {
         self.ivars().text_alignment.set(alignment);
         self.setTextAlignment(alignment);
+        let text_view = self.ivars().selectable_view.borrow().clone();
+        if let Some(text_view) = text_view {
+            text_view.setTextAlignment(alignment);
+        }
         self.invalidate_layout();
     }
 

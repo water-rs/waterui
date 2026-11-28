@@ -102,7 +102,7 @@ mod platform {
     /// A `UILabel` hit-tests only with interaction enabled — required for
     /// the span recognizer to see touches at all.
     pub(super) fn set_interaction_enabled(label: &Label, enabled: bool) {
-        label.setUserInteractionEnabled(enabled);
+        label.set_tap_interaction_enabled(enabled);
     }
 }
 
@@ -578,6 +578,7 @@ fn label_leaf(
     line_limit: Option<NonZeroUsize>,
     styled: &StyledStr,
     alignment: HorizontalAlignment,
+    selectable: bool,
 ) -> (NativeLeaf, Rc<RefCell<TextState>>, Retained<Label>) {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, cocoa_ui::geometry::Rect::ZERO);
@@ -588,6 +589,7 @@ fn label_leaf(
     #[cfg(not(target_os = "macos"))]
     let label = Label::new(mtm);
     label.set_line_limit(line_limit.map_or(0, NonZero::get));
+    label.set_selectable(selectable);
     let host_view: &PlatformView = &host;
     host.add_subview(as_view(&label));
     host.set_layout_handler({
@@ -672,15 +674,17 @@ fn label_leaf(
 )]
 pub fn realize_text_config(config: TextConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     let content = config.content();
+    let selectable = config.selectable().clone();
     let (mut leaf, state, label) = label_leaf(
         ctx,
         config.line_limit().snapshot(),
         &content.snapshot(),
         config.paragraph_alignment().snapshot(),
+        selectable.snapshot(),
     );
 
-    // Content changes re-resolve every chunk signal; paragraph alignment and
-    // line limit push straight to the label inside the leaf.
+    // Content changes re-resolve every chunk signal; paragraph alignment,
+    // line limit and selectability push straight to the label inside the leaf.
     leaf.watch(&content, move |ctx| {
         let duration = cross_dissolve_duration(ctx.metadata());
         apply_styled(&state, ctx.value());
@@ -692,21 +696,32 @@ pub fn realize_text_config(config: TextConfig, ctx: &RenderContext<'_>) -> Nativ
             apply_alignment(&label, *ctx.value());
         }
     });
-    leaf.watch(config.line_limit(), move |ctx| {
-        label.set_line_limit(ctx.value().map_or(0, NonZero::get));
-        crate::measure_memo::invalidate();
+    leaf.watch(config.line_limit(), {
+        let label = label.clone();
+        move |ctx| {
+            label.set_line_limit(ctx.value().map_or(0, NonZero::get));
+            crate::measure_memo::invalidate();
+        }
+    });
+    leaf.watch(&selectable, move |ctx| {
+        label.set_selectable(*ctx.value());
     });
     leaf
 }
 
 #[cfg(not(feature = "plain"))]
 pub fn realize_str(text: Str, ctx: &RenderContext<'_>) -> NativeLeaf {
-    let (leaf, ..) = label_leaf(
+    let selectable = waterui_text::TextSelectable::resolve(ctx.env(), None);
+    let (mut leaf, _, label) = label_leaf(
         ctx,
         None,
         &StyledStr::from(text),
         HorizontalAlignment::Leading,
+        selectable.snapshot(),
     );
+    leaf.watch(&selectable, move |ctx| {
+        label.set_selectable(*ctx.value());
+    });
     leaf
 }
 

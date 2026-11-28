@@ -13,7 +13,6 @@ use nami::Signal;
 use nami::watcher::Metadata;
 use waterui_controls::theme::color::Foreground;
 use waterui_core::Str;
-use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, VerticalAlignment,
     ViewDimensions,
@@ -187,8 +186,10 @@ impl SubView for PlainSubView {
 /// foreground slot changes.
 pub fn realize_str(text: Str, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
+    let selectable = waterui_text::TextSelectable::resolve(ctx.env(), None);
     let label = Label::new(mtm);
     label.set_line_limit(0);
+    label.set_selectable(selectable.snapshot());
 
     let body = Body.resolve(ctx.env());
     let foreground = Foreground.resolve(ctx.env());
@@ -223,6 +224,9 @@ pub fn realize_str(text: Str, ctx: &RenderContext<'_>) -> NativeLeaf {
             state.borrow_mut().foreground = ctx.into_value();
             render(&state.borrow(), duration);
         }
+    });
+    leaf.watch(&selectable, move |ctx| {
+        label.set_selectable(*ctx.value());
     });
     leaf.keep(state);
     leaf

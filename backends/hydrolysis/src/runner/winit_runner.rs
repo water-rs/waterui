@@ -77,7 +77,7 @@ use crate::platform::macos_appearance::SystemAppearance as MacosSystemAppearance
 use crate::platform::macos_locale::SystemLocale as MacosSystemLocale;
 use crate::platform::{PlatformWindow, WinitPainter, WinitWindow};
 use crate::renderer::HostRedraw;
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
+#[cfg(feature = "menu")]
 use crate::renderer::HydrolysisTextContextMenuMode;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use crate::renderer::HydrolysisWindowOrigin;
@@ -942,7 +942,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
     let _termination_signals = install_termination_handler(&event_proxy);
     #[cfg(windows)]
     install_termination_handler(&event_proxy);
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
+    #[cfg(feature = "menu")]
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     let app_window_opener: Rc<dyn Fn(RootWindow<crate::text::ParleyEngine>)> = Rc::new({
         let pending_window_queue = Rc::clone(&pending_window_queue);

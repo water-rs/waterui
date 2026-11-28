@@ -1006,7 +1006,7 @@ impl HeadlessRuntime {
         #[cfg(any(test, hydrolysis_platform_services))]
         install_platform_services(&mut env);
         install_window_registries::<crate::text::ParleyEngine>(&mut env);
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        #[cfg(feature = "menu")]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // A headless host has no platform appearance: the scheme is Light
         // unless the application installs its own.
@@ -1371,9 +1371,18 @@ impl HeadlessRuntime {
         self.runtime.renderer.focused_text_input_state()
     }
 
+    /// Replaces where text copy/cut operations write clipboard text, so tests
+    /// can assert copied strings deterministically without touching the OS clipboard.
+    #[cfg(test)]
+    pub(crate) fn set_clipboard_write(
+        &mut self,
+        clipboard: crate::renderer::text_editing::ClipboardWrite,
+    ) {
+        self.runtime.renderer.set_clipboard_write(clipboard);
+    }
+
     #[cfg(feature = "accessibility")]
     /// Clears UI focus; returns whether focus changed.
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub fn clear_ui_focus(&mut self) -> bool {
         let changed = self.runtime.renderer.clear_ui_focus();
         if changed {

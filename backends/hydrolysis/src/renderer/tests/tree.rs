@@ -42,6 +42,8 @@ fn text_node<E: crate::text::TextEngine>(content: &'static str) -> RenderNode<E>
         content,
         alignment,
         line_limit,
+        selectable: Computed::constant(false),
+        selection_slot: Rc::new(RefCell::new(crate::renderer::TextSelectionSlot::default())),
         layout_dirty: Rc::new(Cell::new(false)),
         geometry: None,
         tap_span_targets: RefCell::default(),

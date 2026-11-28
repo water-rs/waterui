@@ -83,7 +83,7 @@ pub struct HydrolysisWindowOrigin {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
+#[cfg(feature = "menu")]
 pub enum HydrolysisTextContextMenuMode {
     Overlay,
     NativeWindow,

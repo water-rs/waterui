@@ -847,6 +847,14 @@ pub fn components_block_22() {
     let _ = text("t").text_align(HorizontalAlignment::Center);
     let _ = text("t").background_color(Color::srgb_hex("#3B82F6"));
 
+    // Prose (not counted): `Text::selectable`, `ViewExt::text_selectable`, and `TextSelectable`.
+    let selectable = Binding::new(true);
+    let _ = text("err_42").selectable(true);
+    let _ = text("err_42").selectable(selectable.clone());
+    let _ = vstack((text("err_42"), text("skip").selectable(false))).text_selectable(true);
+    let _ = vstack((text("err_42"),)).text_selectable(selectable);
+    let _ = TextSelectable::new(true);
+
     // Prose (not counted): `StyledStr` strikethrough and tappable span.
     use waterui::text::StyledStr;
     fn open(_page: &'static str) {}

@@ -41,7 +41,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// field that moved into the old position for the focused one. Shared by both
     /// frame paths.
     pub(crate) fn validate_focused_text_input_after_flush(&mut self) {
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         {
             let modal_active = self.modal_shield_active();
             let focus_is_live = !self.text_editing.has_focus()
@@ -91,7 +90,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             self.hit_test.focus_dropped_this_frame = true;
             self.set_keyboard_focus(None, false);
         }
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         {
             let selection_drag_is_live = self
                 .text_editing
@@ -276,7 +274,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// still collecting that frame's work.
     pub fn reset_scene(&mut self) {
         self.gesture_engine.clear_targets();
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         self.text_editing.text_input_targets.clear();
         self.state.measurement.reset_counters();
         #[cfg(feature = "accessibility")]
@@ -350,10 +347,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.validate_focused_text_input_after_flush();
 
         self.core.retire_unbound_animation_slots();
-        self.core.hit_test.finish_rebuild_frame(
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
-            &self.core.text_editing.text_input_targets,
-        );
+        self.core
+            .hit_test
+            .finish_rebuild_frame(&self.core.text_editing.text_input_targets);
         self.relocate_dropped_focus();
         #[cfg(any(feature = "text-field", feature = "secure-field"))]
         self.clear_focused_fields();

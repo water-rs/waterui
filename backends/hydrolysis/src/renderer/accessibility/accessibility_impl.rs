@@ -15,7 +15,6 @@ use crate::theme::InteractionFocusBinding;
 #[cfg(feature = "accessibility")]
 use std::collections::BTreeSet;
 #[cfg(feature = "accessibility")]
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use std::collections::VecDeque;
 #[cfg(feature = "accessibility")]
 #[cfg(feature = "date-picker")]
@@ -338,6 +337,12 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
     SecureField {
         value: nami::Binding<FormSecure>,
     },
+    /// Read-only selectable static text: supports focus and selection updates
+    /// without allowing mutation.
+    SelectableText {
+        text: Str,
+        selection: Rc<RefCell<crate::renderer::TextSelectionSlot>>,
+    },
     #[cfg(any(feature = "picker", feature = "navigation"))]
     PickerSelect {
         selection: nami::Binding<waterui_core::id::Id>,
@@ -436,7 +441,6 @@ pub struct AccessibilityBuilder<E: crate::text::TextEngine> {
     pub(crate) root_bounds: kurbo::Rect,
     pub(crate) root_label: String,
     pub(crate) focus: AccessibilityNodeId,
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) pending_text_input_nodes: VecDeque<AccessibilityNodeId>,
     pub(crate) parent_stack: Vec<AccessibilityNodeId>,
     /// The registering cell of each emitted node — the owner the unit rule
@@ -538,7 +542,6 @@ impl<E: crate::text::TextEngine> Default for AccessibilityBuilder<E> {
             root_bounds: kurbo::Rect::ZERO,
             root_label: String::from("WaterUI Window"),
             focus: ACCESSIBILITY_ROOT_NODE_ID,
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             pending_text_input_nodes: VecDeque::new(),
             parent_stack: Vec::new(),
             node_owners: std::collections::BTreeMap::new(),
@@ -595,7 +598,6 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         self.active_node_keys.clear();
         self.owner_ordinals.clear();
         self.owner_stack.clear();
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         self.pending_text_input_nodes.clear();
         self.parent_stack.clear();
         self.suppression_depth = 0;
@@ -735,14 +737,25 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         }
     }
 
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn push_pending_text_input_node(&mut self, node_id: AccessibilityNodeId) {
         self.pending_text_input_nodes.push_back(node_id);
     }
 
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn take_pending_text_input_node(&mut self) -> Option<AccessibilityNodeId> {
         self.pending_text_input_nodes.pop_front()
+    }
+
+    pub(crate) fn set_node_text_selection(
+        &mut self,
+        node_id: AccessibilityNodeId,
+        selection: accesskit::TextSelection,
+    ) {
+        if let Some(&index) = self.node_index.get(&node_id)
+            && let Some((nid, node)) = self.nodes.get_mut(index)
+            && *nid == node_id
+        {
+            node.set_text_selection(selection);
+        }
     }
 
     pub(crate) const fn push_suppression(&mut self) {
@@ -1754,6 +1767,16 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     action_data,
                 )
             }
+            AccessibilityActionTarget::SelectableText { text, selection } => {
+                handle_accessibility_selectable_text_action(
+                    self,
+                    target_node,
+                    &text,
+                    &selection,
+                    action,
+                    action_data.as_ref(),
+                )
+            }
             #[cfg(any(feature = "picker", feature = "navigation"))]
             AccessibilityActionTarget::PickerSelect { selection, target } => {
                 handle_accessibility_picker_select_action(&selection, target, action)
@@ -2099,7 +2122,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn push_pending_text_input_accessibility_node(
         &mut self,
         node_id: AccessibilityNodeId,
@@ -2108,11 +2130,20 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn take_pending_text_input_accessibility_node(
         &mut self,
     ) -> Option<AccessibilityNodeId> {
         self.accessibility.take_pending_text_input_node()
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn set_accessibility_node_text_selection(
+        &mut self,
+        node_id: AccessibilityNodeId,
+        selection: accesskit::TextSelection,
+    ) {
+        self.accessibility
+            .set_node_text_selection(node_id, selection);
     }
 
     #[cfg(feature = "accessibility")]
@@ -2840,13 +2871,6 @@ fn declined_action(target: &str, action: AccessibilityAction) -> bool {
 
 /// Declines an accessibility action whose payload is not the `expected` data.
 #[cfg(feature = "accessibility")]
-#[cfg(any(
-    feature = "slider",
-    feature = "stepper",
-    feature = "date-picker",
-    feature = "text-field",
-    feature = "secure-field"
-))]
 fn declined_action_data(target: &str, action: AccessibilityAction, expected: &str) -> bool {
     contract_violation!(
         "hydrolysis accessibility {target} {action:?} requires {expected} data; the action is declined"
@@ -3158,6 +3182,45 @@ fn handle_accessibility_secure_field_action<E: crate::text::TextEngine>(
 }
 
 #[cfg(feature = "accessibility")]
+fn handle_accessibility_selectable_text_action<E: crate::text::TextEngine>(
+    renderer: &mut SemanticCore<E>,
+    node_id: AccessibilityNodeId,
+    text: &Str,
+    selection: &Rc<RefCell<crate::renderer::TextSelectionSlot>>,
+    action: AccessibilityAction,
+    data: Option<&AccessibilityActionData>,
+) -> bool {
+    match action {
+        AccessibilityAction::Click | AccessibilityAction::Focus => {
+            renderer.focus_text_input_for_accessibility_node(node_id);
+            true
+        }
+        AccessibilityAction::SetTextSelection => {
+            let Some(AccessibilityActionData::SetTextSelection(range)) = data else {
+                return declined_action_data("selectable text", action, "SetTextSelection");
+            };
+            let plain = text.as_str();
+            let char_to_byte = |char_idx: usize| -> usize {
+                plain
+                    .char_indices()
+                    .nth(char_idx)
+                    .map_or(plain.len(), |(byte_idx, _)| byte_idx)
+            };
+            let anchor = char_to_byte(range.anchor.character_index);
+            let focus = char_to_byte(range.focus.character_index);
+            let mut slot = selection.borrow_mut();
+            slot.anchor = anchor;
+            slot.focus = focus;
+            slot.initialized = true;
+            drop(slot);
+            let _ = renderer.focus_text_input_for_accessibility_node(node_id);
+            true
+        }
+        _ => declined_action("selectable text", action),
+    }
+}
+
+#[cfg(feature = "accessibility")]
 #[cfg(any(feature = "picker", feature = "navigation"))]
 fn handle_accessibility_picker_select_action(
     selection: &nami::Binding<waterui_core::id::Id>,
@@ -3277,6 +3340,10 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
             #[cfg(feature = "secure-field")]
             Self::SecureField { value } => Self::SecureField {
                 value: value.clone(),
+            },
+            Self::SelectableText { text, selection } => Self::SelectableText {
+                text: text.clone(),
+                selection: Rc::clone(selection),
             },
             #[cfg(any(feature = "picker", feature = "navigation"))]
             Self::PickerSelect { selection, target } => Self::PickerSelect {

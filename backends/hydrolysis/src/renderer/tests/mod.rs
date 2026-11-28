@@ -138,6 +138,8 @@ mod teardown_order;
 mod text_field_look;
 mod text_ink;
 mod text_measure_direction;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod text_selectable;
 mod text_wrap_width;
 mod toggle_glass;
 mod toggle_looks;
@@ -4056,7 +4058,8 @@ fn secure_text_context_menu_excludes_copy_and_cut() {
 
     let mut env = test_environment();
     crate::localization::install(&mut env);
-    let nodes = SemanticCore::build_text_context_menu_nodes(&target, &env, true);
+    let nodes =
+        SemanticCore::build_text_context_menu_nodes(&target, &env, true, &system_clipboard_write());
     let labels = nodes
         .iter()
         .filter_map(|node| match node {

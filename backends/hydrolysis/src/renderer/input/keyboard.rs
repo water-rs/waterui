@@ -280,7 +280,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // The retained registries own entries per recording cell — the
         // scan walks every live owner's bucket and keeps the cell it
         // found, so the write-back lands in the same bucket.
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let mut text_hit = None;
         let mut embedded_hit = None;
         let mut count = 0usize;
@@ -289,9 +288,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             let Some(regs) = slot.as_ref() else {
                 continue;
             };
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             for (index, entry) in regs.text_input_targets.iter().enumerate() {
-                if in_scope(&entry.owner) {
+                if entry.payload.model.is_editable() && in_scope(&entry.owner) {
                     count += 1;
                     text_hit = Some((Rc::clone(&cell), index));
                 }
@@ -334,35 +332,31 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             } else if self.is_focused_embedded(&target_key) {
                 self.set_focused_embedded_key(None);
             }
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             return;
         }
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
-        {
-            let (cell, index) =
-                text_hit.expect("hydrolysis focused metadata missing registered text input target");
-            let target_key = {
-                let mut slot = cell.registrations.borrow_mut();
-                let target = &mut slot
-                    .as_mut()
-                    .expect("hydrolysis focused metadata missing text input bucket")
-                    .text_input_targets[index]
-                    .payload;
-                if target.focus_binding.is_some() {
-                    contract_violation!(
-                        "hydrolysis does not allow multiple .focused() modifiers to target the same control; the later binding is not wired"
-                    );
-                    return;
-                }
-                target.focus_binding = Some(value.0.clone());
-                target.interaction_key.clone()
-            };
-
-            if should_focus {
-                self.set_focused_text_input_key(Some(target_key));
-            } else if self.text_editing.is_focused(&target_key) {
-                self.set_focused_text_input_key(None);
+        let (cell, index) =
+            text_hit.expect("hydrolysis focused metadata missing registered text input target");
+        let target_key = {
+            let mut slot = cell.registrations.borrow_mut();
+            let target = &mut slot
+                .as_mut()
+                .expect("hydrolysis focused metadata missing text input bucket")
+                .text_input_targets[index]
+                .payload;
+            if target.focus_binding.is_some() {
+                contract_violation!(
+                    "hydrolysis does not allow multiple .focused() modifiers to target the same control; the later binding is not wired"
+                );
+                return;
             }
+            target.focus_binding = Some(value.0.clone());
+            target.interaction_key.clone()
+        };
+
+        if should_focus {
+            self.set_focused_text_input_key(Some(target_key));
+        } else if self.text_editing.is_focused(&target_key) {
+            self.set_focused_text_input_key(None);
         }
     }
 }

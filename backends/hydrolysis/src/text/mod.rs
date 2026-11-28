@@ -25,7 +25,6 @@ pub use declared::DeclaredFonts;
 #[cfg(test)]
 pub use engine::Affinity;
 pub use engine::FontFamilyResolution;
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub use engine::TextSelection;
 pub use engine::{TailMark, TextEngine, TextLayout, TextPosition};
 pub use input::{ResolvedTextLayoutInput, resolve_text_layout_input};

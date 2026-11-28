@@ -172,6 +172,7 @@ fn configure_cfg_aliases() {
         // list and navigation chrome that name accessibility nodes with them.
         hydrolysis_localization: {
             any(
+                feature = "menu",
                 feature = "text-field",
                 feature = "secure-field",
                 feature = "color-picker",

@@ -1391,6 +1391,10 @@ pub struct TextNode<E: crate::text::TextEngine> {
     pub(crate) alignment: Computed<HorizontalAlignment>,
     /// Maximum laid-out lines, from `TextConfig::line_limit`.
     pub(crate) line_limit: Computed<Option<NonZeroUsize>>,
+    /// Whether the user can select and copy this text without editing it.
+    pub(crate) selectable: Computed<bool>,
+    /// Retained selection range (plain-text byte offsets) while selectable mode is active.
+    pub(crate) selection_slot: Rc<RefCell<crate::renderer::TextSelectionSlot>>,
     /// Set by the `content`/`alignment`/`line_limit` subscriptions when a
     /// measurement input changes. The text's size is a function of what it
     /// says and how many lines it may occupy, so an outer `RetainedSubview`
@@ -2185,13 +2189,15 @@ impl<E: crate::text::TextEngine> TextNode<E> {
         renderer: &mut crate::renderer::SemanticCore<E>,
         ctx: Option<RenderContext>,
         styled: &StyledStr,
+        selectable: bool,
+        selection_slot: &Rc<RefCell<crate::renderer::TextSelectionSlot>>,
         env: &Environment,
     ) -> Option<AccessibilityNodeId> {
         if renderer.is_accessibility_hidden(env) {
             return None;
         }
         let plain = styled.to_semantic().to_string();
-        let default_label = (!plain.is_empty()).then_some(plain);
+        let default_label = (!plain.is_empty()).then_some(plain.clone());
         let label = renderer.resolve_accessibility_label(env, default_label);
         let value = renderer.resolve_accessibility_value(env, None);
         if label.is_none() && value.is_none() {
@@ -2211,8 +2217,45 @@ impl<E: crate::text::TextEngine> TextNode<E> {
         }
         if let Some(value) = value {
             node.set_value(value);
+        } else if selectable && !plain.is_empty() {
+            node.set_value(plain.clone());
         }
-        renderer.register_accessibility_leaf(ctx, node, env, None)
+        let action_target = if selectable {
+            node.set_read_only();
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::SetTextSelection);
+            Some(AccessibilityActionTarget::SelectableText {
+                text: Str::from(plain.clone()),
+                selection: Rc::clone(selection_slot),
+            })
+        } else {
+            None
+        };
+        let node_id = renderer.register_accessibility_leaf(ctx, node, env, action_target)?;
+        if selectable {
+            let slot = selection_slot.borrow();
+            if slot.initialized {
+                let anchor_byte = crate::renderer::clamp_to_char_boundary(&plain, slot.anchor);
+                let focus_byte = crate::renderer::clamp_to_char_boundary(&plain, slot.focus);
+                let anchor = plain[..anchor_byte].chars().count();
+                let focus = plain[..focus_byte].chars().count();
+                renderer.set_accessibility_node_text_selection(
+                    node_id,
+                    accesskit::TextSelection {
+                        anchor: accesskit::TextPosition {
+                            node: node_id,
+                            character_index: anchor,
+                        },
+                        focus: accesskit::TextPosition {
+                            node: node_id,
+                            character_index: focus,
+                        },
+                    },
+                );
+            }
+            renderer.push_pending_text_input_accessibility_node(node_id);
+        }
+        Some(node_id)
     }
 
     /// Emit one `Link` accessibility node per [`TapSpan`] of `styled` —
