@@ -19230,8 +19230,9 @@ mod button_keyboard_shortcut {
 
         #[cfg(target_os = "ios")]
         {
+            use cocoa_ui::objc2::runtime::AnyObject;
             use cocoa_ui::objc2::sel;
-            use cocoa_ui::objc2_ui_kit::{UIKeyModifierFlags, UIResponder};
+            use cocoa_ui::objc2_ui_kit::UIKeyModifierFlags;
 
             let mtm = mtm();
             let commands = native_button
@@ -19239,15 +19240,15 @@ mod button_keyboard_shortcut {
                 .expect("UIButton with keyboard_shortcut must expose keyCommands");
             assert_eq!(commands.len(), 1);
             let cmd = commands.objectAtIndex(0);
+            let sender: &AnyObject = AsRef::<AnyObject>::as_ref(&*cmd);
             assert_eq!(cmd.input().map(|s| s.to_string()), Some(String::from("s")));
             assert_eq!(cmd.modifierFlags(), UIKeyModifierFlags::Command);
             assert!(
                 // SAFETY: `canPerformAction:withSender:` queries the responder chain on the main thread.
                 unsafe {
-                    UIResponder::canPerformAction_withSender(
-                        &native_button,
+                    native_button.canPerformAction_withSender(
                         sel!(cocoaUiButtonMenuCommandFired:),
-                        Some(&cmd),
+                        Some(sender),
                     )
                 },
                 "enabled UIButton must accept its armed key command"
@@ -19262,10 +19263,9 @@ mod button_keyboard_shortcut {
             assert!(
                 // SAFETY: `canPerformAction:withSender:` queries the responder chain on the main thread.
                 !unsafe {
-                    UIResponder::canPerformAction_withSender(
-                        &native_button,
+                    native_button.canPerformAction_withSender(
                         sel!(cocoaUiButtonMenuCommandFired:),
-                        Some(&cmd),
+                        Some(sender),
                     )
                 },
                 "disabled UIButton must refuse its armed key command"

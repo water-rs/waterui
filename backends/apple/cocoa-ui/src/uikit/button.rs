@@ -166,8 +166,7 @@ define_class!(
                     unsafe { msg_send![super(self), keyCommands] };
                 let mut candidates = self
                     .menu()
-                    .map(|menu| super::menu::key_commands(&menu))
-                    .unwrap_or_default();
+                    .map_or_default(|menu| super::menu::key_commands(&menu));
                 if self.isEnabled()
                     && let Some(shortcut) = self.ivars().shortcut_command.borrow().as_ref()
                 {
