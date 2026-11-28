@@ -260,9 +260,9 @@ pub fn navigation_block_04() {
 // ---------------------------------------------------------------------------
 // navigation.md § "## Going back, and destination lifecycle" — rust block 5/16
 // ---------------------------------------------------------------------------
-pub fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
+pub fn send_draft(mail: Mail, dismiss: Dismiss) {
     mail.send_draft();
-    navigator.pop(); // returns the popped route as Option<T>, `None` at the root
+    dismiss.dismiss(); // pops the pushed destination (or closes an enclosing Sheet / AnchoredOverlay)
 }
 
 // ---------------------------------------------------------------------------

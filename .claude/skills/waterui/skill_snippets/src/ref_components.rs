@@ -1650,7 +1650,7 @@ pub fn components_block_39() {
 // Block 40 — `Sheet` modal presentation
 // ---------------------------------------------------------------------------
 pub fn components_block_40() {
-    use waterui::sheet::{Sheet, SheetDetent, SheetDismiss};
+    use waterui::sheet::{Sheet, SheetDetent};
 
     let open = binding(false);
     let _ = button("Filters")
@@ -1662,7 +1662,7 @@ pub fn components_block_40() {
             Sheet::new(&open, || {
                 vstack((
                     text("Filter options"),
-                    button("Done").action(|sheet: SheetDismiss| sheet.dismiss()),
+                    button("Done").action(|dismiss: Dismiss| dismiss.dismiss()),
                 ))
             })
             .detents([SheetDetent::Medium, SheetDetent::Large])
