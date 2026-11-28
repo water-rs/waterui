@@ -108,23 +108,7 @@ pub fn apply(
         "maxWidth" => frame(bridge, view, value, Frame::max_width),
         "minHeight" => frame(bridge, view, value, Frame::min_height),
         "maxHeight" => frame(bridge, view, value, Frame::max_height),
-        "disabled" => {
-            let is_disabled: Computed<bool> = bridge.materialize_computed(value)?;
-            let accessibility_state = is_disabled.map(|disabled| {
-                if disabled {
-                    AccessibilityState::new().disabled(true)
-                } else {
-                    AccessibilityState::new()
-                }
-            });
-            let hittable_value = is_disabled.map(|d| !d);
-            let view = Metadata::new(view, AccessibilityStateSignal::new(accessibility_state));
-            let view = Metadata::new(view, Hittable::new(hittable_value));
-            Ok(AnyView::new(Installed::new(
-                view,
-                DisabledScope(is_disabled),
-            )))
-        }
+        "disabled" => disabled(bridge, view, value),
         "onTapGesture" => {
             let action = JsAction::from_js(value, bridge)?;
             Ok(AnyView::new(Metadata::new(
@@ -172,6 +156,26 @@ pub fn apply(
                 .join(", ")
         ))),
     }
+}
+
+/// Applies the `disabled` modifier: environment scope, accessibility state, and
+/// hit-test suppression matching `ViewExt::disabled`.
+fn disabled(bridge: &Bridge, view: AnyView, value: &JsValue) -> Result<AnyView, JsError> {
+    let is_disabled: Computed<bool> = bridge.materialize_computed(value)?;
+    let accessibility_state = is_disabled.map(|disabled| {
+        if disabled {
+            AccessibilityState::new().disabled(true)
+        } else {
+            AccessibilityState::new()
+        }
+    });
+    let hittable_value = is_disabled.map(|d| !d);
+    let view = Metadata::new(view, AccessibilityStateSignal::new(accessibility_state));
+    let view = Metadata::new(view, Hittable::new(hittable_value));
+    Ok(AnyView::new(Installed::new(
+        view,
+        DisabledScope(is_disabled),
+    )))
 }
 
 /// Clips the view to one of the shapes the catalog declares.
