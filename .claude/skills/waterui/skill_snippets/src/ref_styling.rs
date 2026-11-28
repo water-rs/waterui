@@ -361,7 +361,24 @@ pub fn styling_block_10() {
     use waterui::shape::{CornerRadii, CornerRadius, Ellipse, Path};
 
     let _ = {
-        Circle.fill(Color::srgb_hex("#3B82F6")).size(80.0, 80.0) // draw the shape
+        Circle.fill(Color::srgb_hex("#3B82F6")).size(80.0, 80.0) // solid color fill
+    };
+    let _ = {
+        Circle
+            .fill(Gradient::linear(
+                [Color::srgb_hex("#38BDF8"), Color::srgb_hex("#A855F7")],
+                UnitPoint::TOP_LEADING,
+                UnitPoint::BOTTOM_TRAILING,
+            ))
+            .size(80.0, 80.0)
+    };
+    let _ = {
+        Gradient::linear(
+            [Color::srgb_hex("#38BDF8"), Color::srgb_hex("#A855F7")],
+            UnitPoint::LEADING,
+            UnitPoint::TRAILING,
+        )
+        .mask(text("Title").title())
     };
     let _ = {
         photo.clip(Circle) // clip a view to the shape

@@ -443,6 +443,20 @@ fn ts_toggle_is_a_toggle() {
 }
 
 #[test]
+fn ts_toggle_forwards_mixed_attribute() {
+    let on = Binding::new(false);
+    let mixed = Binding::new(true);
+    assert_same(
+        "Toggle mixed",
+        &stateful(
+            "globalThis.on = waterui.createSignal(false); globalThis.mixed = waterui.createSignal(true);",
+            r#"waterui.jsx("Toggle", { value: globalThis.on, mixed: globalThis.mixed, children: "Select all" })"#,
+        ),
+        toggle("Select all", &on).mixed(mixed),
+    );
+}
+
+#[test]
 fn ts_slider_is_a_slider() {
     let amount = Binding::new(0.25_f64);
     assert_same(

@@ -587,6 +587,46 @@ extracting the `waterui::app::Quit` handle and calling `quit.request()` (it file
 cancellable request, so `on_quit_request` still answers; extraction fails on iOS, Android,
 web and headless hosts).
 
+Lifecycle phases and background persistence: `AppPhase` (`Active`, `Inactive`, `Background`,
+re-exported in `waterui::app` and `waterui::prelude`) tracks the application's foreground state
+across macOS, iOS, desktop `winit`, Android, and web. `App::on_phase_change(handler)` takes
+`(phase: AppPhase, ...extractors...) -> impl Future<Output = ()> + 'static`; multiple calls
+compose, and redundant transitions are deduplicated. On iOS, transitions to
+`AppPhase::Background` hold a `UIApplication` background task assertion around the hook future;
+on Android, `onStop` pumps local tasks within a bounded budget before returning. The live phase
+is also installed in the application `Environment` as `Computed<AppPhase>` (readable via
+`use_env(|State(phase): State<Computed<AppPhase>>| ...)` or `env.get::<Computed<AppPhase>>()`):
+
+```rust
+use waterui::app::{App, AppPhase, Windows};
+use waterui::env::use_env;
+use waterui::prelude::*;
+
+#[waterui::state]
+#[derive(Clone)]
+struct Store;
+
+impl Store {
+    async fn save(&self) {}
+}
+
+fn app(env: Environment) -> App<impl Windows> {
+    let store = Store;
+    App::new(env)
+        .state(&store)
+        .on_phase_change(|phase: AppPhase, store: Store| async move {
+            if phase == AppPhase::Background {
+                store.save().await;
+            }
+        })
+        .window(Window::new("Editor", || {
+            use_env(|State(phase): State<Computed<AppPhase>>| {
+                text(phase.map(|p| format!("{p:?}")).computed())
+            })
+        }))
+}
+```
+
 `waterui::app::application_name()` and `application_identifier()` return a `Str`, empty
 when nothing told the app. The name is the project's `Water.toml` package name, read at
 launch from the environment the `water` CLI sets when it runs the app, so a bundle opened

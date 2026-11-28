@@ -23,9 +23,10 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAnimationContext, NSButton, NSControl, NSControlSize, NSControlStateValueOff,
-    NSControlStateValueOn, NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutGuide,
-    NSLayoutPriorityDefaultHigh, NSLayoutPriorityRequired, NSSwitch, NSView,
+    NSAnimationContext, NSButton, NSControl, NSControlSize, NSControlStateValueMixed,
+    NSControlStateValueOff, NSControlStateValueOn, NSLayoutConstraint,
+    NSLayoutConstraintOrientation, NSLayoutGuide, NSLayoutPriorityDefaultHigh,
+    NSLayoutPriorityRequired, NSSwitch, NSView,
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSArray, NSObjectProtocol, ns_string};
@@ -399,18 +400,50 @@ impl Toggle {
     ///
     /// When not called on the main thread.
     pub fn set_on(&self, on: bool, change: StateChange) {
-        let state = if on {
-            NSControlStateValueOn
-        } else {
-            NSControlStateValueOff
+        self.set_state(on, false, change);
+    }
+
+    /// Writes `(on, mixed)` into the control, under `change`'s animation terms.
+    ///
+    /// On a checkbox, `mixed = true` enables `allowsMixedState` and writes
+    /// `NSControlStateValueMixed` (`-1`); `mixed = false` disables
+    /// `allowsMixedState` and writes `On`/`Off` so user clicks never cycle
+    /// through mixed. Switches have no mixed state and ignore `mixed`.
+    ///
+    /// # Panics
+    ///
+    /// When not called on the main thread.
+    pub fn set_state(&self, on: bool, mixed: bool, change: StateChange) {
+        let (allows_mixed, state) = match &self.control {
+            Control::Switch(_) => (
+                false,
+                if on {
+                    NSControlStateValueOn
+                } else {
+                    NSControlStateValueOff
+                },
+            ),
+            Control::Checkbox(_) => {
+                if mixed {
+                    (true, NSControlStateValueMixed)
+                } else if on {
+                    (false, NSControlStateValueOn)
+                } else {
+                    (false, NSControlStateValueOff)
+                }
+            }
         };
         match &self.control {
             Control::Switch(control) if control.state() == state => return,
-            Control::Checkbox(control) if control.state() == state => return,
+            Control::Checkbox(control)
+                if control.state() == state && control.allowsMixedState() == allows_mixed =>
+            {
+                return;
+            }
             _ => {}
         }
         match change {
-            StateChange::Immediate => set_state(&self.control, state),
+            StateChange::Immediate => apply_state(&self.control, allows_mixed, state),
             StateChange::Implicit {
                 seconds,
                 control_points,
@@ -428,7 +461,7 @@ impl Toggle {
                                 CAMediaTimingFunction::functionWithControlPoints(x1, y1, x2, y2);
                             context.setTimingFunction(Some(&timing));
                         }
-                        set_state(&control, state);
+                        apply_state(&control, allows_mixed, state);
                     });
                 NSAnimationContext::runAnimationGroup(&changes);
             }
@@ -442,6 +475,15 @@ impl Toggle {
         match &self.control {
             Control::Switch(control) => control.state() == NSControlStateValueOn,
             Control::Checkbox(control) => control.state() == NSControlStateValueOn,
+        }
+    }
+
+    /// Whether a checkbox control is currently displaying the mixed state.
+    #[must_use]
+    pub fn is_mixed(&self) -> bool {
+        match &self.control {
+            Control::Switch(_) => false,
+            Control::Checkbox(control) => control.state() == NSControlStateValueMixed,
         }
     }
 
@@ -476,9 +518,17 @@ impl Toggle {
 
 /// Writes `state` — the property change an implicit-animation group picks
 /// up.
-fn set_state(control: &Control, state: objc2_app_kit::NSControlStateValue) {
+fn apply_state(control: &Control, allows_mixed: bool, state: objc2_app_kit::NSControlStateValue) {
     match control {
         Control::Switch(control) => control.setState(state),
-        Control::Checkbox(control) => control.setState(state),
+        Control::Checkbox(control) => {
+            if allows_mixed {
+                control.setAllowsMixedState(true);
+                control.setState(state);
+            } else {
+                control.setState(state);
+                control.setAllowsMixedState(false);
+            }
+        }
     }
 }

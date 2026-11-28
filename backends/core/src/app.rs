@@ -7,7 +7,10 @@ use nami::{Binding, Computed};
 use suiteki::Str;
 use waterui_core::{
     Environment, State,
-    handler::{Handler, HandlerOnce, ViewBuilder, boxed_action, boxed_action_once},
+    handler::{
+        EventHandler, Handler, HandlerOnce, ReportExtraction as _, ViewBuilder, boxed_action,
+        boxed_action_once, boxed_event_handler,
+    },
     layout::{AutomaticLayoutDirection, LayoutDirection},
 };
 use waterui_locale::layout_direction_computed;
@@ -19,6 +22,7 @@ use waterui_controls::{
     menu::{CloseWindowChord, Menu, MenuBarView},
 };
 
+pub use crate::phase::{AppPhase, Phase, PhaseHandle};
 pub use crate::termination::{
     Quit, Termination, TerminationHandle, TerminationHost, TerminationKind,
 };
@@ -126,6 +130,9 @@ pub struct App<W, M = NoMenuBar> {
     states: Environment,
     /// The termination hooks, carried to the runner inside [`AppParts`].
     termination: Termination,
+    /// The live lifecycle phase binding and `on_phase_change` hooks, carried
+    /// to the runner inside [`AppParts`].
+    phase: Phase,
 }
 
 /// What an application does once it has no open window.
@@ -312,6 +319,11 @@ pub struct AppParts<W, M = NoMenuBar> {
     /// with [`Termination::start`] once its local executor exists, then
     /// reports every quit path through the returned handle.
     pub termination: Termination,
+    /// The application's lifecycle phase binding and `on_phase_change` hooks.
+    /// The runner starts it with [`Phase::start`] or [`Phase::start_with`]
+    /// once its composition-root environment is assembled, then reports
+    /// platform lifecycle changes through the returned [`PhaseHandle`].
+    pub phase: Phase,
 }
 
 impl<W, M> AppParts<W, M> {
@@ -325,6 +337,7 @@ impl<W, M> AppParts<W, M> {
             env,
             last_window,
             termination,
+            phase,
         } = self;
         AppParts {
             windows: f(windows),
@@ -332,6 +345,7 @@ impl<W, M> AppParts<W, M> {
             env,
             last_window,
             termination,
+            phase,
         }
     }
 
@@ -344,6 +358,7 @@ impl<W, M> AppParts<W, M> {
             env,
             last_window,
             termination,
+            phase,
         } = self;
         AppParts {
             windows,
@@ -351,6 +366,7 @@ impl<W, M> AppParts<W, M> {
             env,
             last_window,
             termination,
+            phase,
         }
     }
 }
@@ -398,6 +414,10 @@ impl App<(), NoMenuBar> {
         {
             env.insert(AutomaticLayoutDirection(layout_direction_computed(&env)));
         }
+        let phase = Phase::default();
+        let computed_phase = phase.computed();
+        env.insert(computed_phase.clone());
+        env.insert(State(computed_phase));
         Self {
             windows: (),
             last_window: LastWindowPolicy::default(),
@@ -405,6 +425,7 @@ impl App<(), NoMenuBar> {
             env,
             states: Environment::new(),
             termination: Termination::default(),
+            phase,
         }
     }
 }
@@ -434,6 +455,7 @@ impl<W: Windows, M: AppMenuBar> App<W, M> {
             env,
             states,
             termination,
+            phase,
         } = self;
         App {
             windows: (windows, window),
@@ -442,6 +464,7 @@ impl<W: Windows, M: AppMenuBar> App<W, M> {
             env,
             states,
             termination,
+            phase,
         }
     }
 
@@ -477,6 +500,7 @@ impl<W: Windows, M: AppMenuBar> App<W, M> {
             env,
             states,
             termination,
+            phase,
         } = self;
         App {
             windows,
@@ -485,6 +509,7 @@ impl<W: Windows, M: AppMenuBar> App<W, M> {
             env,
             states,
             termination,
+            phase,
         }
     }
 
@@ -492,9 +517,9 @@ impl<W: Windows, M: AppMenuBar> App<W, M> {
     ///
     /// The application-level counterpart of `ViewExt::state`: handlers that
     /// run under the application's environment rather than a view's —
-    /// `App::menu_bar` commands, [`App::on_quit_request`] and
-    /// [`App::on_terminate`] — extract a `#[state]`-marked type or `State<T>`
-    /// the same way view handlers do. Repeated calls on the same type install
+    /// `App::menu_bar` commands, [`App::on_phase_change`],
+    /// [`App::on_quit_request`] and [`App::on_terminate`] — extract a
+    /// `#[state]`-marked type or `State<T>` the same way view handlers do. Repeated calls on the same type install
     /// positional `State<T>` slots in call order, as a `ViewExt::state`
     /// chain does: the first call's value binds the first `State<T>`
     /// parameter. The values join the environment [`App::into_parts`] hands
@@ -604,6 +629,38 @@ impl<W: Windows, M: AppMenuBar> App<W, M> {
         self
     }
 
+    /// Observe changes to the application's lifecycle [`AppPhase`].
+    ///
+    /// `handler` receives the new [`AppPhase`] as its first parameter followed
+    /// by any [`Extractor`](waterui_core::extract::Extractor) arguments
+    /// resolved from the application environment (such as `#[state]` types
+    /// installed with [`App::state`]). Its returned future runs asynchronously
+    /// on the runner's local executor.
+    ///
+    /// Multiple `.on_phase_change(...)` calls compose: every registered hook
+    /// runs on each distinct phase transition. Redundant platform notifications
+    /// that keep the same phase are deduplicated and do not re-fire hooks.
+    ///
+    /// On iOS, transitions to [`AppPhase::Background`] hold a `UIApplication`
+    /// background task assertion around the hook future so async persistence
+    /// completes before suspension. On Android, transitions to
+    /// [`AppPhase::Background`] drive local tasks within a bounded budget
+    /// before `onStop` returns.
+    #[must_use]
+    pub fn on_phase_change<H, Args, Fut>(mut self, handler: H) -> Self
+    where
+        H: EventHandler<AppPhase, Args, Fut>,
+        Fut: Future<Output = ()> + 'static,
+    {
+        let mut action = boxed_event_handler(handler);
+        self.phase.push_hook(Box::new(move |phase, env| {
+            action(phase, env)
+                .report_extraction()
+                .map(|future| Box::pin(future) as Pin<Box<dyn Future<Output = ()>>>)
+        }));
+        self
+    }
+
     /// Consume the app and return its windows, in declaration order.
     #[must_use]
     pub fn into_windows(self) -> W {
@@ -639,6 +696,7 @@ impl<W: Windows, M: AppMenuBar> App<W, M> {
             env,
             last_window: self.last_window,
             termination: self.termination,
+            phase: self.phase,
         }
     }
 }

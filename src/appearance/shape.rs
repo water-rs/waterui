@@ -19,7 +19,7 @@
 //! ```
 
 pub use waterui_shape::{
-    Angle, Capsule, Circle, ClipShape, CornerRadii, CornerRadius, Ellipse, FilledShape, MorphShape,
-    MorphableShape, Path, PathCommand, Rectangle, ResolvedShape, RoundedRectangle, Shape, ShapeExt,
-    ShapeKind,
+    Angle, Capsule, Circle, ClipShape, ColorPaint, CornerRadii, CornerRadius, DirectPaint, Ellipse,
+    FilledShape, GradientPaint, IntoPaint, Mask, MaskView, MorphShape, MorphableShape, Paint, Path,
+    PathCommand, Rectangle, ResolvedShape, RoundedRectangle, Shape, ShapeExt, ShapeKind,
 };

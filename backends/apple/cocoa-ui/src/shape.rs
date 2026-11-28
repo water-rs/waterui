@@ -240,11 +240,166 @@ pub fn layer(view: &PlatformView) -> Option<Retained<CALayer>> {
 /// applies. `None` clears the mask.
 pub fn set_mask(view: &PlatformView, mask: Option<&CALayer>) {
     if let Some(layer) = layer(view) {
-        // SAFETY: `layer` is a live `CALayer` backing a live view; `mask` is
-        // a live layer or nil, both valid for the property.
-        unsafe { layer.setMask(mask) };
+        set_layer_mask(&layer, mask);
     }
 }
+
+/// Makes `mask` the mask of `layer`. `None` clears the mask.
+pub fn set_layer_mask(layer: &CALayer, mask: Option<&CALayer>) {
+    // SAFETY: `layer` is a live `CALayer`; `mask` is a live layer or nil,
+    // both valid for the property.
+    unsafe { layer.setMask(mask) };
+}
+
+/// Sets `mask` as `view`'s `maskView` on `UIKit`.
+#[cfg(target_os = "ios")]
+pub fn set_mask_view(view: &PlatformView, mask: Option<&PlatformView>) {
+    view.setMaskView(mask);
+}
+
+/// A `CALayer` delegate that rasterizes an off-hierarchy `AppKit` `NSView`
+/// subtree into its backing store so it can act as a `CALayer.mask` without
+/// fighting `AppKit`'s layer-backed view superlayer invariants.
+#[cfg(target_os = "macos")]
+mod macos_mask_layer {
+    use core::fmt;
+
+    use objc2::rc::Retained;
+    use objc2::runtime::{NSObject, ProtocolObject};
+    use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+    use objc2_app_kit::{NSAppearanceCustomization as _, NSGraphicsContext};
+    use objc2_core_graphics::CGContext;
+    use objc2_foundation::{NSNull, NSObjectProtocol, NSString};
+    use objc2_quartz_core::{CAAction, CALayer, CALayerDelegate};
+
+    use crate::PlatformView;
+    use crate::callback::guarded;
+    use crate::geometry::Rect;
+
+    struct MaskPainterIvars {
+        mask_host: Retained<PlatformView>,
+    }
+
+    define_class!(
+        // SAFETY: `NSObject` subclass is `MainThreadOnly` and Quartz invokes
+        // its delegate only on the main thread.
+        #[unsafe(super(NSObject))]
+        #[name = "CocoaUiViewMaskPainter"]
+        #[thread_kind = MainThreadOnly]
+        #[ivars = MaskPainterIvars]
+        struct MaskPainter;
+
+        // SAFETY: `NSObjectProtocol` has no additional requirements.
+        unsafe impl NSObjectProtocol for MaskPainter {}
+        // SAFETY: The delegate callback matches `CALayer`'s main-thread contract.
+        unsafe impl CALayerDelegate for MaskPainter {}
+
+        impl MaskPainter {
+            #[unsafe(method_id(actionForLayer:forKey:))]
+            fn action_for_layer_for_key(
+                &self,
+                _layer: &CALayer,
+                _event: &NSString,
+            ) -> Option<Retained<ProtocolObject<dyn CAAction>>> {
+                Some(ProtocolObject::from_retained(NSNull::null()))
+            }
+
+            #[unsafe(method(drawLayer:inContext:))]
+            fn draw_layer_in_context(&self, layer: &CALayer, context: &CGContext) {
+                guarded("CocoaUiViewMaskPainter drawLayer:inContext:", || {
+                    let bounds: Rect = layer.bounds().into();
+                    if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+                        return;
+                    }
+                    let mask_host = &self.ivars().mask_host;
+                    mask_host.layoutSubtreeIfNeeded();
+                    let ns_ctx = NSGraphicsContext::graphicsContextWithCGContext_flipped(
+                        context,
+                        mask_host.isFlipped(),
+                    );
+                    let previous = NSGraphicsContext::currentContext();
+                    NSGraphicsContext::setCurrentContext(Some(&ns_ctx));
+                    mask_host.displayRectIgnoringOpacity_inContext(bounds.into(), &ns_ctx);
+                    NSGraphicsContext::setCurrentContext(previous.as_deref());
+                });
+            }
+        }
+    );
+
+    impl MaskPainter {
+        fn new(mtm: MainThreadMarker, mask_host: Retained<PlatformView>) -> Retained<Self> {
+            let this = Self::alloc(mtm).set_ivars(MaskPainterIvars { mask_host });
+            // SAFETY: `init` is `NSObject`'s designated initializer.
+            unsafe { msg_send![super(this), init] }
+        }
+    }
+
+    impl fmt::Debug for MaskPainter {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("MaskPainter").finish_non_exhaustive()
+        }
+    }
+
+    /// A `CALayer` backed by rasterizing an `AppKit` mask `NSView` hierarchy.
+    #[derive(Debug)]
+    pub struct ViewMaskLayer {
+        layer: Retained<CALayer>,
+        _painter: Retained<MaskPainter>,
+    }
+
+    impl ViewMaskLayer {
+        /// Creates a mask layer that draws `mask_host` on demand.
+        #[must_use]
+        pub fn new(mtm: MainThreadMarker, mask_host: Retained<PlatformView>) -> Self {
+            let flipped = mask_host.isFlipped();
+            let painter = MaskPainter::new(mtm, mask_host);
+            let layer = CALayer::new();
+            layer.setGeometryFlipped(flipped);
+            layer.setDelegate(Some(ProtocolObject::from_ref(&*painter)));
+            layer.setNeedsDisplayOnBoundsChange(true);
+            Self {
+                layer,
+                _painter: painter,
+            }
+        }
+
+        /// The underlying `CALayer` to attach via [`super::set_mask`].
+        #[must_use]
+        pub fn layer(&self) -> Retained<CALayer> {
+            self.layer.clone()
+        }
+
+        /// Updates the mask layer's frame, appearance, backing scale, and redraws it.
+        pub fn sync(
+            &self,
+            host: &PlatformView,
+            mask_host: &PlatformView,
+            bounds: Rect,
+            scale: Option<f64>,
+        ) {
+            mask_host.setAppearance(Some(&host.effectiveAppearance()));
+            mask_host.layoutSubtreeIfNeeded();
+            self.layer.setFrame(bounds.into());
+            if let Some(scale) = scale
+                && scale.is_finite()
+                && scale > 0.0
+                && self.layer.contentsScale().to_bits() != scale.to_bits()
+            {
+                self.layer.setContentsScale(scale);
+            }
+            self.layer.setNeedsDisplay();
+        }
+    }
+
+    impl Drop for ViewMaskLayer {
+        fn drop(&mut self) {
+            self.layer.setDelegate(None);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub use macos_mask_layer::ViewMaskLayer;
 /// A `CAShapeLayer` a view hosts as a sublayer — path, fill colour and
 /// frame written imperatively.
 /// A shape layer owned by its host view's layer tree.

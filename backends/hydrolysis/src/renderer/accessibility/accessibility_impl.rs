@@ -301,11 +301,10 @@ pub struct DelegatedActivation<E: crate::text::TextEngine> {
 pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
     /// Direct semantic activation: `Click` invokes the widget's own activation
     /// handler, no pointer and no coordinates.
-    Activate {
-        action: AccessibilityActivation<E>,
-    },
+    Activate { action: AccessibilityActivation<E> },
     Toggle {
         binding: nami::Binding<bool>,
+        mixed: Option<nami::Computed<bool>>,
     },
     #[cfg(feature = "slider")]
     Slider {
@@ -335,9 +334,7 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
         line_limit: Option<usize>,
     },
     #[cfg(feature = "secure-field")]
-    SecureField {
-        value: nami::Binding<FormSecure>,
-    },
+    SecureField { value: nami::Binding<FormSecure> },
     #[cfg(any(feature = "picker", feature = "navigation"))]
     PickerSelect {
         selection: nami::Binding<waterui_core::id::Id>,
@@ -1981,9 +1978,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 AccessibilityAction::Focus => true,
                 _ => declined_action("activation", action),
             },
-            AccessibilityActionTarget::Toggle { binding } => match action {
+            AccessibilityActionTarget::Toggle { binding, mixed } => match action {
                 AccessibilityAction::Click => {
-                    let next = !binding.snapshot();
+                    let next = if mixed.as_ref().is_some_and(nami::Signal::snapshot) {
+                        true
+                    } else {
+                        !binding.snapshot()
+                    };
                     binding.set(next);
                     true
                 }
@@ -3590,8 +3591,9 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
             Self::Activate { action } => Self::Activate {
                 action: action.clone(),
             },
-            Self::Toggle { binding } => Self::Toggle {
+            Self::Toggle { binding, mixed } => Self::Toggle {
                 binding: binding.clone(),
+                mixed: mixed.clone(),
             },
             #[cfg(feature = "slider")]
             Self::Slider { value, range, step } => Self::Slider {

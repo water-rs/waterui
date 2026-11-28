@@ -18,6 +18,7 @@ mod image;
 pub mod input;
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub mod offscreen;
+pub mod paint;
 mod scene;
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub mod shader_paint;
@@ -67,6 +68,7 @@ pub use input::{
 };
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use offscreen::{OffscreenError, OffscreenImage, OffscreenRenderer, OffscreenSize};
+pub use paint::{ColorPaint, DirectPaint, GradientPaint, IntoPaint, Paint};
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use shader_paint::{SHADER_MAX_PARAMS, ShaderError, ShaderPaintView};
 /// Color types and conversion utilities.

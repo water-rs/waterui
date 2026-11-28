@@ -115,13 +115,14 @@ jobs:
       # generations of only this job's two cache families
       # (cargo-sources-Linux-*, lint-target-Linux-X64-*) on its own ref.
       actions: write
-    # Scoped pull requests keep the 10-minute gate; a workspace-wide one
-    # compiles most of the workspace and gets the integration budget
-    # (#3229). An integration push that misses
-    # the exact `lint-target` key writes the archive every later run restores,
-    # so it sweeps the whole workspace, cold after a stable toolchain roll;
-    # it gets the room to finish instead of timing out unsaved.
-    timeout-minutes: ${{ inputs.full && 90 || ((inputs.workspace-wide || github.ref == 'refs/heads/main') && 30 || 10) }}
+    # Narrow leaf pull requests keep a 15-minute gate; scopes that reach
+    # `hydrolysis` (which also run its checked-feature clippy, rustdoc, bare
+    # check, and skill-snippet passes), workspace-wide scopes, and merge-queue
+    # runs get the 30-minute integration budget (#3229, #5251). An integration
+    # push that misses the exact `lint-target` key writes the archive every
+    # later run restores, so it sweeps the whole workspace, cold after a stable
+    # toolchain roll; it gets the room to finish instead of timing out unsaved.
+    timeout-minutes: ${{ inputs.full && 90 || ((inputs.workspace-wide || contains(inputs.affected, 'hydrolysis') || github.ref == 'refs/heads/main' || github.event_name == 'merge_group') && 30 || 15) }}
     steps:
       - uses: actions/checkout@v4
         with:

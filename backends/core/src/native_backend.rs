@@ -1057,6 +1057,8 @@ native_backend! {
         navigation_transition_destination: waterui_navigation::NavigationTransitionDestination,
     }
     parent_metadata {
+        /// An alpha mask view.
+        mask<S>: waterui_shape::Mask<S>,
         /// An anchored overlay.
         anchored_overlay<S>: waterui_controls::anchored_overlay::AnchoredOverlay<S>,
         /// A window-modal sheet.
@@ -1353,6 +1355,13 @@ mod tests {
                 .map(|tab| tab.content().build())
                 .chain(accessory)
                 .collect()
+        }
+    }
+
+    /// A mask's child is the mask view.
+    impl<C> Parent<C> for waterui_shape::Mask<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.into_mask()]
         }
     }
 

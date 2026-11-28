@@ -1,21 +1,29 @@
 //! The `resolved_shape` leaf: `Native<ResolvedShape>` rendered through a
-//! `CAShapeLayer` — `WuiResolvedShape` + `WuiShapePath`.
+//! `CAShapeLayer` for solid fills or a `CAShapeLayer`-masked `GradientLayer`
+//! for gradient fills.
 //!
 //! The path is rebuilt on every layout from the shape kind's normalized
 //! geometry (radii clamp to half the shorter side, custom commands
-//! denormalized into the bounds); the `Computed<WorkingColor>` fill is
-//! watched imperatively and invalidates any enclosing captured rendering.
+//! denormalized into the bounds); the `Computed<Paint>` fill is watched
+//! imperatively and invalidates any enclosing captured rendering.
 
+use alloc::rc::Rc;
+use core::cell::RefCell;
+
+use cocoa_ui::MainThreadMarker;
+use cocoa_ui::gradient::GradientLayer;
 use cocoa_ui::path::PathBuilder;
-use cocoa_ui::shape::ShapeLayer;
+use cocoa_ui::shape::{ShapeLayer, set_layer_mask};
 use nami::Signal;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_graphics::backend::draw::Paint;
 use waterui_graphics::color::WorkingColor;
 use waterui_shape::{PathCommand, ResolvedShape, ShapeKind};
 
-use crate::contract::NativeLeaf;
+use super::resolved_gradient::{layer_paint, update_contents_scale};
+use crate::contract::{NativeLeaf, RenderContext};
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -27,7 +35,6 @@ mod platform {
     pub(super) use cocoa_ui::uikit::HostView;
 }
 
-use crate::contract::RenderContext;
 use platform::HostView;
 
 /// A `WorkingColor` as a `CGColor` in extended linear Display-P3 — channels carried
@@ -56,16 +63,30 @@ pub fn resolve_corner(radius: waterui_shape::CornerRadius, shorter: f64) -> f64 
 
 /// The shape's `CGPath` for `bounds` — `WuiShapePath.path(in:)` mirrored
 /// kind by kind; `None` for an empty bounds, as the Swift `guard` did.
-fn shape_path(shape: &ResolvedShape, bounds: cocoa_ui::Rect) -> Option<PathBuilder> {
+pub fn shape_path(
+    kind: ShapeKind,
+    commands: &[PathCommand],
+    bounds: cocoa_ui::Rect,
+) -> Option<PathBuilder> {
     if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
         return None;
     }
     let (w, h) = (bounds.size.width, bounds.size.height);
     let shorter = w.min(h);
     let mut builder = PathBuilder::new();
-    match shape.kind() {
+    match kind {
         ShapeKind::Rect => builder.rect(bounds),
-        ShapeKind::Circle | ShapeKind::Ellipse => builder.ellipse_in_rect(bounds),
+        ShapeKind::Circle => {
+            let diameter = shorter;
+            let square = cocoa_ui::Rect::new(
+                bounds.origin.x + (w - diameter) / 2.0,
+                bounds.origin.y + (h - diameter) / 2.0,
+                diameter,
+                diameter,
+            );
+            builder.ellipse_in_rect(square);
+        }
+        ShapeKind::Ellipse => builder.ellipse_in_rect(bounds),
         ShapeKind::RoundedRect { radii } => {
             if let Some(uniform) = radii.as_uniform() {
                 builder.rounded_rect(bounds, resolve_corner(uniform, shorter));
@@ -83,7 +104,7 @@ fn shape_path(shape: &ResolvedShape, bounds: cocoa_ui::Rect) -> Option<PathBuild
         }
         ShapeKind::Capsule => builder.rounded_rect(bounds, shorter / 2.0),
         ShapeKind::CustomPath => {
-            for command in shape.commands() {
+            for command in commands {
                 apply_command(&mut builder, command, w, h, bounds);
             }
         }
@@ -176,20 +197,94 @@ impl SubView for ShapeSubView {
     }
 }
 
-/// Rebuilds the layer's frame and path for the current bounds —
-/// `WuiResolvedShape.layout()`.
-fn rebuild(view: &HostView, layer: &ShapeLayer, shape: &ResolvedShape) {
-    let bounds = cocoa_ui::view::bounds(view);
-    layer.set_frame(bounds);
-    layer.set_path(
-        shape_path(shape, bounds)
-            .as_ref()
-            .map(cocoa_ui::path::PathBuilder::build)
-            .as_deref(),
-    );
+enum FillPresentation {
+    Solid(ShapeLayer),
+    Gradient {
+        gradient: GradientLayer,
+        mask: ShapeLayer,
+    },
 }
 
-/// The `resolved_shape` realization: the fill color is a `Computed`
+impl FillPresentation {
+    fn new(mtm: MainThreadMarker, view: &HostView, shape: &ResolvedShape, paint: &Paint) -> Self {
+        let host_layer = cocoa_ui::view::layer(view).expect("host view is layer-backed");
+        let presentation = match paint {
+            Paint::Solid(color) => {
+                let layer = ShapeLayer::new();
+                layer.set_fill_color(Some(&cg_color(color)));
+                host_layer.addSublayer(&layer.layer());
+                Self::Solid(layer)
+            }
+            gradient_paint => {
+                let gradient = GradientLayer::new(mtm, layer_paint(gradient_paint));
+                let mask = ShapeLayer::new();
+                mask.set_fill_color(Some(&cg_color(&WorkingColor::WHITE)));
+                set_layer_mask(&gradient.layer(), Some(&mask.layer()));
+                host_layer.addSublayer(&gradient.layer());
+                Self::Gradient { gradient, mask }
+            }
+        };
+        presentation.rebuild(view, shape);
+        presentation
+    }
+
+    fn remove_from_superlayer(&self) {
+        match self {
+            Self::Solid(layer) => layer.layer().removeFromSuperlayer(),
+            Self::Gradient { gradient, .. } => gradient.layer().removeFromSuperlayer(),
+        }
+    }
+
+    fn rebuild(&self, view: &HostView, shape: &ResolvedShape) {
+        let bounds = cocoa_ui::view::bounds(view);
+        let built = shape_path(shape.kind(), shape.commands(), bounds)
+            .as_ref()
+            .map(PathBuilder::build);
+        match self {
+            Self::Solid(layer) => {
+                layer.set_frame(bounds);
+                layer.set_path(built.as_deref());
+            }
+            Self::Gradient { gradient, mask } => {
+                gradient.set_frame(bounds);
+                update_contents_scale(view, gradient);
+                mask.set_frame(bounds);
+                mask.set_path(built.as_deref());
+            }
+        }
+    }
+
+    fn update_scale(&self, view: &HostView) {
+        if let Self::Gradient { gradient, .. } = self {
+            update_contents_scale(view, gradient);
+        }
+    }
+
+    fn update_paint(
+        &mut self,
+        mtm: MainThreadMarker,
+        view: &HostView,
+        shape: &ResolvedShape,
+        paint: &Paint,
+    ) {
+        match (self, paint) {
+            (Self::Solid(layer), Paint::Solid(color)) => {
+                layer.set_fill_color(Some(&cg_color(color)));
+            }
+            (Self::Gradient { gradient, .. }, gradient_paint)
+                if !matches!(gradient_paint, Paint::Solid(_)) =>
+            {
+                gradient.set_paint(layer_paint(gradient_paint));
+            }
+            (slot, next_paint) => {
+                slot.remove_from_superlayer();
+                *slot = Self::new(mtm, view, shape, next_paint);
+            }
+        }
+    }
+}
+
+/// The `resolved_shape` realization: the fill paint is a `Computed<Paint>`
 /// watched imperatively; every change both repaints and invalidates any
 /// enclosing captured rendering.
 #[expect(
@@ -201,25 +296,35 @@ pub fn realize_resolved_shape(shape: ResolvedShape, ctx: &RenderContext<'_>) -> 
     let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);
     #[cfg(target_os = "macos")]
     cocoa_ui::view::ensure_layer_backed(&view);
-    let layer = alloc::rc::Rc::new(ShapeLayer::new());
-    cocoa_ui::view::layer(&view)
-        .expect("host view is layer-backed")
-        .addSublayer(&layer.layer());
 
-    rebuild(&view, &layer, &shape);
+    let initial = shape.fill().snapshot();
+    let presentation = Rc::new(RefCell::new(FillPresentation::new(
+        mtm, &view, &shape, &initial,
+    )));
+
     {
-        let layer = layer.clone();
+        let presentation = Rc::clone(&presentation);
         let shape = shape.clone();
-        view.set_layout_handler(move |view| rebuild(view, &layer, &shape));
+        view.set_layout_handler(move |view| presentation.borrow().rebuild(view, &shape));
+    }
+    {
+        let presentation = Rc::clone(&presentation);
+        view.set_window_handler(move |view| presentation.borrow().update_scale(view));
+    }
+    {
+        let presentation = Rc::clone(&presentation);
+        view.set_backing_changed_handler(move |view| presentation.borrow().update_scale(view));
     }
 
     let mut leaf = NativeLeaf::new(&*view, ShapeSubView);
-    layer.set_fill_color(Some(&cg_color(&shape.fill().snapshot())));
     leaf.bind(shape.fill(), {
-        let layer = layer;
+        let presentation = presentation;
         let view = view;
-        move |color| {
-            layer.set_fill_color(Some(&cg_color(&color)));
+        let shape = shape.clone();
+        move |paint| {
+            presentation
+                .borrow_mut()
+                .update_paint(mtm, &view, &shape, &paint);
             crate::invalidation::invalidate_rendered_content(&view);
         }
     });

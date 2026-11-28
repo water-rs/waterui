@@ -69,6 +69,7 @@ pub mod list;
 pub mod list_row;
 #[cfg(feature = "map")]
 pub mod map;
+pub mod mask;
 pub mod material_background;
 #[cfg(feature = "menu")]
 pub mod menu;
