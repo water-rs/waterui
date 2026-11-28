@@ -73,11 +73,11 @@ pub mod prelude {
     pub use super::webview;
     pub use super::window::{Window, WindowState};
     pub use super::{
-        Angle, AnimationExt, AnyView, Binding, Color, Computed, Identifiable, OneOf2, OneOf3,
-        OneOf4, OneOf5, OneOf6, OneOf7, OneOf8, Project, Signal, SignalExt, State, Str, View,
-        ViewExt, accessibility, animation, app, binding, color, component, cursor, drag_drop, env,
-        error, filter, gesture, gradient, id, layout, locale, metadata, reactive, regional, shape,
-        sheet, signal, style, task, text, widget, window,
+        Angle, AnimationExt, AnyView, Binding, Color, Computed, Dismiss, Identifiable, OneOf2,
+        OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8, Project, Signal, SignalExt, State, Str,
+        View, ViewExt, accessibility, animation, app, binding, color, component, cursor, drag_drop,
+        env, error, filter, gesture, gradient, id, layout, locale, metadata, reactive, regional,
+        shape, sheet, signal, style, task, text, widget, window,
     };
 
     #[cfg(feature = "flow-markdown")]
@@ -86,7 +86,7 @@ pub mod prelude {
     pub use super::color::*;
     #[cfg(feature = "dialog")]
     pub use super::dialog::{Dialog, DialogAction};
-    pub use super::sheet::{Sheet, SheetDetent, SheetDismiss};
+    pub use super::sheet::{Sheet, SheetDetent};
     #[cfg(feature = "snackbar")]
     pub use super::snackbar::{
         Snackbar, SnackbarDismissReason, SnackbarHost, SnackbarManager, SnackbarPosition,
@@ -314,8 +314,8 @@ pub use waterui_capture::{
 };
 #[doc(inline)]
 pub use waterui_core::{
-    Angle, AnyView, Error, OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8, Str, animation,
-    contract_violation,
+    Angle, AnyView, Dismiss, Error, OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8, Str,
+    animation, contract_violation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
     extract::{self, Extractor, State},

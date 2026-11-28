@@ -3,7 +3,7 @@
 use crate::slot::SlotBuilder;
 use nami::Binding;
 use waterui_core::{
-    AnyView, Environment, Metadata, View,
+    AnyView, Dismiss, Environment, Metadata, View,
     backend::{Backend, ChildSlot, MapSlots},
     handler::ViewBuilder,
     metadata::MetadataKey,
@@ -160,6 +160,14 @@ impl<S> AnchoredOverlay<S> {
     pub fn placed_edge(mut self, placed_edge: &Binding<AnchorEdge>) -> Self {
         self.placed_edge = placed_edge.clone();
         self
+    }
+
+    /// Returns the [`Dismiss`] environment handle bound to this overlay.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn dismiss_handle(&self) -> Dismiss {
+        let is_presented = self.is_presented.clone();
+        Dismiss::new(move || is_presented.set(false))
     }
 }
 

@@ -15,7 +15,7 @@
 //!
 //! Input and focus containment come from [`sheet_modal_environment`], which
 //! extends the declaring node's environment with [`ModalInteraction`],
-//! [`SheetLayerScope`], and `State(SheetDismiss)`.
+//! [`SheetLayerScope`], and `State(Dismiss)`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -335,7 +335,7 @@ impl<E: TextEngine> View for SheetSurface<E> {
 /// Builds the environment a sheet's modal layer presents in: the declaring
 /// node's environment plus `ModalInteraction` (routing Escape and platform back
 /// to [`Sheet::run_user_dismiss`]), [`SheetLayerScope`], and
-/// `State(SheetDismiss)`.
+/// `State(Dismiss)`.
 pub fn sheet_modal_environment<S: 'static>(env: &Environment, sheet: &Sheet<S>) -> Environment {
     let escape = {
         let sheet = sheet.clone();

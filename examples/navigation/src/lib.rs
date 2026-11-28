@@ -527,8 +527,8 @@ fn compose_page(
                 NavigationToolbarPlacement::Confirmation,
                 button("Send")
                     .style(ButtonStyle::BorderedProminent)
-                    .action(|mail: Mail, navigator: Navigator<MailRoute>| {
-                        send_draft(&mail, &navigator);
+                    .action(|mail: Mail, dismiss: Dismiss| {
+                        send_draft(&mail, &dismiss);
                     })
                     .state(mail)
                     .disabled(is_empty.clone()),
@@ -537,8 +537,8 @@ fn compose_page(
                 NavigationToolbarPlacement::Cancellation,
                 button("Cancel")
                     .style(ButtonStyle::Plain)
-                    .action(|mail: Mail, navigator: Navigator<MailRoute>| {
-                        cancel_draft(&mail, &navigator);
+                    .action(|mail: Mail, dismiss: Dismiss| {
+                        cancel_draft(&mail, &dismiss);
                     })
                     .state(mail),
             )),
@@ -549,7 +549,7 @@ fn compose_page(
     })
 }
 
-fn send_draft(mail: &Mail, navigator: &Navigator<MailRoute>) {
+fn send_draft(mail: &Mail, dismiss: &Dismiss) {
     let messages = mail.messages.snapshot();
     let next_id = messages
         .as_slice()
@@ -570,12 +570,12 @@ fn send_draft(mail: &Mail, navigator: &Navigator<MailRoute>) {
         },
     );
     mail.discard_draft();
-    let _ = navigator.pop();
+    dismiss.dismiss();
 }
 
-fn cancel_draft(mail: &Mail, navigator: &Navigator<MailRoute>) {
+fn cancel_draft(mail: &Mail, dismiss: &Dismiss) {
     mail.discard_draft();
-    let _ = navigator.pop();
+    dismiss.dismiss();
 }
 
 // ---------------------------------------------------------------------------

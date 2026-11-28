@@ -1240,10 +1240,31 @@ pub struct AnchoredOverlayEffect<E: crate::text::TextEngine> {
     /// Written with the logical `AnchorEdge` the overlay was placed against
     /// after any flip, on every placement.
     pub(crate) placed_edge: nami::Binding<waterui_controls::anchored_overlay::AnchorEdge>,
+    /// Dismiss handle installed into the overlay content's environment.
+    pub(crate) dismiss: waterui_core::Dismiss,
+    /// Cached `(base_env.identity(), extended_env)` so per-frame overlay
+    /// registration keeps a stable environment identity.
+    pub(crate) cached_env: RefCell<Option<(usize, Environment)>>,
     /// Identity shared with the registration, so the render pass can match an
     /// open overlay to the anchor that emitted it — and tell that an anchor
     /// that stopped registering left the tree.
     pub(crate) marker: Rc<()>,
+}
+
+impl<E: crate::text::TextEngine> AnchoredOverlayEffect<E> {
+    /// Returns `base` extended with this overlay's `State(Dismiss)`, reusing
+    /// the cached overlay when `base`'s identity is unchanged.
+    pub(crate) fn overlay_env(&self, base: &Environment) -> Environment {
+        let base_id = base.identity();
+        if let Some((cached_id, cached_env)) = &*self.cached_env.borrow()
+            && *cached_id == base_id
+        {
+            return cached_env.clone();
+        }
+        let extended = base.extending(waterui_core::extract::State(self.dismiss.clone()));
+        *self.cached_env.borrow_mut() = Some((base_id, extended.clone()));
+        extended
+    }
 }
 
 /// The node-owned state of a `.sheet(...)` wrapper. The content slot stays
