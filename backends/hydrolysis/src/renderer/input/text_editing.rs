@@ -4,6 +4,7 @@ use super::*;
 use crate::text::{TextLayout as _, TextPosition, TextSelection};
 #[cfg(feature = "menu")]
 use crate::theme::MenuLayout;
+#[cfg(hydrolysis_cherenkov)]
 use cherenkov_record::Draw as _;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use unicode_segmentation::UnicodeSegmentation;
@@ -65,7 +66,9 @@ impl TextInputOptions {
 /// each frame the overlay draws so a token they follow shows in place.
 #[derive(Clone)]
 pub struct CaretPaints {
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     caret: Option<crate::theme::Driven<cherenkov_record::Paint>>,
+    #[cfg(hydrolysis_cherenkov)]
     selection: crate::theme::Driven<cherenkov_record::Paint>,
 }
 
@@ -75,19 +78,25 @@ impl CaretPaints {
     pub fn of(look: &crate::theme::TextFieldLook) -> Self {
         Self {
             caret: Some(look.caret().paint().clone()),
+            #[cfg(hydrolysis_cherenkov)]
             selection: look.selection().clone(),
         }
     }
 
     /// Selection-only paint for read-only selectable text (no blinking caret).
     pub fn selection_only(selection: cherenkov_record::Paint) -> Self {
+        #[cfg(not(hydrolysis_cherenkov))]
+        let _ = selection;
         Self {
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             caret: None,
+            #[cfg(hydrolysis_cherenkov)]
             selection: crate::theme::Driven::from(selection),
         }
     }
 
     /// The paint `paint` gives a focused field over `frame`.
+    #[cfg(any(hydrolysis_cherenkov, feature = "text-field", feature = "secure-field"))]
     fn resolve(
         paint: &crate::theme::Driven<cherenkov_record::Paint>,
         frame: kurbo::Rect,

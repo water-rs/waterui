@@ -17,15 +17,13 @@ use objc2::rc::{Retained, Weak};
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_core_foundation::{CGPoint, CGRect};
-use objc2_foundation::{
-    NSArray, NSAttributedString, NSObjectProtocol, NSRange, NSString, NSUnionRect,
-};
+use objc2_foundation::{NSArray, NSAttributedString, NSObjectProtocol, NSString, NSUnionRect};
 use objc2_ui_kit::{
     NSLineBreakMode, NSObjectUIAccessibility, NSTextAlignment,
     UIAccessibilityConvertFrameToScreenCoordinates, UIAccessibilityElement,
     UIAccessibilityLayoutChangedNotification, UIAccessibilityPostNotification,
     UIAccessibilityTraitLink, UIAccessibilityTraits, UIColor, UIEdgeInsets, UILabel,
-    UIScrollViewContentInsetAdjustmentBehavior, UITextView, UITraitEnvironment,
+    UIScrollViewContentInsetAdjustmentBehavior, UITextInput, UITextView, UITraitEnvironment,
 };
 
 use crate::callback::guarded;
@@ -332,7 +330,7 @@ impl Label {
             let existing = self.ivars().selectable_view.borrow_mut().take();
             if let Some(text_view) = existing {
                 let _ = text_view.resignFirstResponder();
-                text_view.setSelectedRange(NSRange::new(0, 0));
+                text_view.setSelectedTextRange(None);
                 text_view.removeFromSuperview();
             }
         }
