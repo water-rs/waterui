@@ -204,12 +204,17 @@ pub fn render_gradient_node<E: crate::text::TextEngine>(
     render_gradient_parts(ctx, gradient, env);
 }
 
-/// The gradient view's unit-space paint on a `width` × `height` box: points
-/// map through [`Gradient::transform_to`], and a radial gradient's radii scale
-/// by `min(width, height)` so a unit-space radius stays a circle.
-fn gradient_paint_in_bounds(paint: Paint, width: f32, height: f32) -> Paint {
-    let transform = Gradient::transform_to(width, height);
+/// Maps a unit-space [`Paint`] onto `bounds`: solid colours pass through
+/// unchanged, linear/sweep gradients map through `bounds`'s rect transform, and
+/// a radial gradient's radii scale by `min(width, height)` so a unit-space
+/// radius stays a circle.
+fn paint_in_bounds(paint: Paint, bounds: kurbo::Rect) -> Paint {
+    let width = crate::num_cast::f64_as_f32(bounds.width());
+    let height = crate::num_cast::f64_as_f32(bounds.height());
+    let transform =
+        kurbo::Affine::translate((bounds.x0, bounds.y0)) * Gradient::transform_to(width, height);
     match paint {
+        Paint::Solid(color) => Paint::Solid(color),
         Paint::Radial(mut radial) => {
             radial.start_center = transform * radial.start_center;
             radial.end_center = transform * radial.end_center;
@@ -233,9 +238,7 @@ pub fn render_gradient_parts<E: crate::text::TextEngine>(
     // The view's `Paint` is authored in unit space; map it onto the placed
     // box, scaling radial radii by its shorter side, and fill it under the
     // frame's transform.
-    let width = crate::num_cast::f64_as_f32(bounds.width());
-    let height = crate::num_cast::f64_as_f32(bounds.height());
-    let paint = gradient_paint_in_bounds(unit_paint, width, height);
+    let paint = paint_in_bounds(unit_paint, bounds);
     let transform = ctx.local;
     ctx.renderer_mut()
         .scene_mut()
@@ -281,7 +284,8 @@ pub fn render_shape_parts<E: crate::text::TextEngine>(
             resolved.fill().clone(),
         )
     };
-    let fill = cherenkov_record::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
+    let unit_paint = ctx.renderer_mut().read_signal(&fill_signal);
+    let fill = paint_in_bounds(unit_paint, bounds);
     let transform = ctx.local;
     ctx.renderer_mut()
         .scene_mut()
@@ -422,10 +426,9 @@ mod tests {
             0.25,
             0.5,
         );
-        let paint = gradient_paint_in_bounds(
+        let paint = paint_in_bounds(
             gradient.resolve(&Environment::new()).snapshot(),
-            200.0,
-            100.0,
+            kurbo::Rect::new(0.0, 0.0, 200.0, 100.0),
         );
         let Paint::Radial(radial) = paint else {
             panic!("a radial gradient remains a radial paint");

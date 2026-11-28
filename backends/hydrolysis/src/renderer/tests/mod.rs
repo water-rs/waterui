@@ -113,6 +113,8 @@ mod navigation_text_input;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod nested_menu_dispatch;
 mod opacity_binding;
+#[cfg(hydrolysis_cherenkov)]
+mod paint_mask;
 mod painted;
 #[cfg(hydrolysis_gpu_painter)]
 mod perf_full_rebuild;

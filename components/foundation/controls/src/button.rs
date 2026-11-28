@@ -202,6 +202,7 @@ use waterui_text::styled::StyledStr;
 use crate::label::{
     ControlLabel, IntoAccessibilityLabel, IntoLabel, Label, LabelDisplayMode, LabelKind,
 };
+use crate::shortcut::Shortcut;
 
 // ============================================================================
 // Macros for reducing boilerplate
@@ -992,6 +993,7 @@ impl SealedButtonStyle for ButtonStyle {
             role: data.role,
             size: Some(data.size),
             pending: data.pending.map(ButtonPending::Signal),
+            shortcut: data.shortcut,
         })
     }
 }
@@ -1136,6 +1138,7 @@ struct ButtonStyleTargetData {
     role: Option<ButtonRole>,
     size: ControlSize,
     pending: Option<Computed<bool>>,
+    shortcut: Option<Shortcut>,
 }
 
 /// Internal hook target representing a [`Button`] eligible for subtree
@@ -1193,6 +1196,7 @@ pub struct ButtonStylePending<S> {
     role: Option<ButtonRole>,
     size: ControlSize,
     pending: Option<Computed<bool>>,
+    shortcut: Option<Shortcut>,
 }
 
 impl<S> fmt::Debug for ButtonStylePending<S> {
@@ -1202,6 +1206,7 @@ impl<S> fmt::Debug for ButtonStylePending<S> {
             .field("explicit_style", &self.explicit_style)
             .field("role", &self.role)
             .field("size", &self.size)
+            .field("shortcut", &self.shortcut)
             .finish_non_exhaustive()
     }
 }
@@ -1219,6 +1224,7 @@ impl<S: 'static> ButtonStylePending<S> {
             role: self.role,
             size: self.size,
             pending: self.pending,
+            shortcut: self.shortcut,
         }
     }
 }
@@ -1257,6 +1263,8 @@ pub struct ButtonConfig<S> {
     size: ControlSize,
     /// Reactive in-flight flag for an async button action.
     pending: Option<Computed<bool>>,
+    /// Keyboard shortcut armed while the button is mounted and enabled.
+    shortcut: Option<Shortcut>,
 }
 
 impl<S> ButtonConfig<S> {
@@ -1307,6 +1315,12 @@ impl<S> ButtonConfig<S> {
         self.pending.as_ref()
     }
 
+    /// Keyboard shortcut armed while this button is mounted and enabled, if any.
+    #[must_use]
+    pub fn shortcut(&self) -> Option<Shortcut> {
+        self.shortcut.clone()
+    }
+
     /// Whether the button chose its style explicitly.
     #[doc(hidden)]
     #[must_use]
@@ -1335,6 +1349,7 @@ impl<S: 'static> HookableParent<S> for ButtonConfig<S> {
             role: self.role,
             size: self.size,
             pending: self.pending.clone(),
+            shortcut: self.shortcut.clone(),
         }));
         let pending = ButtonStylePending {
             label: self.label,
@@ -1344,6 +1359,7 @@ impl<S: 'static> HookableParent<S> for ButtonConfig<S> {
             role: self.role,
             size: self.size,
             pending: self.pending,
+            shortcut: self.shortcut,
         };
         (target, pending)
     }
@@ -1373,6 +1389,7 @@ impl<S: 'static> MapSlots<S> for ButtonConfig<S> {
             role: self.role,
             size: self.size,
             pending: self.pending,
+            shortcut: self.shortcut,
         }
     }
 
@@ -1423,6 +1440,7 @@ where
         role: button.role,
         size: ControlSize::resolve(button.size, env, ControlSize::Small),
         pending: button.pending.as_ref().map(ButtonPending::signal),
+        shortcut: button.shortcut,
     }
 }
 
@@ -1466,6 +1484,7 @@ impl<S: View> From<ButtonConfig<S>> for Button<ControlLabel<S>, BoxedAction<()>>
             role: value.role,
             size: Some(value.size),
             pending: value.pending.map(ButtonPending::Signal),
+            shortcut: value.shortcut,
         }
     }
 }
@@ -1486,6 +1505,7 @@ where
             role: self.role,
             size: self.size.unwrap_or(ControlSize::Small),
             pending: self.pending.as_ref().map(ButtonPending::signal),
+            shortcut: self.shortcut,
         }
     }
 }
@@ -1512,6 +1532,7 @@ pub struct Button<L, Action, Style = ButtonStyle> {
     role: Option<ButtonRole>,
     size: Option<ControlSize>,
     pending: Option<ButtonPending>,
+    shortcut: Option<Shortcut>,
 }
 
 impl<L, Action, Style> Button<L, Action, Style> {
@@ -1583,6 +1604,7 @@ impl<L: Debug, Action, Style: Debug> Debug for Button<L, Action, Style> {
             .field("style", &self.style)
             .field("role", &self.role)
             .field("size", &self.size)
+            .field("shortcut", &self.shortcut)
             .finish_non_exhaustive()
     }
 }
@@ -1597,6 +1619,7 @@ impl<L: Clone, Action: Clone, Style: Clone> Clone for Button<L, Action, Style> {
             role: self.role,
             size: self.size,
             pending: self.pending.clone(),
+            shortcut: self.shortcut.clone(),
         }
     }
 }
@@ -1646,6 +1669,7 @@ impl<L> Button<L, NoAction, ButtonStyle> {
             role: None,
             size: None,
             pending: None,
+            shortcut: None,
         }
     }
 }
@@ -1684,6 +1708,7 @@ impl<L, Action, Style> Button<L, Action, Style> {
             role: self.role,
             size: self.size,
             pending: self.pending,
+            shortcut: self.shortcut,
         }
     }
 
@@ -1715,6 +1740,14 @@ impl<L, Action, Style> Button<L, Action, Style> {
     #[must_use]
     pub const fn hide_label(self) -> Self {
         self.label_style(LabelDisplayMode::Hidden)
+    }
+
+    /// Assigns a keyboard shortcut that activates this button while it is
+    /// mounted and enabled.
+    #[must_use]
+    pub const fn keyboard_shortcut(mut self, shortcut: Shortcut) -> Self {
+        self.shortcut = Some(shortcut);
+        self
     }
 
     /// Mirrors whether this button's asynchronous action is currently in flight
@@ -1778,6 +1811,7 @@ impl<L, Action, Style> Button<L, Action, Style> {
             role: self.role,
             size: self.size,
             pending: self.pending,
+            shortcut: self.shortcut,
         }
     }
 
@@ -1850,6 +1884,7 @@ impl<L, Action, Style> Button<L, Action, Style> {
             role: self.role,
             size: self.size,
             pending: Some(ButtonPending::Live(pending)),
+            shortcut: self.shortcut,
         }
     }
 }
@@ -1868,6 +1903,7 @@ where
             role,
             size: _,
             pending,
+            shortcut,
         } = value;
         let command =
             Self::from_semantic_label(label.into_semantic()).action(move |env: Environment| {
@@ -1875,6 +1911,10 @@ where
             });
         let command = match role {
             Some(role) => command.role(role),
+            None => command,
+        };
+        let command = match shortcut {
+            Some(shortcut) => command.shortcut(shortcut),
             None => command,
         };
         match pending {
@@ -2810,5 +2850,51 @@ mod custom_style_tests {
             *prim_seen.borrow(),
             vec![ControlSize::Large, ControlSize::ExtraSmall]
         );
+    }
+
+    #[test]
+    fn keyboard_shortcut_preserved_across_config_from_and_style_hook() {
+        use super::{
+            Button, ButtonConfig, ButtonStyle, ButtonStyleHook, ButtonStylePending, Hook as _,
+            HookSlot, HookableParent as _, Native,
+        };
+        use crate::shortcut::{Shortcut, ShortcutNamedKey};
+
+        let shortcut = Shortcut::new(ShortcutNamedKey::Enter).command();
+        let cfg = button("Send")
+            .keyboard_shortcut(shortcut.clone())
+            .action(|| {})
+            .config();
+        assert_eq!(cfg.shortcut(), Some(shortcut.clone()));
+
+        let round_trip = Button::from(cfg).config();
+        assert_eq!(round_trip.shortcut(), Some(shortcut.clone()));
+
+        let env = Environment::new();
+        let hook = ButtonStyleHook::new(ButtonStyle::Bordered);
+        let (target, pending) = round_trip.into_style_pending(HookSlot::new);
+        let restored = ButtonStylePending::restore(pending);
+        assert_eq!(restored.shortcut(), Some(shortcut.clone()));
+
+        let styled = hook.apply(target, &env).expect("hook applies");
+        let styled_body = AnyView::new(View::body(styled, &env));
+        let native = styled_body
+            .downcast_ref::<Native<ButtonConfig<AnyView>>>()
+            .expect("built-in button style hook renders Native<ButtonConfig>");
+        assert_eq!(native.as_inner().shortcut(), Some(shortcut));
+    }
+
+    #[cfg(feature = "menu")]
+    #[test]
+    fn menu_command_conversion_preserves_keyboard_shortcut() {
+        use crate::shortcut::Shortcut;
+
+        let shortcut = Shortcut::new('s').command().shift();
+        let command: crate::menu::Command = button("Save As")
+            .keyboard_shortcut(shortcut.clone())
+            .action(|| {})
+            .into();
+        let resolved = command.resolve::<crate::NoopSlot>(&Environment::new());
+        assert_eq!(resolved.shortcut(), Some(&shortcut));
     }
 }

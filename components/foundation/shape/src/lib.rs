@@ -24,15 +24,16 @@ extern crate alloc;
 
 use core::marker::PhantomData;
 
-use nami::{Computed, SignalExt as _, signal::IntoSignal};
+use nami::Computed;
 pub use waterui_core::Angle;
 use waterui_core::{Environment, View, metadata::MetadataKey};
-use waterui_graphics::color::Color;
+pub use waterui_graphics::{ColorPaint, DirectPaint, GradientPaint, IntoPaint, Paint};
 
 pub mod background;
 pub mod border;
 pub mod filter;
 pub mod floating;
+pub mod mask;
 mod morph;
 pub mod style;
 
@@ -43,6 +44,7 @@ pub use background::{
 pub use border::Border;
 pub use filter::Opacity;
 pub use floating::Floating;
+pub use mask::{Mask, MaskView};
 pub use morph::MorphShape;
 pub use style::{Anchor, Offset, Rotation, Scale, Shadow, Vector};
 
@@ -790,8 +792,8 @@ pub struct ResolvedShape {
     kind: ShapeKind,
     /// Path commands in unit coordinate space.
     commands: Vec<PathCommand>,
-    /// Environment-resolved fill color that remains reactive to theme changes.
-    fill: Computed<waterui_graphics::WorkingColor>,
+    /// Environment-resolved fill paint that remains reactive to theme and signal changes.
+    fill: Computed<waterui_graphics::backend::draw::Paint>,
 }
 
 impl ResolvedShape {
@@ -807,9 +809,9 @@ impl ResolvedShape {
         self.commands.as_slice()
     }
 
-    /// Environment-resolved fill color that remains reactive to theme changes.
+    /// Environment-resolved fill paint that remains reactive to theme and signal changes.
     #[must_use]
-    pub const fn fill(&self) -> &Computed<waterui_graphics::WorkingColor> {
+    pub const fn fill(&self) -> &Computed<waterui_graphics::backend::draw::Paint> {
         &self.fill
     }
 }
@@ -820,23 +822,23 @@ waterui_core::raw_view!(ResolvedShape, waterui_core::layout::StretchAxis::Both);
 // FilledShape - Shape as a View with backend-native fill rendering
 // ============================================================================
 
-/// A shape filled with a color, resolved to `ResolvedShape`.
+/// A shape filled with a [`Paint`] (colour or gradient), resolved to [`ResolvedShape`].
 #[derive(Debug)]
 pub struct FilledShape<S = ()> {
     kind: ShapeKind,
     commands: Vec<PathCommand>,
-    fill: Color,
+    fill: Paint,
     _shape: PhantomData<fn() -> S>,
 }
 
 impl<S: Shape> FilledShape<S> {
-    /// Creates a new filled shape from a shape and color.
+    /// Creates a new filled shape from a shape and paint.
     #[allow(clippy::needless_pass_by_value)]
-    pub fn new(shape: S, fill: impl IntoSignal<Color> + 'static) -> Self {
+    pub fn new<M>(shape: S, fill: impl IntoPaint<M>) -> Self {
         Self {
             kind: shape.shape_kind(),
             commands: shape.path().into_iter().collect(),
-            fill: Color::from_signal(fill),
+            fill: fill.into_paint(),
             _shape: PhantomData,
         }
     }
@@ -849,9 +851,9 @@ impl<S> FilledShape<S> {
         &self.commands
     }
 
-    /// Returns the fill color.
+    /// Returns the fill paint.
     #[must_use]
-    pub const fn fill(&self) -> &Color {
+    pub const fn fill(&self) -> &Paint {
         &self.fill
     }
 
@@ -888,7 +890,7 @@ impl<S: 'static> View for FilledShape<S> {
         ResolvedShape {
             kind: self.kind,
             commands: self.commands,
-            fill: self.fill.resolve(env).computed(),
+            fill: self.fill.resolve(env),
         }
     }
 }
@@ -932,30 +934,22 @@ pub trait MorphableShape: ShapeExt + sealed::Sealed {}
 // ShapeExt - Extension trait for adding fill to shapes
 // ============================================================================
 
-/// Extension trait for filling shapes with color.
+/// Extension trait for filling and morphing shapes.
 pub trait ShapeExt: Shape + Sized {
-    /// Fills the shape with the specified color.
-    fn fill(self, color: impl IntoSignal<Color> + 'static) -> FilledShape<Self> {
-        FilledShape::new(self, color)
+    /// Fills the shape with the specified paint (a colour, colour signal, or gradient).
+    fn fill<M>(self, paint: impl IntoPaint<M>) -> FilledShape<Self> {
+        FilledShape::new(self, paint)
     }
 
     /// Creates a morphing filled shape from this shape to another [`MorphableShape`].
     ///
     /// Morphing supports only the built-in parameterized shapes; custom paths
     /// do not implement [`MorphableShape`] and fail to compile.
-    fn morph_to(
-        self,
-        target: impl MorphableShape,
-        fill: impl IntoSignal<Color> + 'static,
-    ) -> MorphShape
+    fn morph_to<M>(self, target: impl MorphableShape, fill: impl IntoPaint<M>) -> MorphShape
     where
         Self: MorphableShape,
     {
-        MorphShape::new(
-            self.shape_kind(),
-            target.shape_kind(),
-            Color::from_signal(fill),
-        )
+        MorphShape::new(self.shape_kind(), target.shape_kind(), fill.into_paint())
     }
 }
 
@@ -976,6 +970,9 @@ impl ShapeExt for Path {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use waterui_core::layout::UnitPoint;
+    use waterui_graphics::Gradient;
+    use waterui_graphics::color::Color;
 
     #[test]
     fn filled_shape_new_keeps_kind() {
@@ -987,6 +984,22 @@ mod tests {
             "FilledShape::new(Capsule, c) lost the kind: got CustomPath = {}",
             matches!(via_new.kind(), ShapeKind::CustomPath)
         );
+    }
+
+    #[test]
+    fn filled_shape_accepts_gradient_paint() {
+        let gradient = Gradient::linear(
+            [Color::srgb(255, 0, 0), Color::srgb(0, 0, 255)],
+            UnitPoint::TOP_LEADING,
+            UnitPoint::BOTTOM_TRAILING,
+        );
+        let filled = Circle.fill(gradient);
+        assert!(matches!(filled.kind(), ShapeKind::Circle));
+        let resolved = filled.fill().resolve(&Environment::new());
+        assert!(matches!(
+            nami::Signal::snapshot(&resolved),
+            waterui_graphics::backend::draw::Paint::Linear(_)
+        ));
     }
 
     #[test]

@@ -85,7 +85,7 @@ fn check_pad(extend: Extend) {
 }
 
 /// Maps a `WaterUI` paint to its native gradient space, stops, and geometry.
-fn layer_paint(paint: &Paint) -> GradientPaint {
+pub fn layer_paint(paint: &Paint) -> GradientPaint {
     match paint {
         Paint::Linear(gradient) => linear_paint(gradient),
         Paint::Radial(gradient) => radial_paint(gradient),
@@ -208,7 +208,8 @@ fn sweep_paint(gradient: &SweepGradient) -> GradientPaint {
     }
 }
 
-fn update_contents_scale(view: &HostView, layer: &GradientLayer) {
+/// Synchronizes the gradient layer's contents scale with the host view's display scale.
+pub fn update_contents_scale(view: &HostView, layer: &GradientLayer) {
     if let Some(scale) = view.display_scale() {
         layer.set_contents_scale(scale);
     }

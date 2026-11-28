@@ -324,6 +324,7 @@ button("Save")                              // Button<_, NoAction>: not a View u
     .action(handler)                        // -> Button<_, impl FnMut(&Environment)>
     .action_async(|| async { … })           // single-flight: disables interaction & reports busy until completion or drop
     .pending(&saving)                       // mirrors in-flight state into &Binding<bool>; composes before or after .action_async
+    .keyboard_shortcut(Shortcut::new('s').command()) // fires while mounted & enabled; preserved in From<Button> for Command
     .style(ButtonStyle::Plain)              // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
                                             // | Glass | GlassProminent (Liquid Glass capsules on Apple;
                                             //   bordered / bordered-prominent elsewhere)
@@ -548,8 +549,12 @@ Shortcut::new('s').command().shift()           // ⇧⌘S; also .option() and .c
 ```
 
 A shortcut key is a `char` or a `ShortcutNamedKey` (or `ShortcutKey::try_from(NamedKey)`). `.command()` is the platform's primary
-modifier: ⌘ on Apple, Ctrl elsewhere. When a chord is live depends on where the command
-sits: a mounted `Menu` arms its chords whether or not its popup is open, a `.context_menu`
+modifier: ⌘ on Apple, Ctrl elsewhere. Use `Button::keyboard_shortcut(shortcut)` to bind a
+chord directly on a mounted button (it fires while the button is mounted and enabled, respects
+modal occlusion, and carries over when converting `Button` into `Command`), and
+`shortcut.matches(&press)` to match a `Shortcut` against a `KeyPress` in `.on_key_press(..)`
+without branching on platform modifiers. When a chord is live depends on where the command
+sits: a mounted `Button` or `Menu` arms its chords while mounted, a `.context_menu`
 arms them only while it is open, and `App::menu_bar` arms them app-wide. A chord without
 Ctrl, Alt or Super does not fire while a text field has focus — that press is typing.
 

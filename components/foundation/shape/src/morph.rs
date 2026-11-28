@@ -12,9 +12,14 @@ use core::time::Duration;
 use nami::{Computed, SignalExt as _, signal::IntoComputed};
 use waterui_core::animation::{Animation, Repeat};
 use waterui_core::layout::{Point, Size};
-use waterui_core::{Environment, View, contract_violation};
-use waterui_graphics::canvas::{Canvas, Path, PathBuilder};
-use waterui_graphics::color::Color;
+use waterui_core::{Angle, Environment, View, contract_violation};
+use waterui_graphics::Paint;
+use waterui_graphics::backend::draw;
+use waterui_graphics::canvas::{
+    Canvas, ColorStop as CanvasStop, ConicGradient as CanvasConicGradient, Extend as CanvasExtend,
+    Interpolation as CanvasInterpolation, LinearGradient as CanvasLinearGradient,
+    Paint as CanvasPaint, Path, PathBuilder, RadialGradient as CanvasRadialGradient,
+};
 
 use crate::ShapeKind;
 
@@ -162,7 +167,7 @@ impl Silhouette {
 pub struct MorphShape {
     from: ShapeKind,
     to: ShapeKind,
-    fill: Color,
+    fill: Paint,
     animation: Animation,
     progress: Option<Computed<f32>>,
 }
@@ -173,7 +178,7 @@ impl MorphShape {
     /// Either shape being [`ShapeKind::CustomPath`] is a contract violation:
     /// a path has no parameters to interpolate, so the other shape stands in
     /// for it (a rectangle when both are paths) and the morph holds still.
-    pub(crate) fn new(from: ShapeKind, to: ShapeKind, fill: Color) -> Self {
+    pub(crate) fn new(from: ShapeKind, to: ShapeKind, fill: Paint) -> Self {
         let (from, to) = match (from == ShapeKind::CustomPath, to == ShapeKind::CustomPath) {
             (false, false) => (from, to),
             (from_is_path, to_is_path) => {
@@ -214,8 +219,89 @@ impl MorphShape {
     }
 }
 
+const fn canvas_extend(extend: draw::Extend) -> CanvasExtend {
+    match extend {
+        draw::Extend::Pad => CanvasExtend::Pad,
+        draw::Extend::Repeat => CanvasExtend::Repeat,
+        draw::Extend::Reflect => CanvasExtend::Reflect,
+        draw::Extend::None => CanvasExtend::Transparent,
+    }
+}
+
+const fn canvas_interpolation(interpolation: draw::Interpolation) -> CanvasInterpolation {
+    match interpolation {
+        draw::Interpolation::Working => CanvasInterpolation::Linear,
+        draw::Interpolation::SrgbEncoded => CanvasInterpolation::Encoded,
+    }
+}
+
+fn canvas_stops(stops: &[draw::ColorStop]) -> Vec<CanvasStop> {
+    stops
+        .iter()
+        .map(|stop| CanvasStop {
+            offset: stop.offset,
+            color: stop.color,
+        })
+        .collect()
+}
+
+fn canvas_paint_in_size(paint: draw::Paint, size: Size) -> CanvasPaint {
+    let width = size.width.max(0.0);
+    let height = size.height.max(0.0);
+    let shorter = width.min(height);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "canvas geometry operates in f32 points"
+    )]
+    let scale_point =
+        |point: draw::kurbo::Point| Point::new(point.x as f32 * width, point.y as f32 * height);
+    match paint {
+        draw::Paint::Solid(color) => CanvasPaint::Color(color),
+        draw::Paint::Linear(linear) => {
+            let mut gradient =
+                CanvasLinearGradient::new(scale_point(linear.start), scale_point(linear.end))
+                    .extend(canvas_extend(linear.extend))
+                    .interpolation(canvas_interpolation(linear.interpolation));
+            gradient.stops = canvas_stops(&linear.stops);
+            CanvasPaint::Linear(gradient)
+        }
+        draw::Paint::Radial(radial) => {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "canvas geometry operates in f32 points"
+            )]
+            let mut gradient = CanvasRadialGradient::two_point(
+                scale_point(radial.start_center),
+                radial.start_radius as f32 * shorter,
+                scale_point(radial.end_center),
+                radial.end_radius as f32 * shorter,
+            )
+            .extend(canvas_extend(radial.extend))
+            .interpolation(canvas_interpolation(radial.interpolation));
+            gradient.stops = canvas_stops(&radial.stops);
+            CanvasPaint::Radial(gradient)
+        }
+        draw::Paint::Sweep(sweep) => {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "canvas angles operate in f32 radians"
+            )]
+            let mut gradient = CanvasConicGradient::new(
+                scale_point(sweep.center),
+                Angle::radians(sweep.start_angle as f32),
+                Angle::radians(sweep.end_angle as f32),
+            )
+            .extend(canvas_extend(sweep.extend))
+            .interpolation(canvas_interpolation(sweep.interpolation));
+            gradient.stops = canvas_stops(&sweep.stops);
+            CanvasPaint::Conic(gradient)
+        }
+        _ => CanvasPaint::Color(waterui_graphics::WorkingColor::TRANSPARENT),
+    }
+}
+
 impl View for MorphShape {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         let Self {
             from,
             to,
@@ -224,6 +310,8 @@ impl View for MorphShape {
             progress,
         } = self;
         let animation = animation.validated();
+        let resolved_gradient = fill.as_color().is_none().then(|| fill.resolve(env));
+        let solid_color = fill.as_color().cloned();
         Canvas::new(move |cx| {
             let animation = animation.clone();
             let progress = progress.unwrap_or_else(|| {
@@ -249,7 +337,16 @@ impl View for MorphShape {
                         .path()
                 })
                 .computed();
-            cx.fill(outline, fill);
+            if let Some(color) = solid_color {
+                cx.fill(outline, color);
+            } else if let Some(resolved) = resolved_gradient {
+                let paint = cx
+                    .size()
+                    .zip(&resolved)
+                    .map(|(size, paint)| canvas_paint_in_size(paint, size))
+                    .computed();
+                cx.fill(outline, paint);
+            }
         })
     }
 }
@@ -279,7 +376,7 @@ mod tests {
         should_panic(expected = "a custom path has no parameters")
     )]
     fn a_custom_path_is_replaced_by_the_other_shape() {
-        let morph = MorphShape::new(ShapeKind::CustomPath, ShapeKind::Circle, Color::default());
+        let morph = MorphShape::new(ShapeKind::CustomPath, ShapeKind::Circle, Paint::default());
         assert_eq!(
             (morph.from, morph.to),
             (ShapeKind::Circle, ShapeKind::Circle)
@@ -295,7 +392,7 @@ mod tests {
         let morph = MorphShape::new(
             ShapeKind::CustomPath,
             ShapeKind::CustomPath,
-            Color::default(),
+            Paint::default(),
         );
         assert_eq!((morph.from, morph.to), (ShapeKind::Rect, ShapeKind::Rect));
     }
@@ -369,12 +466,16 @@ mod tests {
     #[test]
     #[should_panic(expected = "custom path has no parameters")]
     fn a_custom_path_cannot_morph() {
-        let _ = MorphShape::new(ShapeKind::CustomPath, ShapeKind::Rect, Color::srgb(0, 0, 0));
+        let _ = MorphShape::new(
+            ShapeKind::CustomPath,
+            ShapeKind::Rect,
+            Paint::color(waterui_graphics::Color::srgb(0, 0, 0)),
+        );
     }
 
     #[test]
     fn one_shot_animation_reaches_end() {
-        let morph = MorphShape::new(ShapeKind::Circle, ShapeKind::Rect, Color::default())
+        let morph = MorphShape::new(ShapeKind::Circle, ShapeKind::Rect, Paint::default())
             .animation(Animation::linear(Duration::from_millis(200)));
         assert!((morph.animation.progress(Duration::ZERO) - 0.0).abs() < 1e-6);
         assert!((morph.animation.progress(Duration::from_millis(100)) - 0.5).abs() < 1e-3);
@@ -383,7 +484,7 @@ mod tests {
 
     #[test]
     fn a_repeating_animation_reverses_every_other_cycle() {
-        let morph = MorphShape::new(ShapeKind::Circle, ShapeKind::Rect, Color::default())
+        let morph = MorphShape::new(ShapeKind::Circle, ShapeKind::Rect, Paint::default())
             .animation(
                 Animation::linear(Duration::from_millis(900))
                     .repeat(Repeat::Forever { autoreverse: true }),

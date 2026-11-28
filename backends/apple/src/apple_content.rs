@@ -715,6 +715,14 @@ mod tests {
             navigation_transition_destination: waterui_backend_core::navigation::NavigationTransitionDestination,
         }
 
+        fn mask<S: ChildView<Self>, C: ChildView<Self>>(
+            &mut self,
+            _: Metadata<waterui_shape::Mask<S>, C>,
+            _: &Environment,
+            (): (),
+        ) {
+        }
+
         fn anchored_overlay<S: ChildView<Self>, C: ChildView<Self>>(
             &mut self,
             _: Metadata<AnchoredOverlay<S>, C>,

@@ -417,6 +417,7 @@ fn trials() -> Vec<Trial> {
     #[cfg(feature = "link")]
     tests.extend(link::trials());
     tests.extend(async_button_pending::trials());
+    tests.extend(button_keyboard_shortcut::trials());
     tests.extend(markdown_a11y::trials());
     tests.extend(icon_a11y::trials());
     #[cfg(feature = "highlight")]
@@ -4024,6 +4025,26 @@ mod gpu_surface {
                 an_input_surface_is_told_its_size_once_before_its_first_frame_and_once_per_change,
             ),
         ]
+        .into_iter()
+        .chain(paint_mask_trials())
+        .collect()
+    }
+
+    fn paint_mask_trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "gpu_surface::gradient_filled_circle_renders_gradient_inside_circle",
+                gradient_filled_circle_renders_gradient_inside_circle,
+            ),
+            Trial::test(
+                "gpu_surface::gradient_masked_by_text_renders_gradient_glyphs_over_backdrop",
+                gradient_masked_by_text_renders_gradient_glyphs_over_backdrop,
+            ),
+            Trial::test(
+                "gpu_surface::solid_color_masked_by_circle_renders_red_circle_over_backdrop",
+                solid_color_masked_by_circle_renders_red_circle_over_backdrop,
+            ),
+        ]
     }
 
     /// A surface whose content takes input hears `Resize` once the surface
@@ -4897,6 +4918,227 @@ mod gpu_surface {
                 "{name} must render with active accent blue texels in offscreen capture, got {active_blue}"
             );
         }
+        Ok(())
+    }
+
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub fn gradient_filled_circle_renders_gradient_inside_circle() -> Result<(), Failed> {
+        use std::time::Duration;
+
+        use cocoa_ui::ColorScheme;
+        use waterui::ViewExt as _;
+        use waterui::graphics::{Color, Gradient};
+        use waterui::layout::{Size, UnitPoint};
+        use waterui::shape::{Circle, ShapeExt as _};
+        use waterui_apple::native_test_support::view_renderer::{AppleBackend, GpuRuntime};
+        use waterui_apple::native_test_support::{
+            block_on_main, install_gpu, refresh_theme, window_environment,
+        };
+        use waterui_backend_core::NativeBackend as _;
+        use waterui_capture::view_renderer::{RenderRequest, ViewRenderer as _};
+        use waterui_layout::stack::zstack;
+
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .map_err(|error| format!("the GPU runtime: {error}"))?;
+        let (mut env, theme) = window_environment(mtm());
+        install_gpu(&mut env, runtime);
+        refresh_theme(&theme, ColorScheme::Light);
+
+        let renderer = AppleBackend::new(mtm()).offscreen(&env);
+        let request = RenderRequest::new(Size::new(100.0, 100.0), Duration::from_secs(10));
+        let view = zstack((
+            Color::srgb(0, 180, 0),
+            Circle
+                .fill(Gradient::linear(
+                    [Color::srgb(255, 0, 0), Color::srgb(0, 0, 255)],
+                    UnitPoint::LEADING,
+                    UnitPoint::TRAILING,
+                ))
+                .size(100.0, 100.0),
+        ));
+
+        let result = block_on_main(30.0, renderer.render_to_rgba(view, &env, request))
+            .map_err(|error| format!("gradient circle render_to_rgba failed: {error}"))?;
+        let width = result.width() as usize;
+        let height = result.height() as usize;
+        let pixel = |fx: f64, fy: f64| -> [u8; 4] {
+            let x = ((width as f64) * fx).clamp(0.0, (width - 1) as f64) as usize;
+            let y = ((height as f64) * fy).clamp(0.0, (height - 1) as f64) as usize;
+            let offset = (y * width + x) * 4;
+            result.rgba_data()[offset..offset + 4].try_into().unwrap()
+        };
+
+        let corner = pixel(0.04, 0.04);
+        assert!(
+            corner[1] > 140
+                && corner[1] > corner[0].saturating_add(60)
+                && corner[1] > corner[2].saturating_add(60),
+            "corner outside circle must keep green backdrop, got {corner:?}"
+        );
+        let left = pixel(0.20, 0.50);
+        assert!(
+            left[0] > 150 && left[0] > left[2].saturating_add(60),
+            "left interior of gradient-filled circle must be red-dominant, got {left:?}"
+        );
+        let right = pixel(0.80, 0.50);
+        assert!(
+            right[2] > 150 && right[2] > right[0].saturating_add(60),
+            "right interior of gradient-filled circle must be blue-dominant, got {right:?}"
+        );
+        Ok(())
+    }
+
+    pub fn gradient_masked_by_text_renders_gradient_glyphs_over_backdrop() -> Result<(), Failed> {
+        use std::time::Duration;
+
+        use cocoa_ui::ColorScheme;
+        use waterui::ViewExt as _;
+        use waterui::component::text;
+        use waterui::graphics::{Color, Gradient};
+        use waterui::layout::{Size, UnitPoint};
+        use waterui_apple::native_test_support::view_renderer::{AppleBackend, GpuRuntime};
+        use waterui_apple::native_test_support::{
+            block_on_main, install_gpu, refresh_theme, window_environment,
+        };
+        use waterui_backend_core::NativeBackend as _;
+        use waterui_capture::view_renderer::{RenderRequest, ViewRenderer as _};
+        use waterui_layout::stack::zstack;
+
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .map_err(|error| format!("the GPU runtime: {error}"))?;
+        let (mut env, theme) = window_environment(mtm());
+        install_gpu(&mut env, runtime);
+        refresh_theme(&theme, ColorScheme::Light);
+
+        let renderer = AppleBackend::new(mtm()).offscreen(&env);
+        let request = RenderRequest::new(Size::new(200.0, 80.0), Duration::from_secs(10));
+        let view = zstack((
+            Color::srgb(0, 180, 0),
+            Gradient::linear(
+                [Color::srgb(255, 0, 0), Color::srgb(0, 0, 255)],
+                UnitPoint::LEADING,
+                UnitPoint::TRAILING,
+            )
+            .size(200.0, 80.0)
+            .mask(text("MMMMMM").font_size(32.0).bold(true)),
+        ));
+
+        let result = block_on_main(30.0, renderer.render_to_rgba(view, &env, request))
+            .map_err(|error| format!("gradient masked text render_to_rgba failed: {error}"))?;
+        let w = result.width() as usize;
+        let h = result.height() as usize;
+        let pixel = |x: usize, y: usize| -> [u8; 4] {
+            let i = (y * w + x) * 4;
+            result.rgba_data()[i..i + 4].try_into().unwrap()
+        };
+
+        let corner = pixel((w / 25).max(1), (h / 20).max(1));
+        assert!(
+            corner[1] > 140
+                && corner[1] > corner[0].saturating_add(60)
+                && corner[1] > corner[2].saturating_add(60),
+            "corner outside masked text must keep green backdrop, got {corner:?}"
+        );
+
+        let mut left_red = 0_usize;
+        let mut right_blue = 0_usize;
+        for y in (h / 8)..(h * 7 / 8) {
+            for x in (w / 20)..(w / 2) {
+                let px = pixel(x, y);
+                if px[0] > 130
+                    && px[0] > px[1].saturating_add(30)
+                    && px[0] > px[2].saturating_add(30)
+                {
+                    left_red += 1;
+                }
+            }
+            for x in (w / 2)..(w * 19 / 20) {
+                let px = pixel(x, y);
+                if px[2] > 130
+                    && px[2] > px[1].saturating_add(30)
+                    && px[2] > px[0].saturating_add(30)
+                {
+                    right_blue += 1;
+                }
+            }
+        }
+
+        assert!(
+            left_red > 25,
+            "left half of gradient-masked text must contain red gradient glyph pixels, got {left_red}"
+        );
+        assert!(
+            right_blue > 25,
+            "right half of gradient-masked text must contain blue gradient glyph pixels, got {right_blue}"
+        );
+        Ok(())
+    }
+
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub fn solid_color_masked_by_circle_renders_red_circle_over_backdrop() -> Result<(), Failed> {
+        use std::time::Duration;
+
+        use cocoa_ui::ColorScheme;
+        use waterui::ViewExt as _;
+        use waterui::graphics::Color;
+        use waterui::layout::Size;
+        use waterui::shape::{Circle, ShapeExt as _};
+        use waterui_apple::native_test_support::view_renderer::{AppleBackend, GpuRuntime};
+        use waterui_apple::native_test_support::{
+            block_on_main, install_gpu, refresh_theme, window_environment,
+        };
+        use waterui_backend_core::NativeBackend as _;
+        use waterui_capture::view_renderer::{RenderRequest, ViewRenderer as _};
+        use waterui_layout::stack::zstack;
+
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .map_err(|error| format!("the GPU runtime: {error}"))?;
+        let (mut env, theme) = window_environment(mtm());
+        install_gpu(&mut env, runtime);
+        refresh_theme(&theme, ColorScheme::Light);
+
+        let renderer = AppleBackend::new(mtm()).offscreen(&env);
+        let request = RenderRequest::new(Size::new(100.0, 100.0), Duration::from_secs(10));
+        let view = zstack((
+            Color::srgb(0, 180, 0),
+            Color::srgb(255, 0, 0)
+                .size(100.0, 100.0)
+                .mask(Circle.fill(Color::srgb(255, 255, 255))),
+        ));
+
+        let result = block_on_main(30.0, renderer.render_to_rgba(view, &env, request))
+            .map_err(|error| format!("circle mask render_to_rgba failed: {error}"))?;
+        let width = result.width() as usize;
+        let height = result.height() as usize;
+        let pixel = |fx: f64, fy: f64| -> [u8; 4] {
+            let x = ((width as f64) * fx).clamp(0.0, (width - 1) as f64) as usize;
+            let y = ((height as f64) * fy).clamp(0.0, (height - 1) as f64) as usize;
+            let offset = (y * width + x) * 4;
+            result.rgba_data()[offset..offset + 4].try_into().unwrap()
+        };
+
+        let corner = pixel(0.04, 0.04);
+        assert!(
+            corner[1] > 140
+                && corner[1] > corner[0].saturating_add(60)
+                && corner[1] > corner[2].saturating_add(60),
+            "corner outside circle mask must keep green backdrop, got {corner:?}"
+        );
+        let center = pixel(0.50, 0.50);
+        assert!(
+            center[0] > 180
+                && center[0] > center[1].saturating_add(80)
+                && center[0] > center[2].saturating_add(80),
+            "center inside circle mask must be red, got {center:?}"
+        );
         Ok(())
     }
 
@@ -19277,6 +19519,162 @@ mod async_button_pending {
             let mtm = mtm();
             assert!(native_button.isEnabled());
             assert_eq!(native_button.accessibilityHint(mtm), None);
+        }
+    }
+}
+
+mod button_keyboard_shortcut {
+    use core::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::Message;
+    use cocoa_ui::view::subviews;
+    use cocoa_ui::{PlatformView, Retained};
+    use libtest_mimic::Trial;
+    use nami::binding;
+    use waterui::ViewExt as _;
+    use waterui::component::button::button;
+    use waterui::component::shortcut::Shortcut;
+
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::appkit::Button as PlatformButton;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::uikit::button::CocoaUiButton as PlatformButton;
+
+    use super::{mtm, resolve};
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "button_keyboard_shortcut::arms_shortcut_while_enabled_and_respects_disabled",
+            || {
+                arms_shortcut_while_enabled_and_respects_disabled();
+                Ok(())
+            },
+        )]
+    }
+
+    fn find_button(root: &PlatformView) -> Option<Retained<PlatformButton>> {
+        for sub in subviews(root) {
+            if let Some(button) = sub.downcast_ref::<PlatformButton>() {
+                return Some(Message::retain(button));
+            }
+            if let Some(found) = find_button(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn arms_shortcut_while_enabled_and_respects_disabled() {
+        let disabled = binding(false);
+        let calls = Rc::new(Cell::new(0u32));
+        let calls_action = Rc::clone(&calls);
+
+        let leaf = resolve::render(
+            button("Save")
+                .keyboard_shortcut(Shortcut::new('s').command())
+                .action(move || calls_action.set(calls_action.get() + 1))
+                .disabled(disabled.clone()),
+        );
+        let native_button =
+            find_button(leaf.view()).expect("button leaf must mount a native button");
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
+            use cocoa_ui::objc2_foundation::{NSPoint, NSString};
+
+            assert_eq!(native_button.keyEquivalent().to_string(), "s");
+            assert_eq!(
+                native_button.keyEquivalentModifierMask(),
+                NSEventModifierFlags::Command
+            );
+
+            let cmd_s = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+                NSEventType::KeyDown,
+                NSPoint::ZERO,
+                NSEventModifierFlags::Command,
+                0.0,
+                0,
+                None,
+                &NSString::from_str("s"),
+                &NSString::from_str("s"),
+                false,
+                1,
+            )
+            .expect("synthetic Cmd+S key event constructs");
+
+            assert!(
+                native_button.performKeyEquivalent(&cmd_s),
+                "enabled NSButton must claim its key equivalent"
+            );
+            assert_eq!(calls.get(), 1);
+
+            disabled.set(true);
+            assert!(
+                waterui_apple::native_test_support::drain_main_queue(mtm()),
+                "main queue must drain disabled watcher"
+            );
+            assert!(!native_button.is_enabled());
+            assert!(
+                !native_button.performKeyEquivalent(&cmd_s),
+                "disabled NSButton must not perform its key equivalent"
+            );
+            assert_eq!(calls.get(), 1);
+
+            disabled.set(false);
+            assert!(
+                waterui_apple::native_test_support::drain_main_queue(mtm()),
+                "main queue must drain re-enabled watcher"
+            );
+            assert!(native_button.is_enabled());
+            assert!(native_button.performKeyEquivalent(&cmd_s));
+            assert_eq!(calls.get(), 2);
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2::runtime::AnyObject;
+            use cocoa_ui::objc2::sel;
+            use cocoa_ui::objc2_ui_kit::UIKeyModifierFlags;
+
+            let mtm = mtm();
+            let commands = native_button
+                .keyCommands()
+                .expect("UIButton with keyboard_shortcut must expose keyCommands");
+            assert_eq!(commands.len(), 1);
+            let cmd = commands.objectAtIndex(0);
+            let sender: &AnyObject = AsRef::<AnyObject>::as_ref(&*cmd);
+            assert_eq!(cmd.input().map(|s| s.to_string()), Some(String::from("s")));
+            assert_eq!(cmd.modifierFlags(), UIKeyModifierFlags::Command);
+            assert!(
+                // SAFETY: `canPerformAction:withSender:` queries the responder chain on the main thread.
+                unsafe {
+                    native_button.canPerformAction_withSender(
+                        sel!(cocoaUiButtonMenuCommandFired:),
+                        Some(sender),
+                    )
+                },
+                "enabled UIButton must accept its armed key command"
+            );
+
+            disabled.set(true);
+            assert!(
+                waterui_apple::native_test_support::drain_main_queue(mtm),
+                "main queue must drain disabled watcher"
+            );
+            assert!(!native_button.isEnabled());
+            assert!(
+                // SAFETY: `canPerformAction:withSender:` queries the responder chain on the main thread.
+                !unsafe {
+                    native_button.canPerformAction_withSender(
+                        sel!(cocoaUiButtonMenuCommandFired:),
+                        Some(sender),
+                    )
+                },
+                "disabled UIButton must refuse its armed key command"
+            );
+            assert_eq!(calls.get(), 0);
         }
     }
 }
