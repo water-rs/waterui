@@ -470,6 +470,7 @@ askama = { version = "0.16", default-features = false, features = ["derive", "st
 # crate does not re-export.
 cherenkov-record.workspace = true
 waterui-navigation.workspace = true
+waterui-icons-lucide.workspace = true
 # The #210 regression test drives a real `ReactiveImage`: its handle's `set`
 # is the same call the decode pipeline makes when an image lands.
 waterui-image.workspace = true

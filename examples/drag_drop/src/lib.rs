@@ -9,7 +9,6 @@
 //! - Spring animations on successful drop
 
 use core::time::Duration;
-use waterui::animation::Animation;
 use waterui::app::{App, Windows};
 use waterui::drag_drop::{DropInfo, Transferable};
 use waterui::prelude::font::Title;

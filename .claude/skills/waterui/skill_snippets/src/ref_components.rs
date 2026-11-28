@@ -3,7 +3,6 @@
 
 extern crate alloc;
 
-use waterui::Identifiable;
 use waterui::app::{App, AppMenuBar, Windows};
 use waterui::prelude::*;
 
@@ -172,6 +171,20 @@ pub fn components_block_06() {
     let _ = {
         view.layout_priority(1) // a stack compresses its lowest-priority children first
     };
+
+    // components.md § "## Layout containers" — report_size adaptive layout snippet.
+    fn two_column() -> impl View {
+        hstack((text("Left"), text("Right")))
+    }
+    fn one_column() -> impl View {
+        vstack((text("Top"), text("Bottom")))
+    }
+    let size = binding(Size::zero());
+    let adaptive = when(size.map(|s| s.width > 600.0), two_column)
+        .otherwise(one_column)
+        .max_width(f32::INFINITY)
+        .report_size(&size);
+    let _ = adaptive;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +344,6 @@ pub fn components_block_11() {
 // ---------------------------------------------------------------------------
 pub fn components_block_12() {
     use core::time::Duration;
-    use waterui::animation::Animation;
     use waterui::layout::scroll::ScrollController;
 
     fn row_view(r: Record) -> impl View {
@@ -414,12 +426,14 @@ pub fn components_block_14() {
     let notes = Binding::new(Str::from(""));
     let code = Binding::new(Str::from(""));
     let note = Binding::new(Str::from(""));
+    let saving = Binding::new(false);
     let fraction = 0.5_f64;
 
     let _ = {
         button("Save") // Button<NoAction>
             .action(handler) // -> Button<impl FnMut(&Environment)>
-            .action_async(|| async {}) // [ellipsis filled]
+            .action_async(|| async {}) // [ellipsis filled] single-flight: disables interaction & reports busy until completion or drop
+            .pending(&saving) // mirrors in-flight state into &Binding<bool>; composes before or after .action_async
             .style(ButtonStyle::Plain) // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
             // | Glass | GlassProminent (Liquid Glass capsules on Apple;
             //   bordered / bordered-prominent elsewhere)
@@ -481,14 +495,23 @@ pub fn components_block_14() {
         // multi-line: Return inserts a line break
         TextField::new("Notes", &notes).line_limit(None::<NonZeroUsize>)
     };
-    use waterui::component::text_field::{ContentType, KeyboardType}; // NOT in the prelude
+    use waterui::component::text_field::{Capitalization, ContentType, KeyboardType, SubmitLabel}; // NOT in the prelude
     let _ = {
         // .content_type declares what the field means, for autofill — it is
-        // what makes Apple offer the received SMS code; pair with .keyboard(..)
+        // what makes Apple offer the received SMS code, and implies keyboard,
+        // capitalization and autocorrection defaults unless overridden
         TextField::new("Verification code", &code)
             .keyboard(KeyboardType::Number)
             .content_type(ContentType::OneTimeCode)
     };
+    let price = Binding::new(Str::from(""));
+    let _ = {
+        field("Name", &name)
+            .autocapitalization(Capitalization::Words)
+            .autocorrect(false)
+            .submit_label(SubmitLabel::Next)
+    };
+    let _ = { field("Price", &price).keyboard(KeyboardType::Decimal) };
     let _ = {
         // .selection_menu adds commands to the selected-text menu; a command
         // takes the field's live selection as a handler parameter
@@ -556,7 +579,6 @@ pub fn components_custom_control_styles() {
     let enabled = Binding::new(true);
 
     use waterui::gesture::TapGesture;
-    use waterui::shape::Capsule;
     use waterui::theme::color::{Accent, Error, SurfaceVariant};
 
     struct PillButtonStyle;
@@ -929,7 +951,6 @@ pub fn components_block_25() {
 // ---------------------------------------------------------------------------
 pub fn components_block_26() -> impl View {
     use core::time::Duration;
-    use waterui::animation::Animation;
 
     let markdown = Binding::new(Str::from("# Streaming"));
 
@@ -950,7 +971,6 @@ pub fn components_block_26() -> impl View {
 // ---------------------------------------------------------------------------
 pub fn components_flow_overrides_prose() {
     use core::time::Duration;
-    use waterui::animation::Animation;
     use waterui::prelude::flow_markdown::FlowMarkdownConfig;
 
     let _ = FlowMarkdownConfig::default().override_animation(
@@ -995,7 +1015,6 @@ pub mod components_block_27 {
         pub rows: StateList<Record>,
     }
 
-    use waterui::Identifiable; // the trait the derive expands to is NOT in the prelude
     use waterui::component::list::{ListDelete, ListMove}; // NOT in the prelude
     use waterui::layout::scroll::scroll_horizontal;
     use waterui::views::ForEach;
@@ -1051,7 +1070,6 @@ pub mod components_block_27 {
 // ---------------------------------------------------------------------------
 pub fn components_block_28() {
     use core::time::Duration;
-    use waterui::animation::Animation;
 
     let rows = StateList::<Record>::new();
 
@@ -1192,11 +1210,15 @@ pub fn components_block_31() -> impl View {
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_form_validation_prose() {
-    use waterui::form::secure::Secure;
+    use waterui::form::secure::{ContentType, Secure, SubmitLabel};
     use waterui::form::valid::{Required, Validator};
 
     let password = Binding::new(Secure::default());
-    let _ = secure("Password", &password);
+    let _ = secure("Password", &password)
+        .prompt("At least 12 characters")
+        .content_type(ContentType::NewPassword)
+        .submit_label(SubmitLabel::Done)
+        .on_submit(|| {});
     // `Required` validates several text types, so `.and` names the one it combines over.
     let _ = Validator::<Str>::and(Required, Required);
     let _ = <Required as Validator<Str>>::validate;
@@ -1480,8 +1502,6 @@ pub fn components_secure_and_error_prose() -> impl View {
 // Listing: three independent widgets. `photo_url` and `Field` are glue.
 // ---------------------------------------------------------------------------
 pub fn components_block_37(photo_url: waterui::Url) {
-    use waterui::shape::RoundedRectangle;
-
     #[derive(Clone, PartialEq, Eq)]
     enum Field {
         Email,

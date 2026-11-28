@@ -5,7 +5,6 @@
 //! while the field keeps focus, and the field's `on_submit` advances to the
 //! next match.
 use waterui::app::{App, Windows};
-use waterui::key::{Key, KeyHandling, KeyPress, NamedKey};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::theme::color::Surface;

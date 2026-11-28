@@ -204,7 +204,7 @@ pub(super) fn label_environment(
     role: Option<ButtonRole>,
     env: &Environment,
 ) -> Environment {
-    let mut label_env = env.clone();
+    let mut label_env = crate::components::accessibility_metadata::child_env(env);
     install_color_signal::<Foreground>(&mut label_env, label_foreground(style, role, env));
     #[cfg(target_os = "macos")]
     install_font_signal::<Body>(&mut label_env, label_font(env, control_size(size)));

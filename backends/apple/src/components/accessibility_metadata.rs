@@ -36,8 +36,8 @@ use waterui_accessibility::{
     AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
     AccessibilityValue,
 };
-use waterui_core::Metadata;
-use waterui_core::SignalExt;
+use waterui_core::metadata::MetadataKey;
+use waterui_core::{Environment, Metadata, SignalExt};
 use waterui_interaction::interaction::Selected;
 
 use crate::contract::{Held, NativeLeaf, RenderContext};
@@ -247,12 +247,40 @@ fn render_state(
     leaf
 }
 
+fn scope_env<K: MetadataKey + Clone + 'static>(ctx: &RenderContext<'_>, value: &K) -> Environment {
+    let mut env = ctx.env().clone();
+    env.insert(value.clone());
+    env
+}
+
+/// Strips nearest-consumer accessibility metadata at container/control child
+/// boundaries so an enclosing `.a11y_label(...)` / `.a11y_role(...)` /
+/// `.a11y_hidden(...)` never leaks into descendant views.
+pub fn child_env(env: &Environment) -> Environment {
+    let mut child = env.clone();
+    child.remove::<AccessibilityLabel>();
+    child.remove::<AccessibilityValue>();
+    child.remove::<AccessibilityRole>();
+    child.remove::<AccessibilityHidden>();
+    child.remove::<AccessibilityChildren>();
+    child.remove::<AccessibilityGeometry>();
+    child
+}
+
 /// Registers the constant and reactive state handlers on the shared bind.
 pub fn realize_accessibility_state_metadata(
     metadata: Metadata<AccessibilityState, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    render_state(metadata.content, Computed::constant(metadata.value), ctx)
+    let mut env = ctx.env().clone();
+    if metadata.value.is_hidden() {
+        env.insert(AccessibilityHidden::new(true));
+    }
+    render_state(
+        metadata.content,
+        Computed::constant(metadata.value),
+        &ctx.with_env(&env),
+    )
 }
 
 pub fn realize_accessibility_state_signal_metadata(
@@ -267,13 +295,15 @@ pub fn realize_accessibility_label_metadata(
     metadata: Metadata<AccessibilityLabel, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    let mut leaf = ctx.realize(metadata.content);
+    let scoped = scope_env(ctx, &metadata.value);
+    let mut leaf = ctx.with_env(&scoped).realize(metadata.content);
     let target = view::retain_base(leaf.view());
     leaf.keep(target.clone());
-    let signal = metadata.value.resolve(ctx.env());
+    let signal = metadata.value.resolve(&scoped);
     leaf.bind(&signal, move |label| {
         a11y::set_label(target::of(&target), &NSString::from_str(&label));
     });
+    leaf.keep(scoped);
     leaf
 }
 
@@ -281,13 +311,15 @@ pub fn realize_accessibility_value_metadata(
     metadata: Metadata<AccessibilityValue, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    let mut leaf = ctx.realize(metadata.content);
+    let scoped = scope_env(ctx, &metadata.value);
+    let mut leaf = ctx.with_env(&scoped).realize(metadata.content);
     let target = view::retain_base(leaf.view());
     leaf.keep(target.clone());
-    let signal = metadata.value.resolve(ctx.env());
+    let signal = metadata.value.resolve(&scoped);
     leaf.bind(&signal, move |value| {
         a11y::set_value(target::of(&target), &NSString::from_str(&value));
     });
+    leaf.keep(scoped);
     leaf
 }
 
@@ -295,10 +327,12 @@ pub fn realize_accessibility_role_metadata(
     metadata: Metadata<AccessibilityRole, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    let mut leaf = ctx.realize(metadata.content);
+    let scoped = scope_env(ctx, &metadata.value);
+    let mut leaf = ctx.with_env(&scoped).realize(metadata.content);
     let target = view::retain_base(leaf.view());
     a11y::set_role(target::of(&target), role(&metadata.value));
     leaf.keep(target);
+    leaf.keep(scoped);
     leaf
 }
 
@@ -306,8 +340,10 @@ pub fn realize_accessibility_geometry_metadata(
     metadata: Metadata<AccessibilityGeometry, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    let leaf = ctx.realize(metadata.content);
+    let scoped = scope_env(ctx, &metadata.value);
+    let mut leaf = ctx.with_env(&scoped).realize(metadata.content);
     name_geometry(&leaf, metadata.value);
+    leaf.keep(scoped);
     leaf
 }
 
@@ -315,13 +351,15 @@ pub fn realize_accessibility_hidden_metadata(
     metadata: Metadata<AccessibilityHidden, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    let mut leaf = ctx.realize(metadata.content);
+    let scoped = scope_env(ctx, &metadata.value);
+    let mut leaf = ctx.with_env(&scoped).realize(metadata.content);
     let target = view::retain_base(leaf.view());
     let original_hidden = read_original_hidden(&target);
     leaf.keep(target.clone());
     leaf.bind(metadata.value.signal(), move |hidden| {
         apply_hidden(&target, hidden, original_hidden);
     });
+    leaf.keep(scoped);
     leaf
 }
 
@@ -329,12 +367,23 @@ pub fn realize_accessibility_children_metadata(
     metadata: Metadata<AccessibilityChildren, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    let mut leaf = ctx.realize(metadata.content);
+    let scoped = scope_env(ctx, &metadata.value);
+    let mut leaf = ctx.with_env(&scoped).realize(metadata.content);
     let target = view::retain_base(leaf.view());
     if metadata.value.excludes_descendants() {
+        #[cfg(target_os = "macos")]
         a11y::exclude_children(target::of(&target));
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+            target.setIsAccessibilityElement(true, ctx.mtm());
+            for subview in view::subviews(&target) {
+                view::hide_from_accessibility(&subview);
+            }
+        }
     }
     leaf.keep(target);
+    leaf.keep(scoped);
     leaf
 }
 

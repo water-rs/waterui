@@ -50,6 +50,49 @@ type SecureHandler = Rc<dyn Fn(&SecureField)>;
 /// editing `NSTextView` and the standard edit menu to append to.
 type EditMenuHandler = Rc<dyn Fn(&TextField, &NSTextView, &NSMenu)>;
 
+/// Field-editor text-checking flags saved before editing begins so the shared
+/// `NSWindow` field editor returns to its previous state when editing ends.
+#[derive(Clone, Copy)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the five independent NSTextView text-checking flags"
+)]
+struct SavedEditorTextChecking {
+    spelling_correction: bool,
+    continuous_spell_checking: bool,
+    text_replacement: bool,
+    quote_substitution: bool,
+    dash_substitution: bool,
+}
+
+impl SavedEditorTextChecking {
+    fn capture(editor: &NSTextView) -> Self {
+        Self {
+            spelling_correction: editor.isAutomaticSpellingCorrectionEnabled(),
+            continuous_spell_checking: editor.isContinuousSpellCheckingEnabled(),
+            text_replacement: editor.isAutomaticTextReplacementEnabled(),
+            quote_substitution: editor.isAutomaticQuoteSubstitutionEnabled(),
+            dash_substitution: editor.isAutomaticDashSubstitutionEnabled(),
+        }
+    }
+
+    fn apply_autocorrect(editor: &NSTextView, enabled: bool) {
+        editor.setAutomaticSpellingCorrectionEnabled(enabled);
+        editor.setContinuousSpellCheckingEnabled(enabled);
+        editor.setAutomaticTextReplacementEnabled(enabled);
+        editor.setAutomaticQuoteSubstitutionEnabled(enabled);
+        editor.setAutomaticDashSubstitutionEnabled(enabled);
+    }
+
+    fn restore(self, editor: &NSTextView) {
+        editor.setAutomaticSpellingCorrectionEnabled(self.spelling_correction);
+        editor.setContinuousSpellCheckingEnabled(self.continuous_spell_checking);
+        editor.setAutomaticTextReplacementEnabled(self.text_replacement);
+        editor.setAutomaticQuoteSubstitutionEnabled(self.quote_substitution);
+        editor.setAutomaticDashSubstitutionEnabled(self.dash_substitution);
+    }
+}
+
 /// The editing handlers a [`TextField`] fires — slots so a handler may be
 /// installed after construction and replaced while the field is live.
 pub struct TextFieldIvars {
@@ -62,6 +105,12 @@ pub struct TextFieldIvars {
     /// An undo or redo is running between its `will` and `did` posts —
     /// the `controlTextDidChange` it may emit must not double-report.
     history_transaction: Cell<bool>,
+    /// Whether autocorrection and automatic text substitutions stay enabled
+    /// on the field editor while this field is edited.
+    autocorrect: Cell<bool>,
+    /// Saved text-checking flags of the shared field editor while this field
+    /// is actively edited.
+    saved_text_checking: Cell<Option<SavedEditorTextChecking>>,
 }
 
 impl fmt::Debug for TextFieldIvars {
@@ -118,6 +167,10 @@ define_class!(
                     );
                     return;
                 };
+                self.ivars()
+                    .saved_text_checking
+                    .set(Some(SavedEditorTextChecking::capture(&editor)));
+                SavedEditorTextChecking::apply_autocorrect(&editor, self.ivars().autocorrect.get());
                 // The editor's own undo manager — `None` when the session
                 // runs with native undo disabled.
                 let Some(undo_manager) = editor.undoManager() else {
@@ -187,6 +240,11 @@ define_class!(
         #[unsafe(method(controlTextDidEndEditing:))]
         fn control_text_did_end_editing(&self, _notification: &NSNotification) {
             guarded("TextField controlTextDidEndEditing:", || {
+                if let (Some(saved), Some(editor)) =
+                    (self.ivars().saved_text_checking.take(), self.field_editor())
+                {
+                    saved.restore(&editor);
+                }
                 self.ivars().undo_observers.borrow_mut().clear();
                 self.ivars().history_transaction.set(false);
             });
@@ -265,6 +323,8 @@ impl TextField {
             edit_menu: RefCell::new(None),
             undo_observers: RefCell::new(Vec::new()),
             history_transaction: Cell::new(false),
+            autocorrect: Cell::new(true),
+            saved_text_checking: Cell::new(None),
         };
         let this = Self::alloc(mtm).set_ivars(ivars);
         // SAFETY: `initWithFrame:` is the inherited designated initializer.
@@ -330,6 +390,15 @@ impl TextField {
     /// `NSTextContent`, which carries the property.
     pub fn set_content_type(&self, content_type: crate::ContentType) {
         self.setContentType(Some(content_type.native()));
+    }
+
+    /// Controls whether automatic spelling correction and text substitutions
+    /// run on the field editor while this field is edited.
+    pub fn set_autocorrect(&self, enabled: bool) {
+        self.ivars().autocorrect.set(enabled);
+        if let Some(editor) = self.field_editor() {
+            SavedEditorTextChecking::apply_autocorrect(&editor, enabled);
+        }
     }
 
     /// How the field aligns its text.
@@ -568,6 +637,12 @@ impl SecureField {
     /// The placeholder shown while the field is empty.
     pub fn set_placeholder(&self, placeholder: &NSAttributedString) {
         self.setPlaceholderAttributedString(Some(placeholder));
+    }
+
+    /// The declared content type (`NSTextContentType`, e.g. password or new-password).
+    /// `NSSecureTextField` inherits `NSTextContent` conformance from `NSTextField`.
+    pub fn set_content_type(&self, content_type: crate::ContentType) {
+        self.setContentType(Some(content_type.native()));
     }
 
     /// How the field aligns its text.

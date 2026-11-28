@@ -42,6 +42,7 @@ fn with_caster_clip<E: TextEngine, R>(
             | WrapperEffect::Focused(_)
             | WrapperEffect::FrameRate(_)
             | WrapperEffect::LifeCycle(_)
+            | WrapperEffect::ReportSize(_)
             | WrapperEffect::MaterialGroup
             | WrapperEffect::Transition(_)
             | WrapperEffect::AnchoredOverlay(_) => with_caster_clip(&wrapper.child, f),
@@ -693,7 +694,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                         value.flush(renderer, ctx, child_env);
                     }
-                    WrapperEffect::LayoutPriority(_) => {
+                    WrapperEffect::LayoutPriority(_) | WrapperEffect::ReportSize(_) => {
                         // Layout-only: nothing to apply while drawing.
                         node.child
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);

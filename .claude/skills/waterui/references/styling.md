@@ -253,8 +253,7 @@ A shape is an outline, not a view: `.fill(color)` turns it into one (a `FilledSh
 which fills the space it is given), and `.clip(shape)` uses it as a mask. Two uses:
 
 ```rust
-use waterui::shape::{Capsule, Circle, CornerRadii, CornerRadius, Ellipse, Path,
-                     Rectangle, RoundedRectangle, ShapeExt};
+use waterui::shape::{CornerRadii, CornerRadius, Ellipse, Path};
 
 Circle.fill(Color::srgb_hex("#3B82F6")).size(80.0, 80.0)   // draw the shape
 photo.clip(Circle)                                          // clip a view to the shape
@@ -312,7 +311,6 @@ shape.morph_to(target, fill).progress(t.clone())   // or drive it from a 0..=1 s
 
 ```rust
 use waterui::border::Border;
-use waterui::shape::{Circle, RoundedRectangle};
 use waterui::theme::color::Accent;
 
 card.border(Color::srgb_hex("#E5E7EB"), 1.0)                       // all edges, square corners
@@ -368,6 +366,14 @@ separate type. Colour uses `.foreground(..)`, size flows from the shared `IconSi
 channel (`.icon_size(..)`, defaulting to `24.0` points). Font Awesome's default
 `webfont` mode draws from bundled Font Awesome fonts (`fa-solid-900.ttf`,
 `fa-regular-400.ttf`, `fa-brands-400.ttf`); its `svg` feature needs no font.
+
+Portable `Icon` and `IconGlyph` are decorative (hidden from assistive technology)
+by default so screen readers never speak private-use Unicode codepoints or raw
+pack slugs; attach `.a11y_label("...")` on a standalone icon to publish an
+`AccessibilityRole::Image` node with that localized label, or `.a11y_hidden(true)`
+to keep it hidden explicitly. Inside labelled controls such as
+`button(label("Delete").icon(mdi::delete()))`, only the semantic control label
+is announced.
 
 Match the set to the design language: a Material 3 app uses Material icons, not Lucide.
 

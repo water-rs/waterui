@@ -159,9 +159,10 @@ impl NativeBackend for AppleBackend {
     ) -> NativeLeaf {
         mark_reached!("fixed_container");
         let ctx = self.entry(env);
+        let child_env = crate::components::accessibility_metadata::child_env(env);
         crate::components::fixed_container::realize_fixed_container(
             native,
-            |child| child.realize(self, env, ()),
+            |child| child.realize(self, &child_env, ()),
             &ctx,
         )
     }
@@ -186,7 +187,10 @@ impl NativeBackend for AppleBackend {
         let ctx = self.entry(env);
         crate::components::scroll::realize_scroll_view(
             native,
-            |content, child_env| content.realize(self, child_env, ()),
+            |content, child_env| {
+                let child_env = crate::components::accessibility_metadata::child_env(child_env);
+                content.realize(self, &child_env, ())
+            },
             &ctx,
         )
     }
@@ -765,6 +769,17 @@ impl NativeBackend for AppleBackend {
             metadata,
             &self.entry(env),
         )
+    }
+
+    fn report_size<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui_layout::report_size::ReportSize, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("report_size");
+        let metadata = metadata.map_content(C::into_child);
+        crate::components::report_size::realize_report_size_metadata(metadata, &self.entry(env))
     }
 
     fn lifecycle_hook<C: ChildView<Self>>(

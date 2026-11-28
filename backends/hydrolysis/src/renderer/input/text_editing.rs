@@ -7,6 +7,7 @@ use crate::theme::MenuLayout;
 use cherenkov_record::Draw as _;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use unicode_segmentation::UnicodeSegmentation;
+use waterui_controls::input::{Capitalization, ContentType, KeyboardType, SubmitLabel};
 use waterui_core::contract_violation;
 
 /// Where text copy/cut operations write text to the clipboard. Defaults to the
@@ -18,6 +19,46 @@ pub type ClipboardWrite = Rc<dyn Fn(&str) -> bool>;
 /// The system clipboard writer every window starts with.
 pub fn system_clipboard_write() -> ClipboardWrite {
     Rc::new(write_clipboard_text)
+}
+
+/// Resolved software-keyboard and input-method options carried from a text
+/// field into platform editing sessions (`UIKit` `UITextInputTraits`, Android
+/// `EditorInfo`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextInputOptions {
+    pub(crate) keyboard: KeyboardType,
+    pub(crate) content_type: Option<ContentType>,
+    pub(crate) autocapitalization: Capitalization,
+    pub(crate) autocorrect: bool,
+    pub(crate) submit_label: SubmitLabel,
+}
+
+impl Default for TextInputOptions {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+impl TextInputOptions {
+    const DEFAULT: Self = Self {
+        keyboard: KeyboardType::Text,
+        content_type: None,
+        autocapitalization: Capitalization::Sentences,
+        autocorrect: true,
+        submit_label: SubmitLabel::Return,
+    };
+
+    /// Resolved input options for a password secure field in unit tests.
+    #[cfg(all(feature = "secure-field", test))]
+    pub(crate) const fn password_default() -> Self {
+        Self {
+            keyboard: KeyboardType::Text,
+            content_type: Some(ContentType::Password),
+            autocapitalization: Capitalization::None,
+            autocorrect: false,
+            submit_label: SubmitLabel::Return,
+        }
+    }
 }
 
 /// The paints a field's look gives the caret and the selection, evaluated
@@ -69,9 +110,15 @@ pub enum TextInputModel {
         /// `TextField::on_submit` — run on Return in a line-limited field; a
         /// field without one leaves the key unconsumed so it bubbles.
         on_submit: Option<SharedAction>,
+        /// Resolved keyboard, capitalization, autocorrection, submit-key, and autofill options.
+        input: TextInputOptions,
     },
     #[cfg(feature = "secure-field")]
-    SecureField { value: nami::Binding<FormSecure> },
+    SecureField {
+        value: nami::Binding<FormSecure>,
+        on_submit: Option<SharedAction>,
+        input: TextInputOptions,
+    },
     /// Read-only selectable static text (`Text::selectable(true)` / `.text_selectable(true)`).
     SelectableText { value: Str },
 }
@@ -302,6 +349,8 @@ pub struct FocusedEditorSnapshot<E: crate::text::TextEngine> {
     /// Whether the field declares `on_submit` — the editor action an IME's
     /// Done key fires.
     pub(crate) has_submit: bool,
+    /// Resolved keyboard, capitalization, autocorrection, submit-key, and autofill options.
+    pub(crate) input: TextInputOptions,
     /// The field's hit bounds in window logical coordinates — the editor
     /// bounds an IME sizes candidate windows against.
     pub(crate) bounds: kurbo::Rect,
@@ -502,7 +551,7 @@ impl TextInputModel {
             #[cfg(feature = "text-field")]
             Self::TextField { on_submit, .. } => on_submit.as_ref(),
             #[cfg(feature = "secure-field")]
-            Self::SecureField { .. } => None,
+            Self::SecureField { on_submit, .. } => on_submit.as_ref(),
             Self::SelectableText { .. } => None,
         }
     }
@@ -512,7 +561,7 @@ impl TextInputModel {
             #[cfg(feature = "text-field")]
             Self::TextField { value, .. } => value.snapshot().to_plain().to_string(),
             #[cfg(feature = "secure-field")]
-            Self::SecureField { value } => value.snapshot().expose().to_owned(),
+            Self::SecureField { value, .. } => value.snapshot().expose().to_owned(),
             Self::SelectableText { value } => value.to_string(),
         }
     }
@@ -522,7 +571,7 @@ impl TextInputModel {
             #[cfg(feature = "text-field")]
             Self::TextField { value, .. } => value.set(StyledStr::plain(text)),
             #[cfg(feature = "secure-field")]
-            Self::SecureField { value } => {
+            Self::SecureField { value, .. } => {
                 let mut next = FormSecure::default();
                 next.set(text);
                 value.set(next);
@@ -550,6 +599,16 @@ impl TextInputModel {
             #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => true,
             Self::SelectableText { .. } => false,
+        }
+    }
+
+    pub(crate) const fn input_options(&self) -> TextInputOptions {
+        match self {
+            #[cfg(feature = "text-field")]
+            Self::TextField { input, .. } => *input,
+            #[cfg(feature = "secure-field")]
+            Self::SecureField { input, .. } => *input,
+            Self::SelectableText { .. } => TextInputOptions::DEFAULT,
         }
     }
 
@@ -1686,6 +1745,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             password: target.model.is_secure(),
             line_limit: target.model.line_limit(),
             has_submit: target.model.submit_action().is_some(),
+            input: target.model.input_options(),
             bounds: target.bounds,
             cursor_area: target.cursor_area,
             text_bounds: target.text_bounds,
@@ -2634,6 +2694,7 @@ mod tests {
             line_limit,
             on_submit: None,
             selection_menu: empty_selection_menu(),
+            input: TextInputOptions::default(),
         }
     }
 
@@ -2642,6 +2703,8 @@ mod tests {
         secure.set(value.to_owned());
         TextInputModel::SecureField {
             value: Binding::new(secure),
+            on_submit: None,
+            input: TextInputOptions::password_default(),
         }
     }
 

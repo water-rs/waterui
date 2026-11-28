@@ -176,20 +176,20 @@ fn counter(count: &Binding<i32>) -> impl View {
 ```
 
 `action_async` takes the same handler shape and returns a future, spawned on the
-local executor:
+local executor. It is single-flight: while the future runs, presses are ignored,
+the button's interaction state reports disabled, and accessibility reports busy
+until the future completes or drops. Chain `.pending(&busy)` in either order
+with `.action_async(..)` to mirror that in-flight state into a `Binding<bool>`:
 
 ```rust,no_run
 use waterui::prelude::*;
 
 fn refresh(busy: &Binding<bool>) -> impl View {
     button("Refresh")
-        .action_async(|State(busy): State<Binding<bool>>| async move {
-            busy.set(true);
+        .action_async(|| async {
             // ... await the work ...
-            busy.set(false);
         })
-        .state(busy)
-        .disabled(busy.clone())
+        .pending(busy)
 }
 ```
 
@@ -348,7 +348,7 @@ fn note(value: &Binding<Str>) -> impl View {
 | `Toggle` | `Toggle::new(label, &Binding<bool>)`, `toggle(label, &binding)` | `switch()` / `checkbox()` presentation |
 | `Slider` | `Slider::new(label, &Binding<T: SliderValue>)`, `slider(label, &binding)` | `range`, `step`, `value_formatter`, `min_value_label`, `max_value_label` |
 | `Stepper` | `Stepper::new(label, &Binding<T: StepperValue>)`, `stepper(label, &binding)` | `range`, `step`, `value_formatter` |
-| `TextField` | `TextField::new(label, &Binding<T: TextFieldValue>)`, `field(label, &binding)` | `prompt`, `keyboard`, `line_limit`, `selection_menu` |
+| `TextField` | `TextField::new(label, &Binding<T: TextFieldValue>)`, `field(label, &binding)` | `prompt`, `keyboard`, `content_type`, `autocapitalization`, `autocorrect`, `submit_label`, `line_limit`, `selection_menu`, `on_submit` |
 | `Menu` | `Menu::new(label, impl MenuView)` | Renders as a popup trigger, or nests inside another menu |
 
 ### Labels
@@ -381,7 +381,9 @@ fn note(value: &Binding<Str>) -> impl View {
 - `ControlSize` — `ExtraSmall`, `Small`, `Medium`, `Large`, `ExtraLarge`, shared by buttons and sliders;
   scales height, padding, icon size, and corner shape together.
 - `ToggleStyle` — `Automatic`, `Switch`, `Checkbox`.
-- `input::KeyboardType` — `Text`, `Email`, `URL`, `Number`, `PhoneNumber`.
+- `input::KeyboardType` — `Text`, `Email`, `URL`, `Number`, `Decimal`, `PhoneNumber`.
+- `input::Capitalization` — `None`, `Words`, `Sentences`, `Characters`.
+- `input::SubmitLabel` — `Return`, `Done`, `Go`, `Next`, `Search`, `Send`, `Join`, `Continue`.
 
 ### Backend-facing configuration
 

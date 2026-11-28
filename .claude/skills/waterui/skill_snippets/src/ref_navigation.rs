@@ -217,9 +217,25 @@ pub fn navigation_path_operations_prose(navigator: Navigator<MailRoute>) -> impl
     path.clear();
     path.replace([MailRoute::Compose]);
     let _ = (path.len(), path.is_empty(), path.snapshot());
+    let _ = (path.len_signal(), path.is_empty_signal());
     path.truncate(0);
 
     NavigationStack::new(inbox_root(Mail)).page_transition(navigation_transition::automatic())
+}
+
+// ---------------------------------------------------------------------------
+// navigation.md § "## Navigation stacks and routes" — rust block 4/17
+// ---------------------------------------------------------------------------
+pub fn navigation_block_path_signal() -> impl View {
+    let path = NavigationPath::<MailRoute>::new();
+    let back_path = path.clone();
+
+    vstack((button("Back to root")
+        .action(move || back_path.clear())
+        .visible(path.is_empty_signal().map(|empty| !empty)),))
+    .on_change(&path, |routes: Vec<MailRoute>| {
+        let _depth = routes.len();
+    })
 }
 
 pub fn navigation_route_free_link_prose() -> impl View {
@@ -356,6 +372,26 @@ pub fn navigation_block_08() -> NavigationView<impl View, impl NavigationToolbar
                     |navigator: Navigator<MailRoute>| navigator.push(MailRoute::Compose),
                 )),
         )
+}
+
+// ---------------------------------------------------------------------------
+// navigation.md § "## Toolbars" — rust block 9/17
+// ---------------------------------------------------------------------------
+// navigation.md writes `mdi::` qualified so the icon set stays visible.
+#[allow(unknown_lints, qualified_waterui_path)]
+pub fn navigation_block_toolbar_item_state() {
+    use waterui::navigation::{NavigationToolbarItem, NavigationToolbarPlacement};
+
+    let draft_empty = Binding::new(true);
+    let is_editing = Binding::new(true);
+
+    let _ = NavigationToolbarItem::action(
+        NavigationToolbarPlacement::Confirmation,
+        label("Send").icon(mdi::send()),
+        send_draft,
+    )
+    .disabled(draft_empty)
+    .visible(is_editing);
 }
 
 // ---------------------------------------------------------------------------

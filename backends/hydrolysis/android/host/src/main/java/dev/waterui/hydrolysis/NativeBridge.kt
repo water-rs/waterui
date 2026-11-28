@@ -90,7 +90,7 @@ object NativeBridge {
      * 35 = [nativeCreateSession] carries `reduceMotion` and [nativeSetReduceMotion]
      * forwards live `Settings.Global.ANIMATOR_DURATION_SCALE` changes.
      */
-    private const val SCHEMA: Int = 35
+    private const val SCHEMA: Int = 36
 
     /** Applies the pending GPU result on the UI thread. */
     @JvmStatic external fun nativeCompleteFrame(session: Long)

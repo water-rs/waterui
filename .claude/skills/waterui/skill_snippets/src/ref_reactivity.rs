@@ -1,7 +1,6 @@
 //! Snippets from `.claude/skills/waterui/references/reactivity.md`, in file
 //! order. Transcription conventions are documented in the crate README.
 
-use waterui::Identifiable;
 use waterui::prelude::*;
 
 /// Glue: the `Row` type reactivity.md's collection snippets refer to.
@@ -84,7 +83,6 @@ pub fn reactivity_block_02() {
 // ---------------------------------------------------------------------------
 pub fn reactivity_block_03() {
     use core::time::Duration;
-    use waterui::animation::Animation;
 
     // core
     let n = Binding::new(2_i32);
@@ -444,7 +442,6 @@ pub mod reactivity_block_13 {
 // ---------------------------------------------------------------------------
 pub fn reactivity_block_14() {
     use core::time::Duration;
-    use waterui::animation::Animation; // not in the prelude
 
     let scale = Binding::new(1.0_f32);
     let animated = scale.with(Animation::spring(300.0, 15.0));
@@ -467,7 +464,7 @@ pub fn reactivity_block_14() {
 // ---------------------------------------------------------------------------
 pub fn reactivity_animation_prose() {
     use core::time::Duration;
-    use waterui::animation::{Animation, Repeat};
+    use waterui::animation::Repeat;
 
     let d = Duration::from_millis(250);
     let _ = Animation::linear(d);
@@ -514,8 +511,6 @@ pub fn reactivity_animation_ext_single_trait() {
 // reactivity.md § "## Animation" — rust block 15/23
 // ---------------------------------------------------------------------------
 pub fn reactivity_block_15() {
-    use waterui::animation::Animation;
-
     let hovered = Binding::new(false);
     let bounce = Binding::new(1.0_f32);
 
@@ -776,12 +771,14 @@ pub fn reactivity_block_22() {
     async fn warm_cache() {}
 
     let result = Binding::new(Str::from(""));
+    let fetching = Binding::new(false);
     let query = Binding::new(Str::from(""));
 
     button("Fetch")
         .action_async(|State(out): State<Binding<Str>>| async move {
             out.set(fetch().await);
         })
+        .pending(&fetching)
         .state(&result);
 
     // These already end in `;`, so each keeps its own statement in its own

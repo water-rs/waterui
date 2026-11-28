@@ -12,15 +12,12 @@
 
 use core::f32::consts::{FRAC_PI_2, PI};
 use core::time::Duration;
-use waterui::animation::{Animation, Repeat};
+use waterui::animation::Repeat;
 use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
-use waterui::shape::{
-    Capsule, Circle, CornerRadii, CornerRadius, Ellipse, Path, Rectangle, RoundedRectangle,
-    ShapeExt,
-};
+use waterui::shape::{CornerRadii, CornerRadius, Ellipse, Path};
 
 const HDR_SHAPES_WIDTH: f32 = 284.0;
 const HDR_SHAPES_HEIGHT: f32 = 60.0;

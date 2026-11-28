@@ -302,6 +302,10 @@ internal class EditingStatePayload(json: String) {
     val password: Boolean = o.getBoolean("password")
     val singleLine: Boolean = o.getBoolean("single_line")
     val hasSubmit: Boolean = o.getBoolean("has_submit")
+    val keyboard: String = o.getString("keyboard")
+    val capitalization: String = o.getString("capitalization")
+    val autocorrect: Boolean = o.getBoolean("autocorrect")
+    val submitLabel: String = o.getString("submit_label")
 }
 
 /** The `onNativeCursorAnchorInfo` JSON — rect arrays in logical units. */

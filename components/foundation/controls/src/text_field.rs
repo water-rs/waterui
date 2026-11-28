@@ -1,7 +1,7 @@
 //! A text input component wired to a reactive string binding.
 //!
 //! ![`TextField`](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/text_field.svg)
-pub use crate::input::{ContentType, KeyboardType};
+pub use crate::input::{Capitalization, ContentType, KeyboardType, SubmitLabel};
 
 use core::num::NonZeroUsize;
 
@@ -13,7 +13,9 @@ use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::handler::{Handler, SharedAction};
 use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Environment, Native, NativeView, View, contract_violation};
-use waterui_text::{IntoText, Text, TextConfig, styled::StyledStr};
+use waterui_text::{IntoText, TextConfig, styled::StyledStr};
+
+use crate::input::{FieldInput, ResolvedFieldInput};
 
 use crate::label::{ControlLabel, IntoLabel, Label, LabelKind, impl_label_style_methods};
 use crate::menu::{MenuItem, MenuView, ResolvedMenuItem, resolve_menu_items};
@@ -55,21 +57,18 @@ pub struct TextFieldConfig<S> {
     label: ControlLabel<S>,
     /// The binding to the text value.
     value: Binding<StyledStr>,
-    /// The resolved placeholder text shown when the field is empty.
-    prompt: TextConfig,
+    /// Shared resolved input configuration (prompt, content type, submit label, submit action).
+    input: ResolvedFieldInput,
     /// The type of keyboard to use for input.
     keyboard: KeyboardType,
-    /// The semantic content type the field declares for autofill.
-    content_type: Option<ContentType>,
+    /// Resolved autocapitalization behavior for this field.
+    autocapitalization: Capitalization,
+    /// Resolved autocorrection behavior for this field.
+    autocorrect: bool,
     /// Optional selected-text menu items resolved for the effective locale.
     selection_menu: Computed<Vec<ResolvedMenuItem<S>>>,
     /// Maximum number of lines the field renders. `None` removes the limit.
     line_limit: Computed<Option<NonZeroUsize>>,
-    /// The action run when the user submits the field with Return or Enter.
-    ///
-    /// A field without one leaves Return unconsumed, so it bubbles to the
-    /// field's ancestors like any other key it does not use.
-    on_submit: Option<SharedAction>,
 }
 
 impl<S> TextFieldConfig<S> {
@@ -98,19 +97,37 @@ impl<S> TextFieldConfig<S> {
     /// The resolved placeholder text shown when the field is empty.
     #[must_use]
     pub const fn prompt(&self) -> &TextConfig {
-        &self.prompt
+        self.input.prompt()
     }
 
-    /// The type of keyboard to use for input.
+    /// The resolved type of keyboard to use for input.
     #[must_use]
-    pub const fn keyboard(&self) -> &KeyboardType {
-        &self.keyboard
+    pub const fn keyboard(&self) -> KeyboardType {
+        self.keyboard
     }
 
     /// The semantic content type the field declares for autofill.
     #[must_use]
     pub const fn content_type(&self) -> Option<ContentType> {
-        self.content_type
+        self.input.content_type()
+    }
+
+    /// The resolved autocapitalization behavior for this field.
+    #[must_use]
+    pub const fn autocapitalization(&self) -> Capitalization {
+        self.autocapitalization
+    }
+
+    /// Whether autocorrection is enabled for this field.
+    #[must_use]
+    pub const fn autocorrect(&self) -> bool {
+        self.autocorrect
+    }
+
+    /// The label and action shown on the software keyboard's Return key.
+    #[must_use]
+    pub const fn submit_label(&self) -> SubmitLabel {
+        self.input.submit_label()
     }
 
     /// Optional selected-text menu items resolved for the effective locale.
@@ -131,7 +148,7 @@ impl<S> TextFieldConfig<S> {
     /// field's ancestors like any other key it does not use.
     #[must_use]
     pub const fn on_submit(&self) -> Option<&SharedAction> {
-        self.on_submit.as_ref()
+        self.input.on_submit()
     }
 
     /// Takes the value apart into its fields, in declaration order.
@@ -148,19 +165,26 @@ impl<S> TextFieldConfig<S> {
         TextConfig,
         KeyboardType,
         Option<ContentType>,
+        Capitalization,
+        bool,
+        SubmitLabel,
         Computed<Vec<ResolvedMenuItem<S>>>,
         Computed<Option<NonZeroUsize>>,
         Option<SharedAction>,
     ) {
+        let (prompt, content_type, submit_label, on_submit) = self.input.into_parts();
         (
             self.label,
             self.value,
-            self.prompt,
+            prompt,
             self.keyboard,
-            self.content_type,
+            content_type,
+            self.autocapitalization,
+            self.autocorrect,
+            submit_label,
             self.selection_menu,
             self.line_limit,
-            self.on_submit,
+            on_submit,
         )
     }
 }
@@ -179,9 +203,10 @@ impl<S: 'static> MapSlots<S> for TextFieldConfig<S> {
         TextFieldConfig {
             label: self.label.map_slots(f),
             value: self.value,
-            prompt: self.prompt,
+            input: self.input,
             keyboard: self.keyboard,
-            content_type: self.content_type,
+            autocapitalization: self.autocapitalization,
+            autocorrect: self.autocorrect,
             selection_menu: self
                 .selection_menu
                 .map(move |items| {
@@ -192,7 +217,6 @@ impl<S: 'static> MapSlots<S> for TextFieldConfig<S> {
                 })
                 .computed(),
             line_limit: self.line_limit,
-            on_submit: self.on_submit,
         }
     }
 }
@@ -210,25 +234,20 @@ pub struct TextField<L> {
     label: Label<L>,
     /// The binding to the text value.
     value: Binding<StyledStr>,
-    /// The placeholder text shown when the field is empty.
-    prompt: Text,
-    /// The type of keyboard to use for input.
-    keyboard: KeyboardType,
-    /// The semantic content type the field declares for autofill.
-    ///
-    /// `None` declares none — the field is not offered to autofill services.
-    content_type: Option<ContentType>,
+    /// Shared input configuration (prompt, content type, submit label, submit action).
+    input: FieldInput,
+    /// Explicit keyboard override; when `None`, derived from `content_type`.
+    keyboard: Option<KeyboardType>,
+    /// Explicit autocapitalization override; when `None`, derived from `content_type` or `keyboard`.
+    autocapitalization: Option<Capitalization>,
+    /// Explicit autocorrection override; when `None`, derived from `content_type` or `keyboard`.
+    autocorrect: Option<bool>,
     /// Optional selected-text menu items.
     ///
     /// These actions are shown by native text selection UI.
     selection_menu: Computed<Vec<MenuItem>>,
     /// Maximum number of lines the field renders. `None` removes the limit.
     line_limit: Computed<Option<NonZeroUsize>>,
-    /// The action run when the user submits the field with Return or Enter.
-    ///
-    /// A field without one leaves Return unconsumed, so it bubbles to the
-    /// field's ancestors like any other key it does not use.
-    on_submit: Option<SharedAction>,
 }
 
 impl<L> TextField<L> {
@@ -243,12 +262,12 @@ impl<L> TextField<L> {
         Self {
             label: label.into_label(),
             value: V::into_text_field_binding(value),
-            prompt: Text::default(),
-            keyboard: KeyboardType::default(),
-            content_type: None,
+            input: FieldInput::new(),
+            keyboard: None,
+            autocapitalization: None,
+            autocorrect: None,
             selection_menu: Computed::constant(Vec::new()),
             line_limit: Computed::constant(NonZeroUsize::new(1)),
-            on_submit: None,
         }
     }
 
@@ -272,13 +291,13 @@ impl<L> TextField<L> {
     /// In a field without a line limit Return inserts a line break and never
     /// submits.
     pub fn on_submit<Args>(mut self, action: impl Handler<Args, ()>) -> Self {
-        self.on_submit = Some(SharedAction::new(action));
+        self.input.set_on_submit(action);
         self
     }
 
     /// Sets the prompt for the text field.
     pub fn prompt(mut self, prompt: impl IntoText) -> Self {
-        self.prompt = prompt.into_text();
+        self.input.set_prompt(prompt);
         self
     }
 
@@ -299,9 +318,10 @@ impl<L> TextField<L> {
 
     /// Sets the on-screen keyboard the field requests while editing.
     ///
+    /// Overrides any default keyboard implied by [`Self::content_type`].
     /// Platforms without a software keyboard ignore this hint.
     pub const fn keyboard(mut self, keyboard: KeyboardType) -> Self {
-        self.keyboard = keyboard;
+        self.keyboard = Some(keyboard);
         self
     }
 
@@ -310,8 +330,33 @@ impl<L> TextField<L> {
     /// this drives the autofill suggestions above the keyboard, including the
     /// one-time code the system offers for a received SMS; on Android the
     /// autofill service sees the matching hint.
+    ///
+    /// Also sets sensible defaults for keyboard, autocapitalization, and
+    /// autocorrection unless explicitly overridden.
     pub const fn content_type(mut self, content_type: ContentType) -> Self {
-        self.content_type = Some(content_type);
+        self.input.set_content_type(content_type);
+        self
+    }
+
+    /// Sets how the input system capitalizes typed text.
+    ///
+    /// Overrides the default derived from [`Self::content_type`] or [`Self::keyboard`].
+    pub const fn autocapitalization(mut self, capitalization: Capitalization) -> Self {
+        self.autocapitalization = Some(capitalization);
+        self
+    }
+
+    /// Sets whether the input system autocorrects typed text.
+    ///
+    /// Overrides the default derived from [`Self::content_type`] or [`Self::keyboard`].
+    pub const fn autocorrect(mut self, enabled: bool) -> Self {
+        self.autocorrect = Some(enabled);
+        self
+    }
+
+    /// Sets the label and action shown on the software keyboard's Return key.
+    pub const fn submit_label(mut self, label: SubmitLabel) -> Self {
+        self.input.set_submit_label(label);
         self
     }
 }
@@ -319,15 +364,28 @@ impl<L> TextField<L> {
 impl<L: LabelKind> TextField<L> {
     fn into_config<S: ChildSlot>(self, env: &Environment) -> TextFieldConfig<S> {
         let selection_menu = resolve_menu_items(&self.selection_menu, env);
+        let content_type = self.input.content_type();
+        let keyboard = self
+            .keyboard
+            .or_else(|| content_type.map(ContentType::default_keyboard))
+            .unwrap_or_default();
+        let autocapitalization = self
+            .autocapitalization
+            .or_else(|| content_type.map(ContentType::default_capitalization))
+            .unwrap_or_else(|| keyboard.default_capitalization());
+        let autocorrect = self
+            .autocorrect
+            .or_else(|| content_type.map(ContentType::default_autocorrect))
+            .unwrap_or_else(|| keyboard.default_autocorrect());
         TextFieldConfig {
             label: self.label.into_control_label::<S>(env),
             value: self.value,
-            prompt: self.prompt.resolve(env),
-            keyboard: self.keyboard,
-            content_type: self.content_type,
+            input: self.input.resolve(env),
+            keyboard,
+            autocapitalization,
+            autocorrect,
             selection_menu,
             line_limit: self.line_limit,
-            on_submit: self.on_submit,
         }
     }
 }
@@ -424,5 +482,90 @@ mod tests {
         mapped.set(StyledStr::plain("updated"));
 
         assert_eq!(source.snapshot(), "updated");
+    }
+
+    #[test]
+    fn plain_field_uses_sentence_capitalization_and_autocorrect() {
+        use super::{Capitalization, KeyboardType, SubmitLabel};
+        use waterui_core::{AnyView, Environment};
+
+        let value = Binding::new(Str::from(""));
+        let config = TextField::new("Note", &value).into_config::<AnyView>(&Environment::new());
+        assert_eq!(config.keyboard(), KeyboardType::Text);
+        assert_eq!(config.content_type(), None);
+        assert_eq!(config.autocapitalization(), Capitalization::Sentences);
+        assert!(config.autocorrect());
+        assert_eq!(config.submit_label(), SubmitLabel::Return);
+    }
+
+    #[test]
+    fn content_type_implies_input_defaults_and_explicit_modifiers_win() {
+        use super::{Capitalization, ContentType, KeyboardType, SubmitLabel};
+        use waterui_core::{AnyView, Environment};
+
+        let env = Environment::new();
+        let value = Binding::new(Str::from(""));
+
+        let email = TextField::new("Email", &value)
+            .content_type(ContentType::EmailAddress)
+            .into_config::<AnyView>(&env);
+        assert_eq!(email.keyboard(), KeyboardType::Email);
+        assert_eq!(email.autocapitalization(), Capitalization::None);
+        assert!(!email.autocorrect());
+
+        let name = TextField::new("Name", &value)
+            .content_type(ContentType::PersonName)
+            .into_config::<AnyView>(&env);
+        assert_eq!(name.keyboard(), KeyboardType::Text);
+        assert_eq!(name.autocapitalization(), Capitalization::Words);
+        assert!(!name.autocorrect());
+
+        let postal = TextField::new("Postal code", &value)
+            .content_type(ContentType::PostalCode)
+            .into_config::<AnyView>(&env);
+        assert_eq!(postal.autocapitalization(), Capitalization::Characters);
+        assert!(!postal.autocorrect());
+
+        let otp = TextField::new("Code", &value)
+            .content_type(ContentType::OneTimeCode)
+            .into_config::<AnyView>(&env);
+        assert_eq!(otp.autocapitalization(), Capitalization::None);
+        assert!(!otp.autocorrect());
+
+        // Explicit modifiers override derived content-type defaults regardless of call order.
+        let overridden = TextField::new("Email", &value)
+            .autocapitalization(Capitalization::Words)
+            .autocorrect(true)
+            .keyboard(KeyboardType::Text)
+            .submit_label(SubmitLabel::Next)
+            .content_type(ContentType::EmailAddress)
+            .into_config::<AnyView>(&env);
+        assert_eq!(overridden.keyboard(), KeyboardType::Text);
+        assert_eq!(overridden.autocapitalization(), Capitalization::Words);
+        assert!(overridden.autocorrect());
+        assert_eq!(overridden.submit_label(), SubmitLabel::Next);
+    }
+
+    #[test]
+    fn keyboard_type_implies_defaults_and_supports_decimal() {
+        use super::{Capitalization, KeyboardType};
+        use waterui_core::{AnyView, Environment};
+
+        let env = Environment::new();
+        let value = Binding::new(Str::from(""));
+
+        let url = TextField::new("Website", &value)
+            .keyboard(KeyboardType::URL)
+            .into_config::<AnyView>(&env);
+        assert_eq!(url.keyboard(), KeyboardType::URL);
+        assert_eq!(url.autocapitalization(), Capitalization::None);
+        assert!(!url.autocorrect());
+
+        let price = TextField::new("Price", &value)
+            .keyboard(KeyboardType::Decimal)
+            .into_config::<AnyView>(&env);
+        assert_eq!(price.keyboard(), KeyboardType::Decimal);
+        assert_eq!(price.autocapitalization(), Capitalization::None);
+        assert!(!price.autocorrect());
     }
 }

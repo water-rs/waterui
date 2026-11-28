@@ -386,3 +386,101 @@ fn double_column_split_omits_its_sidebar_on_semantic_mount(ui: UiBuilder) {
         "the detail column emits"
     );
 }
+
+fn assert_toolbar_item_state<R: RuntimeDriver>(
+    app: &mut SemanticApp<R>,
+    disabled: &Binding<bool>,
+    visible: &Binding<bool>,
+    taps: &std::rc::Rc<std::cell::Cell<usize>>,
+) {
+    app.settle();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Send")
+        .enabled(false)
+        .assert_exists();
+    assert_eq!(
+        taps.get(),
+        0,
+        "disabled semantic toolbar item must not fire"
+    );
+
+    disabled.set(false);
+    app.settle();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Send")
+        .enabled(true)
+        .tap();
+    app.settle();
+    assert_eq!(taps.get(), 1, "re-enabled semantic toolbar item must fire");
+
+    visible.set(false);
+    app.settle();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Send")
+        .assert_not_exists();
+
+    visible.set(true);
+    app.settle();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Send")
+        .enabled(true)
+        .tap();
+    app.settle();
+    assert_eq!(taps.get(), 2, "restored semantic toolbar item must fire");
+}
+
+#[waterui::test(viewport = (390, 844))]
+fn semantic_toolbar_item_disabled_and_visible_on_semantic_mount(ui: UiBuilder) {
+    let disabled = Binding::new(true);
+    let visible = Binding::new(true);
+    let taps = std::rc::Rc::new(std::cell::Cell::new(0usize));
+
+    let mounted_disabled = disabled.clone();
+    let mounted_visible = visible.clone();
+    let mounted_taps = std::rc::Rc::clone(&taps);
+    let mut app = ui.mount(move || {
+        let taps = std::rc::Rc::clone(&mounted_taps);
+        NavigationView::new("Compose", text("draft body")).navigation_toolbar(
+            NavigationToolbar::default().item(
+                NavigationToolbarItem::action(
+                    NavigationToolbarPlacement::Confirmation,
+                    "Send",
+                    move || taps.set(taps.get() + 1),
+                )
+                .disabled(mounted_disabled.clone())
+                .visible(mounted_visible.clone()),
+            ),
+        )
+    });
+    assert_toolbar_item_state(&mut app, &disabled, &visible, &taps);
+}
+
+#[waterui::test(theme = TestStyle::new(), viewport = (390, 844))]
+fn semantic_toolbar_item_disabled_and_visible_on_offscreen_mount(ui: UiBuilder) {
+    let disabled = Binding::new(true);
+    let visible = Binding::new(true);
+    let taps = std::rc::Rc::new(std::cell::Cell::new(0usize));
+
+    let mounted_disabled = disabled.clone();
+    let mounted_visible = visible.clone();
+    let mounted_taps = std::rc::Rc::clone(&taps);
+    let mut app = ui.mount_offscreen(move || {
+        let taps = std::rc::Rc::clone(&mounted_taps);
+        NavigationView::new("Compose", text("draft body")).navigation_toolbar(
+            NavigationToolbar::default().item(
+                NavigationToolbarItem::action(
+                    NavigationToolbarPlacement::Confirmation,
+                    "Send",
+                    move || taps.set(taps.get() + 1),
+                )
+                .disabled(mounted_disabled.clone())
+                .visible(mounted_visible.clone()),
+            ),
+        )
+    });
+    assert_toolbar_item_state(&mut app, &disabled, &visible, &taps);
+}

@@ -41,8 +41,7 @@ use objc2_ui_kit::{
 use super::pointer::{CursorInteraction, PointerCursor};
 use super::surface_view::gesture_phase;
 use super::text_input::{
-    Autocapitalization, Autocorrection, KeyboardType, ReturnKey, TextInputClient,
-    TextInputNotifier, next_grapheme, previous_grapheme,
+    KeyboardType, TextInputClient, TextInputNotifier, next_grapheme, previous_grapheme,
 };
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Rect};
@@ -814,20 +813,7 @@ define_class!(
         // SAFETY: plain state read.
         #[unsafe(method(returnKeyType))]
         fn return_key_type_override(&self) -> UIReturnKeyType {
-            match self.traits().return_key {
-                ReturnKey::Default => UIReturnKeyType::Default,
-                ReturnKey::Go => UIReturnKeyType::Go,
-                ReturnKey::Google => UIReturnKeyType::Google,
-                ReturnKey::Join => UIReturnKeyType::Join,
-                ReturnKey::Next => UIReturnKeyType::Next,
-                ReturnKey::Route => UIReturnKeyType::Route,
-                ReturnKey::Search => UIReturnKeyType::Search,
-                ReturnKey::Send => UIReturnKeyType::Send,
-                ReturnKey::Yahoo => UIReturnKeyType::Yahoo,
-                ReturnKey::Done => UIReturnKeyType::Done,
-                ReturnKey::EmergencyCall => UIReturnKeyType::EmergencyCall,
-                ReturnKey::Continue => UIReturnKeyType::Continue,
-            }
+            self.traits().return_key.native()
         }
 
         // SAFETY: plain state read.
@@ -839,22 +825,13 @@ define_class!(
         // SAFETY: plain state read.
         #[unsafe(method(autocorrectionType))]
         fn autocorrection_type_override(&self) -> UITextAutocorrectionType {
-            match self.traits().autocorrection {
-                Autocorrection::Default => UITextAutocorrectionType::Default,
-                Autocorrection::Disabled => UITextAutocorrectionType::No,
-                Autocorrection::Enabled => UITextAutocorrectionType::Yes,
-            }
+            self.traits().autocorrection.native()
         }
 
         // SAFETY: plain state read.
         #[unsafe(method(autocapitalizationType))]
         fn autocapitalization_type_override(&self) -> UITextAutocapitalizationType {
-            match self.traits().autocapitalization {
-                Autocapitalization::None => UITextAutocapitalizationType::None,
-                Autocapitalization::Words => UITextAutocapitalizationType::Words,
-                Autocapitalization::Sentences => UITextAutocapitalizationType::Sentences,
-                Autocapitalization::AllCharacters => UITextAutocapitalizationType::AllCharacters,
-            }
+            self.traits().autocapitalization.native()
         }
 
         // SAFETY: plain state read; `nil` is a valid content type.

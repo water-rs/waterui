@@ -17,7 +17,7 @@ use waterui::color::Srgb;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
-use waterui::shape::{CornerRadius, Rectangle, RoundedRectangle, ShapeExt};
+use waterui::shape::CornerRadius;
 
 const PICKER_BLUE: Srgb = Srgb::from_hex("#3380CC");
 const PICKER_PINK: Srgb = Srgb::from_hex("#FF4D80");

@@ -24,7 +24,7 @@ use core::time::Duration;
 use std::time::Instant;
 
 use waterui::reactive::binding;
-use waterui::shape::{Circle, CornerRadius, RoundedRectangle, ShapeExt as _};
+use waterui::shape::CornerRadius;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Binding, Computed};
 

@@ -191,7 +191,6 @@ pub fn styling_block_05() {
 // styling.md § "## Reactive colors" — rust block 6/19
 // ---------------------------------------------------------------------------
 pub fn styling_block_06() -> impl View {
-    use waterui::shape::{Rectangle, ShapeExt};
     use waterui::theme::color::SurfaceVariant;
 
     let selected = Binding::new(true);
@@ -206,7 +205,6 @@ pub fn styling_block_06() -> impl View {
 // styling.md § "## Backgrounds, materials, gradients" — rust block 7/19
 // ---------------------------------------------------------------------------
 pub fn styling_block_07() {
-    use waterui::shape::{RoundedRectangle, ShapeExt};
     use waterui::theme::color::Surface;
 
     use waterui::background::Material;
@@ -254,7 +252,6 @@ pub fn styling_material_group_prose() -> impl View {
 // Listing: three glass backgrounds.
 // ---------------------------------------------------------------------------
 pub fn styling_block_08() {
-    use waterui::shape::RoundedRectangle;
     use waterui::theme::color::Accent;
 
     use waterui::background::Glass;
@@ -361,10 +358,7 @@ pub fn styling_block_09() {
 pub fn styling_block_10() {
     let photo = Divider;
 
-    use waterui::shape::{
-        Capsule, Circle, CornerRadii, CornerRadius, Ellipse, Path, Rectangle, RoundedRectangle,
-        ShapeExt,
-    };
+    use waterui::shape::{CornerRadii, CornerRadius, Ellipse, Path};
 
     let _ = {
         Circle.fill(Color::srgb_hex("#3B82F6")).size(80.0, 80.0) // draw the shape
@@ -436,8 +430,7 @@ pub fn styling_path_cubic_prose() {
 // ---------------------------------------------------------------------------
 pub fn styling_block_12() {
     use core::time::Duration;
-    use waterui::animation::{Animation, Repeat};
-    use waterui::shape::{Circle, Rectangle, RoundedRectangle, ShapeExt};
+    use waterui::animation::Repeat;
 
     let shape = Circle;
     let target = Rectangle;
@@ -465,8 +458,6 @@ pub fn styling_block_12() {
 // fill argument keeps an already-applied fill. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn styling_filled_shape_morph_prose() {
-    use waterui::shape::{Circle, Rectangle, ShapeExt};
-
     let _ = Circle.fill(Color::transparent()).morph_to(Rectangle);
 }
 
@@ -477,7 +468,6 @@ pub fn styling_filled_shape_morph_prose() {
 // ---------------------------------------------------------------------------
 pub fn styling_block_13() {
     use waterui::border::Border;
-    use waterui::shape::{Circle, RoundedRectangle};
     use waterui::theme::color::Accent;
 
     let card = Divider;

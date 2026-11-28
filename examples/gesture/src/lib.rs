@@ -10,7 +10,6 @@
 
 use core::{num::NonZeroU32, time::Duration};
 
-use waterui::Identifiable;
 use waterui::app::{App, Windows};
 use waterui::gesture::{
     DragEvent, DragGesture, GestureEvent, LongPressEvent, LongPressGesture, PointerButtons,

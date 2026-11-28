@@ -8,14 +8,14 @@
 //! - Mesh gradients with per-vertex colors
 //! - Shape fills with gradients
 
-use waterui::animation::{Animation, Repeat};
+use waterui::animation::Repeat;
 use waterui::app::{App, Windows};
 use waterui::color::Working;
 use waterui::color::working::from_linear_srgb;
 use waterui::layout::UnitPoint;
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::shape::{Circle, CornerRadius, RoundedRectangle};
+use waterui::shape::CornerRadius;
 
 use core::time::Duration;
 

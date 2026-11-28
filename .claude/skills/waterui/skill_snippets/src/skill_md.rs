@@ -10,8 +10,6 @@ use waterui::prelude::*;
 // At module scope because the skill presents these as the imports later
 // snippets in the same file rely on.
 // ---------------------------------------------------------------------------
-use waterui::Identifiable; // the trait the derive implements
-use waterui::animation::Animation; // animation curves
 use waterui::cursor::CursorStyle;
 use waterui::drag_drop::{Files, Transferable};
 use waterui::env::with; // scope a value to a subtree
@@ -156,8 +154,6 @@ pub mod skill_block_05 {
 // Prefix is a real statement sequence; the last two lines are a listing.
 // ---------------------------------------------------------------------------
 pub fn skill_block_06() {
-    use waterui::Identifiable; // the trait the derive implements is NOT in the prelude
-
     #[derive(Clone, Identifiable)]
     struct Row {
         #[id]
@@ -454,7 +450,6 @@ pub fn skill_block_15() {
     let (x, y) = (1.5_f32, 2.5_f32);
     let angle = Angle::degrees(30.0);
     let width = 2.0_f32;
-    use waterui::shape::Circle;
     let shape = Circle;
 
     let view = Divider;

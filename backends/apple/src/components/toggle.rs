@@ -209,7 +209,8 @@ pub fn realize_toggle_config(config: ToggleConfig<Held>, ctx: &RenderContext<'_>
     let accessibility_label = label.accessibility_label();
 
     // The label renders as a mounted child of the row's container.
-    let child = ctx.realize(label.build());
+    let child_env = crate::components::accessibility_metadata::child_env(ctx.env());
+    let child = ctx.with_env(&child_env).realize(label.build());
     let mounted = child.mount(toggle.container());
     toggle.set_label(mounted.view());
     cocoa_ui::view::hide_from_accessibility(mounted.view());

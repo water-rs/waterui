@@ -779,6 +779,7 @@ fn text_field_model(value: &str, line_limit: Option<usize>) -> TextInputModel {
         line_limit,
         selection_menu: empty_selection_menu(),
         on_submit: None,
+        input: crate::renderer::text_editing::TextInputOptions::default(),
     }
 }
 
@@ -787,6 +788,8 @@ fn secure_field_model(value: &str) -> TextInputModel {
     secure.set(value.to_owned());
     TextInputModel::SecureField {
         value: Binding::new(secure),
+        on_submit: None,
+        input: crate::renderer::text_editing::TextInputOptions::password_default(),
     }
 }
 

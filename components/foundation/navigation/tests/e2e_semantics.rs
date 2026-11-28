@@ -1,12 +1,14 @@
 //! End-to-end semantic tests for navigation components.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
 use waterui::ViewExt as _;
+use waterui::component::button;
 use waterui::layout::stack::vstack;
-use waterui::text::Text;
+use waterui::reactive::SignalExt as _;
+use waterui::text::{Text, text};
 use waterui::{Binding, OneOf2, View};
 use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{
@@ -535,4 +537,53 @@ fn split_view_selection_switches_placeholder_to_detail(app: &mut SemanticApp) {
         .role(Role::LABEL)
         .label("detail:7")
         .assert_exists_within(Duration::from_millis(200));
+}
+
+#[waterui::test()]
+fn path_signal_drives_on_change_and_derived_visibility(ui: UiBuilder) {
+    let path = NavigationPath::<TestRoute>::new();
+    let observed = Rc::new(RefCell::new(Vec::<Vec<TestRoute>>::new()));
+    let mounted_path = path.clone();
+    let mounted_observed = Rc::clone(&observed);
+
+    let mut app = ui.mount(move || {
+        let clear_path = mounted_path.clone();
+        let observed_sink = Rc::clone(&mounted_observed);
+        let root_view = vstack((
+            NavigationLink::value("Open First", TestRoute::First),
+            button("Back to root")
+                .action(move || clear_path.clear())
+                .visible(mounted_path.is_empty_signal().map(|empty| !empty)),
+        ))
+        .on_change(&mounted_path, move |routes: Vec<TestRoute>| {
+            observed_sink.borrow_mut().push(routes);
+        });
+
+        NavigationStack::with_path(mounted_path.clone(), NavigationView::new("Root", root_view))
+            .destination(|route| match route {
+                TestRoute::First => NavigationView::new("First", text("first content")),
+                TestRoute::Second => NavigationView::new("Second", text("second content")),
+            })
+    });
+
+    app.query()
+        .role(Role::BUTTON)
+        .label("Back to root")
+        .assert_not_exists();
+
+    path.push(TestRoute::First);
+    app.query()
+        .role(Role::LABEL)
+        .label("first content")
+        .assert_exists_within(Duration::from_millis(200));
+
+    assert_eq!(*observed.borrow(), vec![vec![TestRoute::First]]);
+
+    path.pop();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Open First")
+        .assert_exists_within(Duration::from_millis(200));
+
+    assert_eq!(*observed.borrow(), vec![vec![TestRoute::First], vec![]]);
 }

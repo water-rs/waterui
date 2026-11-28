@@ -123,7 +123,26 @@ Beyond `push` and `pop`, a `Navigator<R>` has `pop_n(n)` (panics when `n` exceed
 path's length), `clear()` / `pop_to_root()` and `replace(routes)` (the whole path in one
 transaction). `NavigationPath` itself has `push`, `pop`, `pop_n`, `clear` and `replace`,
 plus `len`, `is_empty`, `snapshot`, `truncate`, and `NavigationPath::from(vec![..])` for a
-stack that starts deep. A route-free link, for a stack with no route type, is
+stack that starts deep. `NavigationPath<R>` also implements `Signal<Output = Vec<R>>` (for
+both typed and heterogeneous paths) and provides `.len_signal()` and `.is_empty_signal()`,
+which read length without cloning the route vector, so routes can be observed with
+`.on_change(&path, ...)` or mapped into reactive UI state:
+
+```rust
+let path = NavigationPath::<MailRoute>::new();
+let back_path = path.clone();
+
+vstack((
+    button("Back to root")
+        .action(move || back_path.clear())
+        .visible(path.is_empty_signal().map(|empty| !empty)),
+))
+.on_change(&path, |routes: Vec<MailRoute>| {
+    let _depth = routes.len();
+})
+```
+
+A route-free link, for a stack with no route type, is
 `NavigationLink::new(label, || destination_view)` inside `NavigationStack::new(root)`; the
 closure returns a `NavigationView`.
 
@@ -239,6 +258,19 @@ Toolbar items carry a *semantic* placement. Each platform decides where that lan
 `.navigation_title(..)` comes first. `NavigationToolbarItem::action(placement, label, handler)` is
 the semantic form — its name and icon reach each platform's native item — while
 `NavigationToolbarItem::new(placement, view)` places an arbitrary view as given.
+Chain `.disabled(signal)` and `.visible(signal)` directly on `NavigationToolbarItem` (both take
+`impl IntoComputed<bool>`) to disable or hide an item reactively while keeping its semantic title
+and icon:
+
+```rust
+NavigationToolbarItem::action(
+    NavigationToolbarPlacement::Confirmation,
+    label("Send").icon(mdi::send()),
+    send_draft,
+)
+.disabled(draft_empty)
+.visible(is_editing)
+```
 
 The complete placement set: `Principal` (title-area content), `PrimaryAction`,
 `SecondaryAction`, `Confirmation`, `Cancellation`, `BottomBar`, `Status`,

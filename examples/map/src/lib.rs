@@ -16,7 +16,7 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Signal;
 use waterui::reactive::binding;
-use waterui::shape::{CornerRadius, RoundedRectangle, ShapeExt as _};
+use waterui::shape::CornerRadius;
 use waterui::theme::color::Surface;
 use waterui_icons_lucide as lucide;
 use waterui_map::{Coordinate, Map, MapStyle, Region};
@@ -54,7 +54,6 @@ struct MapExampleState {
     region: Binding<Region>,
     user_location: Binding<Option<Location>>,
     location_status: Binding<Str>,
-    locating: Binding<bool>,
 }
 
 impl MapExampleState {
@@ -64,7 +63,6 @@ impl MapExampleState {
             region: binding(Region::new(manhattan, 0.030, 0.050)),
             user_location: binding(None),
             location_status: binding(Str::from("Location is not requested")),
-            locating: binding(false),
         }
     }
 }
@@ -74,7 +72,6 @@ fn content(state: MapExampleState) -> impl View {
     let region = state.region;
     let user_location = state.user_location;
     let location_status = state.location_status;
-    let locating = state.locating;
     let map = Map::new(&region)
         .style(MapStyle::Standard)
         .optional_user_location(user_location.clone())
@@ -87,9 +84,7 @@ fn content(state: MapExampleState) -> impl View {
         .action_async(
             |State(location): State<Binding<Option<Location>>>,
              State(region): State<Binding<Region>>,
-             State(status): State<Binding<Str>>,
-             State(locating): State<Binding<bool>>| async move {
-                locating.set(true);
+             State(status): State<Binding<Str>>| async move {
                 status.set("Requesting WaterKit location…".into());
                 match request(Permission::Location).await {
                     Ok(PermissionStatus::Granted) => match Location::get().await {
@@ -111,15 +106,12 @@ fn content(state: MapExampleState) -> impl View {
                         status.set(format!("Permission failed: {error}").into());
                     }
                 }
-                locating.set(false);
             },
         )
         .state(&user_location)
         .state(&region)
         .state(&location_status)
-        .state(&locating)
-        .floating()
-        .disabled(locating.clone());
+        .floating();
 
     let zoom_in = button(label("Zoom In").icon(plus()))
         .label_style(LabelDisplayMode::IconOnly)

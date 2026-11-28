@@ -19,9 +19,7 @@ use cocoa_ui::geometry::Rect;
 #[cfg(target_os = "ios")]
 use cocoa_ui::uikit::HostView;
 use cocoa_ui::{MainThreadMarker, Retained, view};
-use nami::Computed;
-#[cfg(target_os = "macos")]
-use nami::Signal;
+use nami::{Computed, Signal};
 use waterui_backend_core::Environment;
 use waterui_backend_core::navigation::{
     Bar, BarColor, NavigationSearch, NavigationTitleDisplayMode, NavigationToolbarPlacement,
@@ -31,6 +29,7 @@ use waterui_controls::LabelDisplayMode;
 #[cfg(target_os = "macos")]
 use waterui_core::Str;
 use waterui_core::layout::ProposalSize;
+use waterui_interaction::interaction::Disabled;
 
 use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext, Renderer};
 use crate::proposal::{Placement, deliver};
@@ -68,6 +67,25 @@ pub struct BarItem {
     pub title: Option<Computed<waterui_text::StyledStr>>,
     /// The item's icon: a platform symbol name, or a rendered icon view.
     pub icon: Option<BarItemIcon>,
+    /// The item's resolved disabled signal, when disabled state applies.
+    pub disabled: Option<Computed<bool>>,
+    /// The item's reactive visibility signal, when declared.
+    pub visible: Option<Computed<bool>>,
+}
+
+impl BarItem {
+    /// Whether this item is currently visible.
+    #[must_use]
+    pub fn is_visible(&self) -> bool {
+        self.visible.as_ref().is_none_or(Signal::snapshot)
+    }
+
+    /// Whether this item is currently disabled.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn is_disabled(&self) -> bool {
+        self.disabled.as_ref().is_some_and(Signal::snapshot)
+    }
 }
 
 impl fmt::Debug for BarItem {
@@ -136,41 +154,43 @@ impl BarState {
         }
     }
 
-    /// The first item placed for the bar's leading slot — `leadingItem`:
+    /// The first visible item placed for the bar's leading slot — `leadingItem`:
     /// `Cancellation` or `TopBarLeading`.
     #[allow(dead_code)]
     pub fn leading(&self) -> Option<&BarItem> {
         self.items.iter().find(|item| {
-            matches!(
-                item.placement,
-                NavigationToolbarPlacement::Cancellation
-                    | NavigationToolbarPlacement::TopBarLeading
-            )
+            item.is_visible()
+                && matches!(
+                    item.placement,
+                    NavigationToolbarPlacement::Cancellation
+                        | NavigationToolbarPlacement::TopBarLeading
+                )
         })
     }
 
-    /// The first item placed for the bar's trailing slot — `trailingItem`:
+    /// The first visible item placed for the bar's trailing slot — `trailingItem`:
     /// `PrimaryAction`, `SecondaryAction`, `Confirmation` or
     /// `TopBarTrailing`.
     #[allow(dead_code)]
     pub fn trailing(&self) -> Option<&BarItem> {
         self.items.iter().find(|item| {
-            matches!(
-                item.placement,
-                NavigationToolbarPlacement::PrimaryAction
-                    | NavigationToolbarPlacement::SecondaryAction
-                    | NavigationToolbarPlacement::Confirmation
-                    | NavigationToolbarPlacement::TopBarTrailing
-            )
+            item.is_visible()
+                && matches!(
+                    item.placement,
+                    NavigationToolbarPlacement::PrimaryAction
+                        | NavigationToolbarPlacement::SecondaryAction
+                        | NavigationToolbarPlacement::Confirmation
+                        | NavigationToolbarPlacement::TopBarTrailing
+                )
         })
     }
 
-    /// The item placed for the bar's status slot.
+    /// The first visible item placed for the bar's status slot.
     #[allow(dead_code)]
     pub fn status(&self) -> Option<&BarItem> {
         self.items
             .iter()
-            .find(|item| item.placement == NavigationToolbarPlacement::Status)
+            .find(|item| item.is_visible() && item.placement == NavigationToolbarPlacement::Status)
     }
 
     /// The `UIKit` leading group: every `Cancellation`/`TopBarLeading` item.
@@ -210,12 +230,12 @@ impl BarState {
         })
     }
 
-    /// The `UIKit` principal view: the first `Principal` item's content.
+    /// The `UIKit` principal items in declaration order.
     #[cfg(target_os = "ios")]
-    pub fn principal(&self) -> Option<&BarItem> {
+    pub fn principal_items(&self) -> impl Iterator<Item = &BarItem> {
         self.items
             .iter()
-            .find(|item| item.placement == NavigationToolbarPlacement::Principal)
+            .filter(|item| item.placement == NavigationToolbarPlacement::Principal)
     }
 }
 
@@ -236,8 +256,12 @@ fn bar_title(view: Option<waterui_text::Text>, ctx: &RenderContext<'_>) -> BarTi
 /// ([`ToolbarChrome`](crate::toolbar_chrome::ToolbarChrome)), so the item's
 /// button styles resolve the way the platform's toolbar draws them.
 fn bar_item(item: ResolvedNavigationToolbarItem<Held>, ctx: &RenderContext<'_>) -> BarItem {
-    let (placement, content, title, icon, item_env) = item.into_parts();
-    let toolbar_env = toolbar_environment(item_env.as_ref().unwrap_or_else(|| ctx.env()));
+    let (placement, content, title, icon, disabled, visible, item_env) = item.into_parts();
+    let mut toolbar_env = toolbar_environment(item_env.as_ref().unwrap_or_else(|| ctx.env()));
+    if let Some(disabled) = &disabled {
+        Disabled::install(&mut toolbar_env, disabled.clone());
+    }
+    let resolved_disabled = toolbar_env.get::<Disabled>().map(|d| d.signal().clone());
     let ctx = ctx.with_env(&toolbar_env);
 
     let leaf = ctx.realize(content);
@@ -257,6 +281,8 @@ fn bar_item(item: ResolvedNavigationToolbarItem<Held>, ctx: &RenderContext<'_>) 
         leaf,
         title,
         icon,
+        disabled: resolved_disabled,
+        visible,
     }
 }
 

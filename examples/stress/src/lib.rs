@@ -20,12 +20,12 @@
 
 use core::time::Duration;
 
-use waterui::animation::{Animation, Repeat};
+use waterui::animation::Repeat;
 use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Binding;
-use waterui::shape::{Circle, CornerRadius, RoundedRectangle, ShapeExt};
+use waterui::shape::CornerRadius;
 use waterui::task::{sleep, spawn_local};
 
 fn env_usize(name: &str, default: usize) -> usize {

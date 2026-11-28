@@ -25,6 +25,7 @@ use waterui_core::Angle;
 use waterui_core::animation::FrameRateVote;
 use waterui_interaction::event::TaskHook;
 use waterui_interaction::gesture::TapGesture;
+use waterui_layout::report_size::ReportSize;
 use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_structural_transition::{ReduceMotion, TransitionSpec};
 use waterui_text::styled::TapSpan;
@@ -260,8 +261,10 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
         let source = core::mem::replace(source, HeldChild::from_view(()));
         let node = if let Some(scoped) = scoped_env.take() {
             let child = RenderNode::build_held(source, &scoped, renderer);
+            let core = renderer.new_core();
+            child.core().cell.set_parent(&core.cell);
             RenderNode::Env(Box::new(EnvNode {
-                core: renderer.new_core(),
+                core,
                 env: scoped,
                 child,
             }))
@@ -1073,6 +1076,9 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// Purely a layout hint: it changes which child a stack compresses first and
     /// draws nothing, so the flush path renders straight through it.
     LayoutPriority(LayoutPriority),
+    /// Observes the child's committed placed size after layout and writes it
+    /// into the bound `Binding<Size>` once the layout pass completes.
+    ReportSize(ReportSize),
     /// `.ignore_safe_area(regions.on(edges))` — the window's safe-area
     /// insets are released through the regions and edges the declaration
     /// names: layout offers the child the window bounds expanded by the
@@ -1453,10 +1459,9 @@ pub struct ContainerNode<E: crate::text::TextEngine> {
     pub(crate) placed: Vec<Rect>,
     /// The geometry this container was committed with at its last layout,
     /// its response resolved by `place_layout` — kept so a naming-scope
-    /// owner reports its response rectangle when the parent assigned more
-    /// than it answered (water-rs/hydrolysis#51). `None` until the first
-    /// layout.
-    #[cfg(feature = "accessibility")]
+    /// owner or `report_size` modifier reads its response rectangle when the
+    /// parent assigned more than it answered (water-rs/hydrolysis#51). `None`
+    /// until the first layout.
     pub(crate) geometry: Option<PlacedGeometry>,
     /// Set by this container's `Layout::watch_invalidation` subscription when a
     /// layout input signal changes (shared with the watcher closure). An outer
@@ -2460,6 +2465,13 @@ pub(super) fn emit_graphics_image_accessibility<E: crate::text::TextEngine>(
     if renderer.is_accessibility_hidden(env) {
         return None;
     }
+    let label = renderer.resolve_accessibility_label(env, default_label);
+    let value = renderer.resolve_accessibility_value(env, default_value);
+    if label.is_none() && value.is_none() && !focusable && env.get::<AccessibilityRole>().is_none()
+    {
+        renderer.note_suppressed_graphics_leaf(ctx);
+        return None;
+    }
     let mut node = AccessibilityNode::new(SemanticCore::<E>::resolve_accessibility_role(
         env,
         AccessibilityNodeRole::Image,
@@ -2470,10 +2482,10 @@ pub(super) fn emit_graphics_image_accessibility<E: crate::text::TextEngine>(
         // traversal reach it through this action.
         node.add_action(AccessibilityAction::Focus);
     }
-    if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
+    if let Some(label) = label {
         node.set_label(label);
     }
-    if let Some(value) = renderer.resolve_accessibility_value(env, default_value) {
+    if let Some(value) = value {
         node.set_value(value);
     }
     renderer.register_accessibility_leaf(ctx, node, env, None)

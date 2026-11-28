@@ -2591,18 +2591,17 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         &mut self,
         ctx: Option<crate::renderer::RenderContext>,
     ) {
-        let Some(ctx) = ctx else {
-            return;
-        };
         if self.accessibility.suppression_depth > 0 {
             return;
         }
         let Some(&parent) = self.accessibility.parent_stack.last() else {
             return;
         };
-        let bounds = ctx.bounds();
-        if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
-            return;
+        if let Some(ctx) = ctx {
+            let bounds = ctx.bounds();
+            if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+                return;
+            }
         }
         self.accessibility.suppressed_leaf_parents.insert(parent);
     }
@@ -2612,7 +2611,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// [`AccessibilityContentTypes`], the channel for a declaration the
     /// accesskit node has no property for (water-rs/waterui#1874).
     #[cfg(feature = "accessibility")]
-    #[cfg(feature = "text-field")]
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn register_accessibility_content_type(
         &mut self,
         node_id: AccessibilityNodeId,

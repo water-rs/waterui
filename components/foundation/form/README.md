@@ -186,15 +186,20 @@ Use `SecureField` for sensitive data with automatic memory zeroing:
 
 ```rust
 use waterui::prelude::*;
-use waterui_form::secure::{Secure, SecureField, secure};
+use waterui_form::secure::{ContentType, Secure, SubmitLabel, secure};
 
 fn password_form() -> impl View {
     let password = binding(Secure::default());
     let confirm = binding(Secure::default());
 
     vstack((
-        secure("Password", &password),
-        secure("Confirm Password", &confirm),
+        secure("Password", &password)
+            .prompt("At least 12 characters")
+            .content_type(ContentType::NewPassword)
+            .submit_label(SubmitLabel::Next),
+        secure("Confirm Password", &confirm)
+            .content_type(ContentType::NewPassword)
+            .submit_label(SubmitLabel::Done),
         button("Create Account").action(move || {
             let hash = password.snapshot().hash();
             tracing::debug!("Password hash: {}", hash);

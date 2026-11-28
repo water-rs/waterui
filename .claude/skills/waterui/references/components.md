@@ -148,6 +148,16 @@ Two more sizing modifiers:
 .layout_priority(1)                                // a stack compresses its lowest-priority children first
 ```
 
+To read back a view's committed placed size (for adaptive layouts driven by available width rather than window or platform checks), attach `.report_size(&Binding<Size>)`. The binding is written after layout commits only when the size changes and never feeds back into layout proposals:
+
+```rust
+let size = binding(Size::zero());
+let adaptive = when(size.map(|s| s.width > 600.0), two_column)
+    .otherwise(one_column)
+    .max_width(f32::INFINITY)
+    .report_size(&size);
+```
+
 `.horizontal_alignment_guide(HorizontalAlignment::Leading, |d| d.size.width / 2.0)` and
 `.vertical_alignment_guide(VerticalAlignment::Center, |d| ..)` move where a view's guide
 sits, so a stack aligned on that guide lines the view up there; the size and placement of the
@@ -311,7 +321,8 @@ renders its title instead, so install it freely on a toolbar and give each label
 ```rust
 button("Save")                              // Button<_, NoAction>: not a View until .action / .action_async is set
     .action(handler)                        // -> Button<_, impl FnMut(&Environment)>
-    .action_async(|| async { … })
+    .action_async(|| async { … })           // single-flight: disables interaction & reports busy until completion or drop
+    .pending(&saving)                       // mirrors in-flight state into &Binding<bool>; composes before or after .action_async
     .style(ButtonStyle::Plain)              // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
                                             // | Glass | GlassProminent (Liquid Glass capsules on Apple;
                                             //   bordered / bordered-prominent elsewhere)
@@ -333,12 +344,20 @@ field("Email", &address)                    // &Binding<Str>
 field("Search", &query).on_submit(handler)  // Return in a line-limited field runs it
 TextField::new("Username", &name).prompt("Enter your username")   // placeholder ≠ label
 TextField::new("Notes", &notes).line_limit(None::<NonZeroUsize>) // multi-line: Return inserts a line break
-use waterui::component::text_field::{ContentType, KeyboardType};   // NOT in the prelude
+use waterui::component::text_field::{
+    Capitalization, ContentType, KeyboardType, SubmitLabel,
+};   // NOT in the prelude
 // .content_type declares what the field means, for autofill — it is what
-// makes Apple offer the received SMS code; pair it with .keyboard(..)
+// makes Apple offer the received SMS code, and implies keyboard, capitalization
+// and autocorrection defaults unless overridden
 TextField::new("Verification code", &code)
     .keyboard(KeyboardType::Number)
     .content_type(ContentType::OneTimeCode)
+field("Name", &name)
+    .autocapitalization(Capitalization::Words)
+    .autocorrect(false)
+    .submit_label(SubmitLabel::Next)
+field("Price", &price).keyboard(KeyboardType::Decimal)
 // .selection_menu adds commands to the selected-text menu; a command takes the
 // field's live selection as a handler parameter
 TextField::new("Note", &note).selection_menu((
@@ -382,7 +401,6 @@ an outer custom style.
 ```rust
 use waterui::gesture::TapGesture;
 use waterui::theme::color::{Accent, Error, SurfaceVariant};
-use waterui::shape::Capsule;
 
 struct PillButtonStyle;
 
@@ -699,7 +717,6 @@ realization, swipe-to-delete, reordering, sections, selection).
 use waterui::component::list::{ListDelete, ListMove};   // NOT in the prelude
 use waterui::layout::scroll::scroll_horizontal;
 use waterui::views::ForEach;
-use waterui::Identifiable;                              // the trait the derive expands to is NOT in the prelude
 
 #[derive(Clone, Identifiable)]
 struct Record { #[id] id: u64, title: Str }
@@ -832,7 +849,9 @@ Validation wraps a validatable control (`TextField`, `Stepper`, `Slider`): the b
 accepts only values the validator passes, and the failure reason shows under the control.
 `Required` and a `Range` are validators; combine with `.and(..)` / `.or(..)`. A text field is backed by styled text, so lift a plain-text
 validator with `Plain(..)`. `SecureField` (`secure(label, &Binding<Secure>)`) edits a
-password without exposing it in `Debug`:
+password without exposing it in `Debug`; it defaults to `ContentType::Password` and shares
+`.prompt(..)`, `.content_type(..)` (e.g. `ContentType::NewPassword`), `.submit_label(..)`,
+and `.on_submit(..)` with `TextField`:
 
 ```rust
 use waterui::form::valid::{Plain, Required, ValidatableView};
@@ -952,8 +971,6 @@ body can return `Result<impl View, ErrorView<_>>` or `Result<impl View, impl Vie
 ## Badges, avatars, tables, focus
 
 ```rust
-use waterui::shape::RoundedRectangle;
-
 text("Inbox").badge(3_u32)                      // 0 hides; BadgeValue::{Hidden, Dot, Count(u32), Text(Text)}; badge::Badge::new(v, view).color(..)
 avatar("Grace Hopper")                          // initials when there is no image; the name is always spoken
     .image(photo_url)                           // a signal of Url: the fallback shows until it decodes

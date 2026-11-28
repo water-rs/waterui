@@ -34,7 +34,6 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Computed;
 use waterui::reactive::binding;
-use waterui::shape::Capsule;
 use waterui::theme::color::{Foreground, MutedForeground, SurfaceVariant};
 use waterui::widget::Disclosure;
 use waterui_icons_material_icon as mdi;
