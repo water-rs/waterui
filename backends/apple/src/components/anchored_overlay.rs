@@ -31,7 +31,7 @@ use waterui_core::layout::{
     LayoutDirection, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis,
     SubView, ViewDimensions, layout_direction,
 };
-use waterui_core::{Computed, Metadata};
+use waterui_core::{Computed, Dismiss, Metadata, extract::State as EnvState};
 
 use crate::contract::{Held, Mounted, NativeLeaf, Renderer};
 use crate::transition::ghost::Ghost;
@@ -557,6 +557,11 @@ impl SubView for AnchoredSubView {
     }
 }
 
+fn overlay_content_env(base: &Environment, is_presented: &Binding<bool>) -> Environment {
+    let is_presented = is_presented.clone();
+    base.extending(EnvState(Dismiss::new(move || is_presented.set(false))))
+}
+
 /// The `anchored_overlay` realization:
 /// `Metadata<AnchoredOverlay>` maps to a transparent container that
 /// presents the overlay content in a window-level surface against the
@@ -571,14 +576,15 @@ pub fn realize_anchored_overlay_metadata(
     let mounted = ctx.realize(metadata.content).mount(host_view);
     crate::primary_content::forward(&host, mounted.view());
 
+    let overlay_env = overlay_content_env(ctx.env(), &metadata.value.is_presented);
     let state = Rc::new(OverlayState {
         mtm,
         host: host.clone(),
         child: mounted,
         builder: metadata.value.content,
-        renderer: ctx.renderer(),
+        renderer: ctx.with_env(&overlay_env).renderer(),
         overlay: RefCell::new(None),
-        env: ctx.env().clone(),
+        env: overlay_env,
         ghosts: Rc::new(RefCell::new(Vec::new())),
         is_presented: metadata.value.is_presented,
         placed_edge: metadata.value.placed_edge,
@@ -676,5 +682,36 @@ mod tests {
         let top_band = KitRect::new(0.0, 0.0, 800.0, 40.0);
         let mirrored = mirror(top_band, container);
         assert_eq!(mirrored.origin.y, 560.0);
+    }
+
+    #[test]
+    fn overlay_content_env_installs_innermost_dismiss_and_closes_overlay() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        use waterui_core::extract::Extractor as _;
+        use waterui_core::reactive::{Signal as _, binding};
+        use waterui_core::{Dismiss, State as EnvState};
+
+        let outer_called = Rc::new(Cell::new(false));
+        let outer_flag = Rc::clone(&outer_called);
+        let is_presented = binding(true);
+
+        let mut base = Environment::new();
+        base.insert(EnvState(Dismiss::new(move || outer_flag.set(true))));
+
+        let content_env = overlay_content_env(&base, &is_presented);
+        let extracted =
+            Dismiss::extract(&content_env).expect("overlay content env must carry Dismiss");
+        extracted.dismiss();
+
+        assert!(
+            !is_presented.snapshot(),
+            "Dismiss must clear AnchoredOverlay is_presented binding"
+        );
+        assert!(
+            !outer_called.get(),
+            "AnchoredOverlay Dismiss must shadow any enclosing Dismiss"
+        );
     }
 }

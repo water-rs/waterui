@@ -16,7 +16,13 @@ pub mod split;
 pub mod tab;
 mod transition;
 
-use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, vec, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::BTreeMap,
+    rc::{Rc, Weak},
+    vec,
+    vec::Vec,
+};
 use core::{
     any::{Any, TypeId},
     cell::{Cell, RefCell},
@@ -32,7 +38,7 @@ use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::handler::{BoxedAction, Handler, ReportExtraction, boxed_action};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{
-    AnyView, Environment, Error, IntoSignal, Metadata, Native, NativeView, OneOf3, Retain,
+    AnyView, Dismiss, Environment, Error, IntoSignal, Metadata, Native, NativeView, OneOf3, Retain,
     SerialDispatch, Str, View, contract_violation, extract::ExtractionState, extract::Extractor,
     extract::State, flatten_signal, handler::ViewBuilder, layout::StretchAxis,
 };
@@ -357,6 +363,7 @@ type PathPopHandler = Rc<dyn Fn(usize)>;
 pub struct NavigationPage<S> {
     build: PageBuild<S>,
     env: Option<Environment>,
+    dismiss: Option<Dismiss>,
 }
 
 /// Builds a page, scoped to its stack's environment when there is one.
@@ -382,6 +389,7 @@ impl<S: ChildSlot> NavigationPage<S> {
                 }
             }),
             env: None,
+            dismiss: None,
         }
     }
 }
@@ -391,10 +399,15 @@ impl<S: 'static> NavigationPage<S> {
     /// them in its own slot.
     #[must_use]
     pub fn map_slot<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> NavigationPage<T> {
-        let Self { build, env } = self;
+        let Self {
+            build,
+            env,
+            dismiss,
+        } = self;
         NavigationPage {
             build: Box::new(move |scope| MapSlots::map_slots(build(scope), f)),
             env,
+            dismiss,
         }
     }
 }
@@ -406,6 +419,12 @@ impl<S> NavigationPage<S> {
             self.env = env;
         }
         self
+    }
+
+    /// Takes the [`Dismiss`] handle bound to this pushed page, if any.
+    #[doc(hidden)]
+    pub const fn take_dismiss(&mut self) -> Option<Dismiss> {
+        self.dismiss.take()
     }
 
     /// Builds the page.
@@ -527,6 +546,7 @@ struct NavigationControllerState {
     retained_environment: RefCell<Option<Environment>>,
     depth: Cell<usize>,
     path_depth: Cell<usize>,
+    entry_tokens: RefCell<Vec<Rc<()>>>,
     next_transaction_id: Cell<NavigationTransactionId>,
     pending_transaction_id: Cell<Option<NavigationTransactionId>>,
     path_pop_handler: RefCell<Option<PathPopHandler>>,
@@ -574,6 +594,7 @@ impl NavigationController {
                 retained_environment: RefCell::new(None),
                 depth: Cell::new(0),
                 path_depth: Cell::new(0),
+                entry_tokens: RefCell::new(Vec::new()),
                 next_transaction_id: Cell::new(1),
                 pending_transaction_id: Cell::new(None),
                 outbox: SerialDispatch::new(),
@@ -599,9 +620,35 @@ impl NavigationController {
         slot == self.state.slot || slot == TypeId::of::<AnyView>()
     }
 
+    /// Creates a [`Dismiss`] handle bound to one pushed entry token.
+    ///
+    /// Calling `dismiss()` pops only if that entry is still the top page on
+    /// the stack, so double-invocations or stale async completions are no-ops.
+    fn dismiss_for_token(&self, token: Weak<()>) -> Dismiss {
+        let controller = self.clone();
+        Dismiss::new(move || {
+            let Some(token) = token.upgrade() else {
+                return;
+            };
+            let is_top = controller
+                .state
+                .entry_tokens
+                .borrow()
+                .last()
+                .is_some_and(|top| Rc::ptr_eq(top, &token));
+            if is_top {
+                controller.pop();
+            }
+        })
+    }
+
     /// The page as it travels to the receiver, in the controller's scope.
-    fn pending<S: ChildSlot>(&self, page: NavigationPage<S>) -> PendingPage {
-        PendingPage::new(page.in_environment(self.retained_environment()))
+    fn pending<S: ChildSlot>(&self, mut page: NavigationPage<S>, dismiss: Dismiss) -> PendingPage {
+        page.dismiss = Some(dismiss.clone());
+        let env = self
+            .retained_environment()
+            .map(|retained| retained.extending(State(dismiss)));
+        PendingPage::new(page.in_environment(env))
     }
 
     /// Pushes a page onto the stack.
@@ -623,7 +670,10 @@ impl NavigationController {
             );
             return;
         }
-        let page = self.pending(page);
+        let token = Rc::new(());
+        let dismiss = self.dismiss_for_token(Rc::downgrade(&token));
+        self.state.entry_tokens.borrow_mut().push(token);
+        let page = self.pending(page, dismiss);
         let depth = self.state.depth.get();
         self.state.depth.set(depth + 1);
         self.commit(depth, 0, vec![page]);
@@ -657,7 +707,20 @@ impl NavigationController {
         // A path's pages build in the stack's own environment, where the
         // backend realizes them; only a link-pushed page carries the
         // controller's scope.
-        let inserted: Vec<PendingPage> = inserted.into_iter().map(PendingPage::new).collect();
+        let inserted: Vec<PendingPage> = {
+            let mut tokens = self.state.entry_tokens.borrow_mut();
+            tokens.truncate(retained_prefix);
+            inserted
+                .into_iter()
+                .map(|mut page| {
+                    let token = Rc::new(());
+                    let dismiss = self.dismiss_for_token(Rc::downgrade(&token));
+                    tokens.push(token);
+                    page.dismiss = Some(dismiss);
+                    PendingPage::new(page)
+                })
+                .collect()
+        };
         let path_depth = self.state.path_depth.get();
         assert!(
             retained_prefix <= path_depth,
@@ -800,6 +863,7 @@ impl NavigationController {
         if detached != 0 {
             let retained = self.state.depth.get() - detached;
             self.state.depth.set(retained);
+            self.state.entry_tokens.borrow_mut().truncate(retained);
             self.commit(retained, detached, Vec::new());
         }
         if from_path != 0 {
@@ -820,7 +884,9 @@ impl NavigationController {
         if detached != 0 {
             // The native container already removed these; only the projection
             // has to catch up, with no transaction sent back.
-            self.state.depth.set(self.state.depth.get() - detached);
+            let retained = self.state.depth.get() - detached;
+            self.state.depth.set(retained);
+            self.state.entry_tokens.borrow_mut().truncate(retained);
         }
         if from_path != 0 {
             let handler = self.path_pop_handler();
