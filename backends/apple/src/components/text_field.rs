@@ -418,6 +418,7 @@ pub fn realize_text_field_config(
             state: Rc::clone(&state),
         },
     );
+    leaf.set_accessibility_target(&control);
 
     // Signal → field: the resolved attributed string for the current
     // binding value, re-pushed by every per-chunk style signal too.

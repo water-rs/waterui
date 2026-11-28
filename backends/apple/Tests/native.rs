@@ -455,6 +455,7 @@ fn trials() -> Vec<Trial> {
     #[cfg(feature = "highlight")]
     tests.extend(code::trials());
     tests.extend(a11y_combine::trials());
+    tests.extend(a11y_invalid::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
@@ -21662,5 +21663,118 @@ mod dismiss {
             pump_main_until(2.0, || path.is_empty()),
             "Dismiss on pushed page must pop the stack after overlay closes"
         );
+    }
+}
+
+/// `AccessibilityState::invalid` and `ValidatableView` expose validation errors
+/// on the validated control and omit the error row while valid
+/// (water-rs/waterui#4377).
+mod a11y_invalid {
+    use cocoa_ui::{PlatformView, Retained, view};
+    use libtest_mimic::Trial;
+    use waterui::Binding;
+    use waterui::Str;
+    use waterui::component::text_field::TextField;
+    use waterui::form::valid::{Plain, Required, ValidatableView};
+
+    use super::resolve;
+
+    #[cfg(target_os = "macos")]
+    type PlatformField = cocoa_ui::appkit::TextField;
+    #[cfg(target_os = "ios")]
+    type PlatformField = cocoa_ui::uikit::TextField;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "a11y_invalid::validatable_field_exposes_invalid_error_and_omits_row_when_valid",
+            || {
+                validatable_field_exposes_invalid_error_and_omits_row_when_valid();
+                Ok(())
+            },
+        )]
+    }
+
+    fn find_text_field(root: &PlatformView) -> Option<Retained<PlatformView>> {
+        if root.downcast_ref::<PlatformField>().is_some() {
+            return Some(view::retain_base(root));
+        }
+        for sub in view::subviews(root) {
+            if let Some(found) = find_text_field(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn collect_labels(root: &PlatformView, out: &mut Vec<String>) {
+        if let Some(label) = root.downcast_ref::<super::Label>()
+            && let Some(text) = label.source_text()
+        {
+            out.push(text.string().to_string());
+        }
+        for sub in view::subviews(root) {
+            collect_labels(&sub, out);
+        }
+    }
+
+    fn validatable_field_exposes_invalid_error_and_omits_row_when_valid() {
+        let value = Binding::new(Str::from("a@b.c"));
+        let leaf = resolve::render(ValidatableView::new(
+            TextField::new("Email", &value),
+            Plain(Required),
+        ));
+        let field =
+            find_text_field(leaf.view()).expect("ValidatableView must mount its TextField control");
+
+        let mut initial_labels = Vec::new();
+        collect_labels(leaf.view(), &mut initial_labels);
+        assert_eq!(
+            initial_labels,
+            vec![String::from("Email")],
+            "valid field must carry no empty error label"
+        );
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::ProtocolObject;
+            use cocoa_ui::objc2_app_kit::NSAccessibility;
+
+            let element = ProtocolObject::<dyn NSAccessibility>::from_ref(&*field);
+            let initial_help = element.accessibilityHelp().map(|s| s.to_string());
+            assert_ne!(
+                initial_help.as_deref(),
+                Some("Invalid: Value is required."),
+                "valid field must not report an invalid error"
+            );
+
+            value.set(Str::from(""));
+            assert_eq!(
+                element.accessibilityHelp().map(|s| s.to_string()),
+                Some(String::from("Invalid: Value is required."))
+            );
+
+            value.set(Str::from("ok@example.com"));
+            assert_eq!(
+                element.accessibilityHelp().map(|s| s.to_string()),
+                initial_help
+            );
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+
+            let mtm = super::mtm();
+            assert_eq!(field.accessibilityHint(mtm), None);
+
+            value.set(Str::from(""));
+            assert_eq!(
+                field.accessibilityHint(mtm).map(|s| s.to_string()),
+                Some(String::from("Invalid: Value is required."))
+            );
+
+            value.set(Str::from("ok@example.com"));
+            assert_eq!(field.accessibilityHint(mtm), None);
+        }
     }
 }

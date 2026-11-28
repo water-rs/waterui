@@ -92,6 +92,34 @@ pub enum Checked {
     Mixed,
 }
 
+/// Formats the combined accessibility help/hint string from optional invalid
+/// error text, busy state, and any original platform help/hint. Returns `None`
+/// when neither `invalid` nor `busy` is active so callers restore the original
+/// string verbatim.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn state_announcement(invalid: Option<&str>, busy: bool, original: Option<&str>) -> Option<String> {
+    if invalid.is_none() && !busy {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if let Some(message) = invalid {
+        if message.is_empty() {
+            parts.push(String::from("Invalid"));
+        } else {
+            parts.push(format!("Invalid: {message}"));
+        }
+    }
+    if busy {
+        parts.push(String::from("Busy"));
+    }
+    if let Some(original) = original
+        && !original.is_empty()
+    {
+        parts.push(original.to_owned());
+    }
+    Some(parts.join(", "))
+}
+
 /// Callback invoked when an assistive client performs a custom action.
 pub type CustomActionHandler = std::rc::Rc<dyn Fn() -> bool>;
 
@@ -339,10 +367,10 @@ mod imp {
 
     /// Applies the dynamic accessibility state.
     ///
-    /// `disabled`, `selected`, `busy` toggle traits and the hint; `checked`
-    /// announces a value. When `checked` is `None` the value goes back to
-    /// `original_value`, but only once a check was actually announced —
-    /// a value an application set otherwise survives.
+    /// `disabled`, `selected`, `busy`, and `invalid` toggle traits and the
+    /// hint; `checked` announces a value. When `checked` is `None` the value
+    /// goes back to `original_value`, but only once a check was actually
+    /// announced — a value an application set otherwise survives.
     #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     pub fn apply_state(
         view: &UIView,
@@ -352,6 +380,7 @@ mod imp {
         checked_value_written: bool,
         original_value: Option<&NSString>,
         busy: bool,
+        invalid: Option<&str>,
         original_hint: Option<&NSString>,
         manage_hint: bool,
     ) {
@@ -384,7 +413,15 @@ mod imp {
             view.setAccessibilityValue(original_value, mtm);
         }
         if manage_hint {
-            set_busy(view, busy, original_hint);
+            let original_hint_text = original_hint.map(NSString::to_string);
+            if let Some(composed) =
+                super::state_announcement(invalid, busy, original_hint_text.as_deref())
+            {
+                let hint = NSString::from_str(&composed);
+                view.setAccessibilityHint(Some(&hint), mtm);
+            } else {
+                view.setAccessibilityHint(original_hint, mtm);
+            }
         }
     }
 }
@@ -597,7 +634,7 @@ mod imp {
     }
 
     /// Applies the dynamic accessibility state: enabled, selected, checked,
-    /// expanded, busy.
+    /// expanded, busy, invalid.
     #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     pub fn apply_state(
         element: &ProtocolObject<dyn NSAccessibility>,
@@ -606,6 +643,7 @@ mod imp {
         checked: Option<Checked>,
         expanded: Option<bool>,
         busy: bool,
+        invalid: Option<&str>,
         original_help: Option<&NSString>,
         manage_help: bool,
     ) {
@@ -627,8 +665,16 @@ mod imp {
             element.setAccessibilityExpanded(expanded);
         }
         if manage_help {
-            if busy {
-                set_busy(element, true);
+            let original_help_text = original_help.map(NSString::to_string).filter(|help| {
+                element
+                    .accessibilityLabel()
+                    .is_none_or(|label| label.to_string() != *help)
+            });
+            if let Some(composed) =
+                super::state_announcement(invalid, busy, original_help_text.as_deref())
+            {
+                let help = NSString::from_str(&composed);
+                element.setAccessibilityHelp(Some(&help));
             } else {
                 element.setAccessibilityHelp(original_help);
             }

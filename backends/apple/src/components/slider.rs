@@ -452,6 +452,7 @@ pub fn realize_slider_config(config: SliderConfig<Held>, ctx: &RenderContext<'_>
             state: Rc::clone(&state),
         },
     );
+    leaf.set_accessibility_target(as_view(&slider));
 
     bind_slider_signals(&mut leaf, &slider, &value, &range, &step);
 

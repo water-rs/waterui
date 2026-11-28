@@ -2548,6 +2548,67 @@ fn a11y_children_combine_merges_labels_and_dispatches_descendant_custom_actions(
     assert_eq!(archived.get(), 1);
 }
 
+/// `AccessibilityState::invalid(Some(error))` sets AccessKit `Invalid::True`
+/// and links `error_message` to a node carrying the error text; clearing it
+/// removes both.
+#[cfg(feature = "accessibility")]
+#[test]
+fn a11y_state_invalid_exposes_accesskit_invalid_and_error_message() {
+    use waterui_accessibility::AccessibilityState;
+
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let error = Binding::new(Some(waterui_core::Str::from("Must be a valid email.")));
+    let view = text("Email").a11y_state(error.map(|err| AccessibilityState::new().invalid(err)));
+
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 240.0, 60.0));
+
+    let invalid_update = renderer
+        .take_accessibility_tree_update()
+        .expect("invalid node must publish an accessibility tree");
+    let (_, target) = invalid_update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Email"))
+        .expect("Email node must exist");
+    assert_eq!(target.invalid(), Some(accesskit::Invalid::True));
+    let err_id = target
+        .error_message()
+        .expect("invalid node with error text must link error_message");
+    let err_node = invalid_update
+        .nodes
+        .iter()
+        .find_map(|(id, node)| (*id == err_id).then_some(node))
+        .expect("error_message node must exist in the published tree");
+    assert_eq!(err_node.label(), Some("Must be a valid email."));
+
+    let mut valid_renderer = test_renderer();
+    let valid_view = text("Email").a11y_state(AccessibilityState::new().invalid(None::<&str>));
+    capture_root_window(
+        &mut valid_renderer,
+        valid_view,
+        &env,
+        Rect::new(0.0, 0.0, 240.0, 60.0),
+    );
+    let valid_update = valid_renderer
+        .take_accessibility_tree_update()
+        .expect("valid node must publish an accessibility tree");
+    let (_, valid_target) = valid_update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Email"))
+        .expect("Email node must exist");
+    assert_eq!(valid_target.invalid(), None);
+    assert_eq!(valid_target.error_message(), None);
+
+    let events =
+        crate::runner::android_accessibility::diff_events(Some(&valid_update), &invalid_update);
+    assert!(
+        !events.is_empty(),
+        "transitioning to invalid must emit Android accessibility change events"
+    );
+}
+
 /// A control that publishes its own value keeps it; an explicit `.a11y_value`
 /// is the override, exactly as `.a11y_label` is for the name.
 #[cfg(feature = "accessibility")]

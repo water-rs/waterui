@@ -4,7 +4,9 @@ use std::{
     rc::Rc,
 };
 
-use accesskit::{Action, ActionRequest, Node, NodeId, Point, Role, Toggled, TreeId, TreeUpdate};
+use accesskit::{
+    Action, ActionRequest, Invalid, Node, NodeId, Point, Role, Toggled, TreeId, TreeUpdate,
+};
 use wasm_bindgen::{JsCast, closure::Closure};
 use waterui_core::contract_violation;
 use web_sys::{Event, HtmlElement};
@@ -194,6 +196,7 @@ impl WebAccessibilityBridge {
         ) else {
             return;
         };
+        element.set_id(&format!("waterui-a11y-{}", id.0));
         element.style().set_css_text(
             // Hydrolysis draws its own focus ring; the mirror draws none.
             "position:absolute;pointer-events:none;color:transparent;background:transparent;outline:none;",
@@ -277,6 +280,22 @@ fn positioned_ancestor_origin(
     Point::ZERO
 }
 
+fn apply_validation_attributes(element: &HtmlElement, node: &Node) {
+    set_optional_attribute(
+        element,
+        "aria-invalid",
+        node.invalid().map(|invalid| match invalid {
+            Invalid::True => "true",
+            Invalid::Grammar => "grammar",
+            Invalid::Spelling => "spelling",
+        }),
+    );
+    let error_message_id = node
+        .error_message()
+        .map(|error_id| format!("waterui-a11y-{}", error_id.0));
+    set_optional_attribute(element, "aria-errormessage", error_message_id.as_deref());
+}
+
 fn apply_node(element: &HtmlElement, node: &Node, origin: Point) {
     let is_text = matches!(node.role(), Role::TextRun | Role::Label | Role::Paragraph);
     element.set_text_content(is_text.then(|| node.label()).flatten());
@@ -305,6 +324,7 @@ fn apply_node(element: &HtmlElement, node: &Node, origin: Point) {
             .map(|value| if value { "true" } else { "false" }),
     );
     set_optional_attribute(element, "aria-busy", node.is_busy().then_some("true"));
+    apply_validation_attributes(element, node);
     set_optional_attribute(element, "aria-hidden", node.is_hidden().then_some("true"));
     set_optional_attribute(
         element,

@@ -139,9 +139,10 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
         renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
-        self.label_view.ensure_built(renderer, env);
-        self.min_value_label.ensure_built(renderer, env);
-        self.max_value_label.ensure_built(renderer, env);
+        let label_env = crate::renderer::control_label_env(env);
+        self.label_view.ensure_built(renderer, &label_env);
+        self.min_value_label.ensure_built(renderer, &label_env);
+        self.max_value_label.ensure_built(renderer, &label_env);
     }
 
     /// Consume the label sub-views' layout-dirty marks: their measured sizes
@@ -1042,8 +1043,13 @@ pub fn emit_slider_accessibility<E: crate::text::TextEngine>(
             &[interaction_key],
         );
     }
-    state.min_value_label.emit_accessibility(renderer, env);
-    state.max_value_label.emit_accessibility(renderer, env);
+    let label_env = crate::renderer::strip_control_accessibility_env(env);
+    state
+        .min_value_label
+        .emit_accessibility(renderer, &label_env);
+    state
+        .max_value_label
+        .emit_accessibility(renderer, &label_env);
 }
 
 #[cfg(test)]
