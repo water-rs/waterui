@@ -24,9 +24,9 @@ extern crate alloc;
 
 use core::marker::PhantomData;
 
-use nami::Computed;
+use nami::{Computed, SignalExt};
 pub use waterui_core::Angle;
-use waterui_core::{Environment, View, metadata::MetadataKey};
+use waterui_core::{Environment, IntoSignalF32, View, metadata::MetadataKey};
 pub use waterui_graphics::{ColorPaint, DirectPaint, GradientPaint, IntoPaint, Paint};
 
 pub mod background;
@@ -818,6 +818,117 @@ impl ResolvedShape {
 
 waterui_core::raw_view!(ResolvedShape, waterui_core::layout::StretchAxis::Both);
 
+/// Resolved stroked shape payload rendered directly by native backends.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ResolvedStrokedShape {
+    /// Shape kind for backend-side optimization.
+    kind: ShapeKind,
+    /// Path commands in unit coordinate space.
+    commands: Vec<PathCommand>,
+    /// Environment-resolved stroke paint that remains reactive to theme and signal changes.
+    paint: Computed<waterui_graphics::backend::draw::Paint>,
+    /// Reactive stroke line width in logical points.
+    width: Computed<f32>,
+}
+
+impl ResolvedStrokedShape {
+    /// Shape kind for backend-side optimization.
+    #[must_use]
+    pub const fn kind(&self) -> ShapeKind {
+        self.kind
+    }
+
+    /// Path commands in unit coordinate space.
+    #[must_use]
+    pub const fn commands(&self) -> &[PathCommand] {
+        self.commands.as_slice()
+    }
+
+    /// Environment-resolved stroke paint that remains reactive to theme and signal changes.
+    #[must_use]
+    pub const fn paint(&self) -> &Computed<waterui_graphics::backend::draw::Paint> {
+        &self.paint
+    }
+
+    /// Reactive stroke line width in logical points.
+    #[must_use]
+    pub const fn width(&self) -> &Computed<f32> {
+        &self.width
+    }
+}
+
+waterui_core::raw_view!(
+    ResolvedStrokedShape,
+    waterui_core::layout::StretchAxis::Both
+);
+
+// ============================================================================
+// StrokedShape - Shape as a View with backend-native stroke rendering
+// ============================================================================
+
+/// A shape stroked with a [`Paint`] (colour or gradient) and reactive width,
+/// resolved to [`ResolvedStrokedShape`].
+#[derive(Debug)]
+pub struct StrokedShape<S = ()> {
+    kind: ShapeKind,
+    commands: Vec<PathCommand>,
+    paint: Paint,
+    width: Computed<f32>,
+    _shape: PhantomData<fn() -> S>,
+}
+
+impl<S: Shape> StrokedShape<S> {
+    /// Creates a new stroked shape from a shape, paint, and stroke width in points.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn new<M>(shape: S, paint: impl IntoPaint<M>, width: impl IntoSignalF32) -> Self {
+        Self {
+            kind: shape.shape_kind(),
+            commands: shape.path().into_iter().collect(),
+            paint: paint.into_paint(),
+            width: width.into_signal_f32().computed(),
+            _shape: PhantomData,
+        }
+    }
+}
+
+impl<S> StrokedShape<S> {
+    /// Returns the path commands.
+    #[must_use]
+    pub fn commands(&self) -> &[PathCommand] {
+        &self.commands
+    }
+
+    /// Returns the stroke paint.
+    #[must_use]
+    pub const fn paint(&self) -> &Paint {
+        &self.paint
+    }
+
+    /// Returns the stroke width signal in logical points.
+    #[must_use]
+    pub const fn width(&self) -> &Computed<f32> {
+        &self.width
+    }
+
+    /// Returns the shape kind.
+    #[must_use]
+    pub const fn kind(&self) -> ShapeKind {
+        self.kind
+    }
+}
+
+impl<S: 'static> View for StrokedShape<S> {
+    fn body(self, env: &Environment) -> impl View {
+        ResolvedStrokedShape {
+            kind: self.kind,
+            commands: self.commands,
+            paint: self.paint.resolve(env),
+            width: self.width,
+        }
+    }
+}
+
 // ============================================================================
 // FilledShape - Shape as a View with backend-native fill rendering
 // ============================================================================
@@ -934,11 +1045,16 @@ pub trait MorphableShape: ShapeExt + sealed::Sealed {}
 // ShapeExt - Extension trait for adding fill to shapes
 // ============================================================================
 
-/// Extension trait for filling and morphing shapes.
+/// Extension trait for filling, stroking, and morphing shapes.
 pub trait ShapeExt: Shape + Sized {
     /// Fills the shape with the specified paint (a colour, colour signal, or gradient).
     fn fill<M>(self, paint: impl IntoPaint<M>) -> FilledShape<Self> {
         FilledShape::new(self, paint)
+    }
+
+    /// Strokes the shape's outline with the specified paint and line width in points.
+    fn stroke<M>(self, paint: impl IntoPaint<M>, width: impl IntoSignalF32) -> StrokedShape<Self> {
+        StrokedShape::new(self, paint, width)
     }
 
     /// Creates a morphing filled shape from this shape to another [`MorphableShape`].
@@ -996,6 +1112,29 @@ mod tests {
         let filled = Circle.fill(gradient);
         assert!(matches!(filled.kind(), ShapeKind::Circle));
         let resolved = filled.fill().resolve(&Environment::new());
+        assert!(matches!(
+            nami::Signal::snapshot(&resolved),
+            waterui_graphics::backend::draw::Paint::Linear(_)
+        ));
+    }
+
+    #[test]
+    fn stroked_shape_accepts_color_gradient_and_reactive_width() {
+        let width = nami::Binding::new(2.5_f32);
+        let stroked = Capsule.stroke(Color::srgb(10, 20, 30), width.clone());
+        assert!(matches!(stroked.kind(), ShapeKind::Capsule));
+        assert!((nami::Signal::snapshot(stroked.width()) - 2.5).abs() < f32::EPSILON);
+        width.set(6.0);
+        assert!((nami::Signal::snapshot(stroked.width()) - 6.0).abs() < f32::EPSILON);
+
+        let gradient = Gradient::linear(
+            [Color::srgb(255, 0, 0), Color::srgb(0, 0, 255)],
+            UnitPoint::LEADING,
+            UnitPoint::TRAILING,
+        );
+        let grad_stroked = Circle.stroke(gradient, 4.0);
+        assert!(matches!(grad_stroked.kind(), ShapeKind::Circle));
+        let resolved = grad_stroked.paint().resolve(&Environment::new());
         assert!(matches!(
             nami::Signal::snapshot(&resolved),
             waterui_graphics::backend::draw::Paint::Linear(_)

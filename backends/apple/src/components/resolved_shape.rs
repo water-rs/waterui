@@ -8,7 +8,7 @@
 //! imperatively and invalidates any enclosing captured rendering.
 
 use alloc::rc::Rc;
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 use cocoa_ui::MainThreadMarker;
 use cocoa_ui::gradient::GradientLayer;
@@ -20,7 +20,7 @@ use waterui_core::layout::{
 };
 use waterui_graphics::backend::draw::Paint;
 use waterui_graphics::color::WorkingColor;
-use waterui_shape::{PathCommand, ResolvedShape, ShapeKind};
+use waterui_shape::{PathCommand, ResolvedShape, ResolvedStrokedShape, ShapeKind};
 
 use super::resolved_gradient::{layer_paint, update_contents_scale};
 use crate::contract::{NativeLeaf, RenderContext};
@@ -110,6 +110,60 @@ pub fn shape_path(
         }
     }
     Some(builder)
+}
+
+/// Builds a stroke path inset by half `width` so stroked shapes and shape
+/// borders stay inside `bounds` and align flush with filled/clipped outlines.
+/// Returns `(path, effective_line_width)`, or `None` when the width or bounds
+/// are non-positive.
+pub fn inset_shape_path(
+    kind: ShapeKind,
+    commands: &[PathCommand],
+    bounds: cocoa_ui::Rect,
+    width: f64,
+) -> Option<(PathBuilder, f64)> {
+    if !width.is_finite() || width <= 0.0 || bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+        return None;
+    }
+    let shorter = bounds.size.width.min(bounds.size.height);
+    let effective = width.min(shorter);
+    let max_inset = shorter.mul_add(0.5, -1e-3).max(0.0);
+    let half = (effective * 0.5).min(max_inset);
+    let inset = cocoa_ui::Rect::new(
+        bounds.origin.x + half,
+        bounds.origin.y + half,
+        half.mul_add(-2.0, bounds.size.width),
+        half.mul_add(-2.0, bounds.size.height),
+    );
+    match kind {
+        ShapeKind::RoundedRect { radii } => {
+            let mut builder = PathBuilder::new();
+            let inset_limit = inset.size.width.min(inset.size.height) / 2.0;
+            if let Some(uniform) = radii.as_uniform() {
+                let radius = (resolve_corner(uniform, shorter) - half)
+                    .max(0.0)
+                    .min(inset_limit);
+                builder.rounded_rect(inset, radius);
+            } else {
+                let corner = |c| {
+                    (resolve_corner(c, shorter) - half)
+                        .max(0.0)
+                        .min(inset_limit)
+                };
+                builder.uneven_rounded_rect(
+                    inset,
+                    (
+                        corner(radii.top_leading()),
+                        corner(radii.top_trailing()),
+                        corner(radii.bottom_leading()),
+                        corner(radii.bottom_trailing()),
+                    ),
+                );
+            }
+            Some((builder, effective))
+        }
+        other => shape_path(other, commands, inset).map(|builder| (builder, effective)),
+    }
 }
 
 /// One normalized `PathCommand` denormalized into `bounds` —
@@ -325,6 +379,173 @@ pub fn realize_resolved_shape(shape: ResolvedShape, ctx: &RenderContext<'_>) -> 
             presentation
                 .borrow_mut()
                 .update_paint(mtm, &view, &shape, &paint);
+            crate::invalidation::invalidate_rendered_content(&view);
+        }
+    });
+    leaf
+}
+
+enum StrokePresentation {
+    Solid(ShapeLayer),
+    Gradient {
+        gradient: GradientLayer,
+        mask: ShapeLayer,
+    },
+}
+
+impl StrokePresentation {
+    fn new(
+        mtm: MainThreadMarker,
+        view: &HostView,
+        shape: &ResolvedStrokedShape,
+        paint: &Paint,
+        width: f32,
+    ) -> Self {
+        let host_layer = cocoa_ui::view::layer(view).expect("host view is layer-backed");
+        let presentation = match paint {
+            Paint::Solid(color) => {
+                let layer = ShapeLayer::new();
+                layer.set_fill_color(None);
+                layer.set_stroke_color(Some(&cg_color(color)));
+                host_layer.addSublayer(&layer.layer());
+                Self::Solid(layer)
+            }
+            gradient_paint => {
+                let gradient = GradientLayer::new(mtm, layer_paint(gradient_paint));
+                let mask = ShapeLayer::new();
+                mask.set_fill_color(None);
+                mask.set_stroke_color(Some(&cg_color(&WorkingColor::WHITE)));
+                set_layer_mask(&gradient.layer(), Some(&mask.layer()));
+                host_layer.addSublayer(&gradient.layer());
+                Self::Gradient { gradient, mask }
+            }
+        };
+        presentation.rebuild(view, shape, width);
+        presentation
+    }
+
+    fn remove_from_superlayer(&self) {
+        match self {
+            Self::Solid(layer) => layer.layer().removeFromSuperlayer(),
+            Self::Gradient { gradient, .. } => gradient.layer().removeFromSuperlayer(),
+        }
+    }
+
+    fn rebuild(&self, view: &HostView, shape: &ResolvedStrokedShape, width: f32) {
+        let bounds = cocoa_ui::view::bounds(view);
+        let built = inset_shape_path(shape.kind(), shape.commands(), bounds, f64::from(width))
+            .map(|(builder, effective)| (builder.build(), effective));
+        let (path, effective_width) = match built {
+            Some((path, effective)) => (Some(path), effective),
+            None => (None, 0.0),
+        };
+        match self {
+            Self::Solid(layer) => {
+                layer.set_frame(bounds);
+                layer.set_line_width(effective_width);
+                layer.set_path(path.as_deref());
+            }
+            Self::Gradient { gradient, mask } => {
+                gradient.set_frame(bounds);
+                update_contents_scale(view, gradient);
+                mask.set_frame(bounds);
+                mask.set_line_width(effective_width);
+                mask.set_path(path.as_deref());
+            }
+        }
+    }
+
+    fn update_scale(&self, view: &HostView) {
+        if let Self::Gradient { gradient, .. } = self {
+            update_contents_scale(view, gradient);
+        }
+    }
+
+    fn update_paint(
+        &mut self,
+        mtm: MainThreadMarker,
+        view: &HostView,
+        shape: &ResolvedStrokedShape,
+        paint: &Paint,
+        width: f32,
+    ) {
+        match (self, paint) {
+            (Self::Solid(layer), Paint::Solid(color)) => {
+                layer.set_stroke_color(Some(&cg_color(color)));
+            }
+            (Self::Gradient { gradient, .. }, gradient_paint)
+                if !matches!(gradient_paint, Paint::Solid(_)) =>
+            {
+                gradient.set_paint(layer_paint(gradient_paint));
+            }
+            (slot, next_paint) => {
+                slot.remove_from_superlayer();
+                *slot = Self::new(mtm, view, shape, next_paint, width);
+            }
+        }
+    }
+}
+
+/// The `resolved_stroked_shape` realization: strokes the shape outline with a
+/// reactive `Computed<Paint>` and `Computed<f32>` line width.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
+pub fn realize_resolved_stroked_shape(
+    shape: ResolvedStrokedShape,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+    #[cfg(target_os = "macos")]
+    cocoa_ui::view::ensure_layer_backed(&view);
+
+    let initial_paint = shape.paint().snapshot();
+    let width = Rc::new(Cell::new(shape.width().snapshot()));
+    let presentation = Rc::new(RefCell::new(StrokePresentation::new(
+        mtm,
+        &view,
+        &shape,
+        &initial_paint,
+        width.get(),
+    )));
+
+    {
+        let presentation = Rc::clone(&presentation);
+        let width = Rc::clone(&width);
+        let shape = shape.clone();
+        view.set_layout_handler(move |view| {
+            presentation.borrow().rebuild(view, &shape, width.get());
+        });
+    }
+    {
+        let presentation = Rc::clone(&presentation);
+        view.set_window_handler(move |view| presentation.borrow().update_scale(view));
+    }
+    {
+        let presentation = Rc::clone(&presentation);
+        view.set_backing_changed_handler(move |view| presentation.borrow().update_scale(view));
+    }
+
+    let mut leaf = NativeLeaf::new(&*view, ShapeSubView);
+    leaf.bind(shape.paint(), {
+        let presentation = Rc::clone(&presentation);
+        let width = Rc::clone(&width);
+        let view = view.clone();
+        let shape = shape.clone();
+        move |paint| {
+            presentation
+                .borrow_mut()
+                .update_paint(mtm, &view, &shape, &paint, width.get());
+            crate::invalidation::invalidate_rendered_content(&view);
+        }
+    });
+    leaf.bind(shape.width(), {
+        let shape = shape.clone();
+        move |next_width| {
+            width.set(next_width);
+            presentation.borrow().rebuild(&view, &shape, next_width);
             crate::invalidation::invalidate_rendered_content(&view);
         }
     });

@@ -4,8 +4,10 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::renderer::metadata::EngineAnimated;
 use crate::renderer::recording::transform_paint;
-use nami::Computed;
+use cherenkov_record::{ShapeData, WorkingColor as EngineWorkingColor};
+use nami::{Computed, SignalExt as _};
 #[cfg(feature = "menu")]
 use waterui_backend_core::app::Quit;
 #[cfg(feature = "menu")]
@@ -290,6 +292,74 @@ pub fn render_shape_parts<E: crate::text::TextEngine>(
     ctx.renderer_mut()
         .scene_mut()
         .fill_paint(peniko::Fill::NonZero, transform, fill, &path);
+}
+
+/// Measures a retained stroked shape leaf: fills the proposed bounds.
+pub fn measure_stroked_shape_node<E: crate::text::TextEngine>(
+    _shape: &ResolvedStrokedShape,
+    proposal: ProposalSize,
+    _state: &mut HydroState<E>,
+    _env: &Environment,
+    _theme: &Rc<dyn crate::theme::WidgetTheme>,
+) -> ViewDimensions {
+    graphics_dimensions_from_proposal(proposal)
+}
+
+/// Renders a retained stroked shape leaf every flush: emits a11y (unless hidden),
+/// then records a live stroked path driven by its reactive paint and width signals.
+pub fn render_stroked_shape_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    shape: &Rc<RefCell<ResolvedStrokedShape>>,
+    env: &Environment,
+) {
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
+    if !hidden {
+        let render_ctx = ctx.render_context();
+        graphics_image_accessibility(ctx.renderer_mut(), Some(render_ctx), env, None, None);
+    }
+    render_stroked_shape_parts(ctx, shape, env);
+}
+
+pub fn render_stroked_shape_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    shape: &Rc<RefCell<ResolvedStrokedShape>>,
+    _env: &Environment,
+) {
+    let bounds = ctx.bounds;
+    let (kind, commands, paint_signal, width_signal) = {
+        let resolved = shape.borrow();
+        (
+            resolved.kind(),
+            resolved.commands().to_vec(),
+            resolved.paint().clone(),
+            resolved.width().clone(),
+        )
+    };
+    let paint = EngineAnimated(
+        paint_signal
+            .zip(&width_signal)
+            .map(move |(unit_paint, width)| {
+                if !width.is_finite() || width <= 0.0 {
+                    Paint::Solid(EngineWorkingColor::TRANSPARENT)
+                } else {
+                    paint_in_bounds(unit_paint, bounds)
+                }
+            }),
+    )
+    .computed();
+    let stroke = EngineAnimated(
+        width_signal.map(move |width| kurbo::Stroke::new(effective_stroke_width(bounds, width))),
+    )
+    .computed();
+    let shape_data = EngineAnimated(width_signal.map(move |width| {
+        let path = stroked_shape_path(kind, &commands, bounds, width);
+        ShapeData::of(&path)
+    }))
+    .computed();
+    let transform = ctx.local;
+    ctx.renderer_mut()
+        .scene_mut()
+        .live_stroke_paint(stroke, transform, paint, shape_data);
 }
 
 /// Emits a string leaf's accessibility node from its content. Shared by the

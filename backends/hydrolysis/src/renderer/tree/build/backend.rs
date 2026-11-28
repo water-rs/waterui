@@ -1715,6 +1715,17 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_shape(renderer, native, env)
     }
 
+    fn stroked_shape(
+        &mut self,
+        native: waterui_shape::ResolvedStrokedShape,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        mark_reached!("stroked_shape");
+        let renderer = &mut *self.renderer;
+        RenderNode::build_stroked_shape(renderer, native, env)
+    }
+
     // Navigation containers (navigation view / split / stack / tabs): each is a
     // persistent `Widget` node re-rendered every flush from a retained config —
     // the navigation controller, transition slot, and tab-bar state stay live

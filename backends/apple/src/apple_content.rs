@@ -579,6 +579,7 @@ mod tests {
             spacer: waterui_layout::Spacer,
             divider: waterui_controls::Divider,
             shape: waterui_shape::ResolvedShape,
+            stroked_shape: waterui_shape::ResolvedStrokedShape,
             gradient: waterui_graphics::Gradient,
             #[cfg(any(waterui_feature = "gpu", waterui_feature = "cpu"))]
             shader_paint: waterui_graphics::ShaderPaintView,

@@ -433,6 +433,16 @@ impl ShapeLayer {
         self.layer.setFillColor(color);
     }
 
+    /// The colour the layer strokes its path with; `None` clears it.
+    pub fn set_stroke_color(&self, color: Option<&CGColor>) {
+        self.layer.setStrokeColor(color);
+    }
+
+    /// The stroke width in logical points.
+    pub fn set_line_width(&self, width: f64) {
+        self.layer.setLineWidth(width);
+    }
+
     /// The layer's frame — the host re-frames it on every layout pass.
     pub fn set_frame(&self, frame: Rect) {
         self.layer.setFrame(frame.into());

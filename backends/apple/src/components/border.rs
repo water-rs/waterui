@@ -23,9 +23,11 @@ use waterui_core::layout::{
 };
 use waterui_graphics::color::WorkingColor;
 use waterui_layout::EdgeSet;
+use waterui_shape::ClipShape;
 use waterui_shape::border::Border;
 
 use crate::animation::with_platform_animation;
+use crate::components::resolved_shape::inset_shape_path;
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
@@ -81,8 +83,8 @@ fn platform_color(color: &WorkingColor) -> Retained<platform::PlatformColor> {
 struct BorderState {
     /// The mounted content.
     child: Mounted,
-    /// The stroke layer for a partial edge set — `None` when the layer's
-    /// own border properties do the drawing.
+    /// The stroke layer for a partial edge set or custom outline shape —
+    /// `None` when the layer's own border properties do the drawing.
     border_layer: Option<layer::ShapeLayer>,
     /// Current border stroke width.
     width: Cell<f32>,
@@ -90,6 +92,8 @@ struct BorderState {
     corner_radius: Cell<f32>,
     /// Edges covered by this border.
     edges: EdgeSet,
+    /// Optional custom outline shape overriding rectangular border geometry.
+    shape: Option<ClipShape>,
 }
 
 impl core::fmt::Debug for BorderState {
@@ -113,11 +117,10 @@ fn apply_border_color(
     border_layer: Option<&layer::ShapeLayer>,
 ) {
     let cg = cg_color(color);
-    if let Some(layer) = layer::layer_of(host) {
-        layer::set_border_color(&layer, Some(&cg));
-    }
     if let Some(border) = border_layer {
         border.set_stroke(Some(&cg));
+    } else if let Some(layer) = layer::layer_of(host) {
+        layer::set_border_color(&layer, Some(&cg));
     }
     view::invalidate_captured_rendering(host);
 }
@@ -127,9 +130,10 @@ fn configure_border_layer(
     edges: EdgeSet,
     width: f32,
     corner_radius: f32,
+    has_shape: bool,
 ) -> Option<layer::ShapeLayer> {
     let draws_all_edges = edges.top && edges.leading && edges.bottom && edges.trailing;
-    if draws_all_edges {
+    if !has_shape && draws_all_edges {
         if let Some(host_layer) = layer::layer_of(host) {
             layer::set_border(
                 &host_layer,
@@ -143,31 +147,57 @@ fn configure_border_layer(
     let shape = layer::ShapeLayer::new();
     shape.set_fill(None);
     shape.set_line_width(f64::from(width.max(0.0)));
-    shape.set_line_cap_butt();
+    // Keep the border stroke above mounted subview backing layers (`zPosition == 0`).
+    shape.set_z_position(1.0);
+    if !has_shape {
+        shape.set_line_cap_butt();
+    }
     if let Some(host_layer) = layer::layer_of(host) {
         layer::add_sublayer(&host_layer, shape.layer());
     }
     Some(shape)
 }
 
-fn apply_border_metrics(host: &PlatformView, state: &BorderState) {
+fn update_border_layer(shape_layer: &layer::ShapeLayer, bounds: Rect, state: &BorderState) {
     let width = f64::from(state.width.get().max(0.0));
-    let corner_radius = f64::from(state.corner_radius.get().max(0.0));
-    if let Some(shape) = &state.border_layer {
-        shape.set_line_width(width);
-        let bounds = view::bounds(host);
-        if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
-            shape.set_frame(bounds);
-            let mask = EdgeMask {
-                top: state.edges.top,
-                leading: state.edges.leading,
-                bottom: state.edges.bottom,
-                trailing: state.edges.trailing,
-            };
-            let path = border_path(bounds, width, corner_radius, mask);
-            shape.set_path(Some(&path));
+    shape_layer.set_frame(bounds);
+    if let Some(clip_shape) = &state.shape {
+        if let Some((builder, effective_width)) =
+            inset_shape_path(clip_shape.kind(), clip_shape.commands(), bounds, width)
+        {
+            let path = builder.build();
+            shape_layer.set_line_width(effective_width);
+            shape_layer.set_path(Some(&path));
+        } else {
+            shape_layer.set_line_width(0.0);
+            shape_layer.set_path(None);
         }
+        return;
+    }
+    shape_layer.set_line_width(width);
+    if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
+        let mask = EdgeMask {
+            top: state.edges.top,
+            leading: state.edges.leading,
+            bottom: state.edges.bottom,
+            trailing: state.edges.trailing,
+        };
+        let path = border_path(
+            bounds,
+            width,
+            f64::from(state.corner_radius.get().max(0.0)),
+            mask,
+        );
+        shape_layer.set_path(Some(&path));
+    }
+}
+
+fn apply_border_metrics(host: &PlatformView, state: &BorderState) {
+    if let Some(shape) = &state.border_layer {
+        update_border_layer(shape, view::bounds(host), state);
     } else if let Some(host_layer) = layer::layer_of(host) {
+        let width = f64::from(state.width.get().max(0.0));
+        let corner_radius = f64::from(state.corner_radius.get().max(0.0));
         layer::set_border(&host_layer, width, corner_radius, false);
     }
     view::invalidate_captured_rendering(host);
@@ -237,6 +267,7 @@ pub fn realize_border_metadata(
 ) -> NativeLeaf {
     let border = metadata.value;
     let edges = border.get_edges();
+    let shape = border.get_shape().cloned();
     let initial_width = border.width().snapshot();
     let initial_corner_radius = border.get_corner_radius().snapshot();
 
@@ -249,10 +280,16 @@ pub fn realize_border_metadata(
     crate::primary_content::forward(&host, mounted.view());
     view::set_translates_autoresizing(mounted.view(), true);
 
-    // `configureBorderLayer`: all four edges go through the layer's own
-    // border properties; a partial edge set draws through a stroke
-    // sublayer.
-    let border_layer = configure_border_layer(&host, edges, initial_width, initial_corner_radius);
+    // `configureBorderLayer`: all four edges on a rectangular border go through
+    // the layer's own border properties; a partial edge set or custom outline
+    // shape draws through a stroke sublayer.
+    let border_layer = configure_border_layer(
+        &host,
+        edges,
+        initial_width,
+        initial_corner_radius,
+        shape.is_some(),
+    );
 
     let state = Rc::new(BorderState {
         child: mounted,
@@ -260,10 +297,11 @@ pub fn realize_border_metadata(
         width: Cell::new(initial_width),
         corner_radius: Cell::new(initial_corner_radius),
         edges,
+        shape,
     });
 
     // The content fills the wrapper; the stroke layer covers it and
-    // traces the selected edges.
+    // traces the selected edges or custom shape outline.
     host.set_layout_handler({
         let state = Rc::clone(&state);
         move |host_view| {
@@ -271,20 +309,7 @@ pub fn realize_border_metadata(
             let bounds = view::bounds(host_view);
             view::set_frame(state.child.view(), bounds);
             if let Some(shape) = &state.border_layer {
-                shape.set_frame(bounds);
-                let mask = EdgeMask {
-                    top: state.edges.top,
-                    leading: state.edges.leading,
-                    bottom: state.edges.bottom,
-                    trailing: state.edges.trailing,
-                };
-                let path = border_path(
-                    bounds,
-                    f64::from(state.width.get().max(0.0)),
-                    f64::from(state.corner_radius.get().max(0.0)),
-                    mask,
-                );
-                shape.set_path(Some(&path));
+                update_border_layer(shape, bounds, state);
             }
         }
     });

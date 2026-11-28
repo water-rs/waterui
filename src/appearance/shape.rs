@@ -21,5 +21,6 @@
 pub use waterui_shape::{
     Angle, Capsule, Circle, ClipShape, ColorPaint, CornerRadii, CornerRadius, DirectPaint, Ellipse,
     FilledShape, GradientPaint, IntoPaint, Mask, MaskView, MorphShape, MorphableShape, Paint, Path,
-    PathCommand, Rectangle, ResolvedShape, RoundedRectangle, Shape, ShapeExt, ShapeKind,
+    PathCommand, Rectangle, ResolvedShape, ResolvedStrokedShape, RoundedRectangle, Shape, ShapeExt,
+    ShapeKind, StrokedShape,
 };
