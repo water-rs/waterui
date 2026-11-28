@@ -229,14 +229,7 @@ impl UiKitApplication {
             ));
         }
 
-        let initial_phase = match uikit::application_state(mtm) {
-            ApplicationState::Active => AppPhase::Active,
-            ApplicationState::Inactive => AppPhase::Inactive,
-            ApplicationState::Background => AppPhase::Background,
-        };
-        let phase_handle = phase.start_with(&env, initial_phase);
-        *self.phase_observers.borrow_mut() =
-            Some(observe_ios_phase(mtm, phase_handle, self.executor.clone()));
+        self.start_phase_observer(mtm, phase, &env);
 
         let application = Rc::clone(self);
         self.executor
@@ -262,6 +255,17 @@ impl UiKitApplication {
                 });
             })
             .detach();
+    }
+
+    fn start_phase_observer(&self, mtm: MainThreadMarker, phase: Phase, env: &Environment) {
+        let initial_phase = match uikit::application_state(mtm) {
+            ApplicationState::Active => AppPhase::Active,
+            ApplicationState::Inactive => AppPhase::Inactive,
+            ApplicationState::Background => AppPhase::Background,
+        };
+        let phase_handle = phase.start_with(env, initial_phase);
+        *self.phase_observers.borrow_mut() =
+            Some(observe_ios_phase(mtm, phase_handle, self.executor.clone()));
     }
 
     fn process_ready(&self, process: Process) {

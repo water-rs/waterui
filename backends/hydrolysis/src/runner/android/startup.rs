@@ -7,7 +7,9 @@ use executor_core::async_task::AsyncTask;
 use ndk::native_window::NativeWindow;
 
 use super::gpu::{AndroidGpuContext, DisplayRefresh, GpuError};
-use super::host::{AndroidSession, HostAppearance, HostBridge, MetricsSnapshot, UiThreadServices};
+use super::host::{
+    AndroidSession, HostAppearance, HostBridge, MetricsSnapshot, SessionInit, UiThreadServices,
+};
 use super::jni::JniError;
 use crate::platform::InputEvent;
 
@@ -78,9 +80,11 @@ impl Startup {
             self.bridge,
             gpu,
             &jni::objects::JObject::null(),
-            self.metrics,
-            self.appearance,
-            initial_phase,
+            SessionInit {
+                metrics: self.metrics,
+                appearance: self.appearance,
+                initial_phase,
+            },
             self.services,
         )?
         .ok_or_else(|| JniError("hydrolysis android: application mounting failed".to_owned()))?;

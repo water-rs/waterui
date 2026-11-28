@@ -1565,6 +1565,14 @@ impl HostAppearance {
     }
 }
 
+/// Initial host snapshot supplied to [`AndroidSession::create`]: layout
+/// metrics, system appearance, and initial Activity lifecycle phase.
+pub(super) struct SessionInit {
+    pub metrics: MetricsSnapshot,
+    pub appearance: HostAppearance,
+    pub initial_phase: AppPhase,
+}
+
 /// What `create` wires into the platform host and the session: the one
 /// window the app registered, its environment, theme and fonts, the
 /// window's registry id, and the bindings and sinks the host later drives.
@@ -1879,11 +1887,14 @@ impl AndroidSession {
         bridge: Arc<HostBridge>,
         #[cfg(hydrolysis_gpu_painter)] gpu: AndroidGpuContext,
         painter: &JObject<'_>,
-        metrics: MetricsSnapshot,
-        appearance: HostAppearance,
-        initial_phase: AppPhase,
+        init: SessionInit,
         services: &'static UiThreadServices,
     ) -> Result<Option<Box<Self>>, JniError> {
+        let SessionInit {
+            metrics,
+            appearance,
+            initial_phase,
+        } = init;
         let executor = services.executor.clone();
 
         waterui_locale::start_system_locale_listener();

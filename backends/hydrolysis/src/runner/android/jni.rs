@@ -564,9 +564,11 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
                 env,
                 bridge,
                 &painter,
-                metrics,
-                appearance,
-                waterui_backend_core::app::AppPhase::Background,
+                super::host::SessionInit {
+                    metrics,
+                    appearance,
+                    initial_phase: waterui_backend_core::app::AppPhase::Background,
+                },
                 services,
             )?
             else {
