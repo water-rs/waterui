@@ -1194,7 +1194,7 @@ mod tests {
 
         // Reactive scope signal updates resolved config in place.
         let scope_flag = Binding::new(false);
-        let mut reactive_env = env.clone();
+        let mut reactive_env = env;
         TextSelectable::new(scope_flag.clone()).install(&mut reactive_env);
         let inherited = Text::verbatim("err").resolve(&reactive_env);
         let overridden = Text::verbatim("err")
