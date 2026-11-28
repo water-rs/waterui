@@ -125,9 +125,14 @@ pub struct NativeLeaf {
     /// enclosing scope rendered around the same leaf must not apply its own,
     /// less specific state over it.
     accessibility_state_applied: bool,
+    /// The native control receiving accessibility state when this leaf's outer
+    /// `view` is a layout host wrapping a control (such as a `TextField`,
+    /// `Slider`, or `Stepper`). `None` targets `view` itself.
+    accessibility_target: Option<Retained<PlatformView>>,
     /// Whether an accessibility-hint or state scope already owns this leaf's
     /// hint/help channel (`accessibilityHelp` / `accessibilityHint`), so
-    /// hint and busy state compose once without overwriting one another.
+    /// hint, busy, and invalid state compose once without overwriting one
+    /// another.
     accessibility_hint_applied: bool,
     /// Whether an accessibility-custom-actions scope already applied the
     /// merged action list to this leaf's view.
@@ -171,6 +176,7 @@ impl NativeLeaf {
             transition: None,
             handler_env: None,
             accessibility_state_applied: false,
+            accessibility_target: None,
             accessibility_hint_applied: false,
             accessibility_custom_actions_applied: false,
             clip_shape: None,
@@ -229,8 +235,23 @@ impl NativeLeaf {
         !core::mem::replace(&mut self.accessibility_state_applied, true)
     }
 
-    /// Claims this leaf's hint/help channel so `AccessibilityHint` and
-    /// `AccessibilityState::busy` compose through a single reactive binding.
+    /// Names the inner native control that receives accessibility state (such
+    /// as invalid/error announcements) when this leaf's outer view is a layout
+    /// host wrapping a control.
+    pub(crate) fn set_accessibility_target<V: AsRef<PlatformView> + ?Sized>(&mut self, target: &V) {
+        self.accessibility_target = Some(retain_base(target));
+    }
+
+    /// The platform view that carries accessibility state for this leaf: the
+    /// named control target when set, otherwise `self.view()`.
+    #[must_use]
+    pub(crate) fn accessibility_target(&self) -> &PlatformView {
+        self.accessibility_target.as_deref().unwrap_or(&self.view)
+    }
+
+    /// Claims this leaf's hint/help channel so `AccessibilityHint`,
+    /// `AccessibilityState::invalid`, and `AccessibilityState::busy` compose
+    /// through a single reactive binding.
     pub(crate) const fn claim_accessibility_hint(&mut self) -> bool {
         !core::mem::replace(&mut self.accessibility_hint_applied, true)
     }

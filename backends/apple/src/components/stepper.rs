@@ -352,6 +352,7 @@ pub fn realize_stepper_config(config: StepperConfig<Held>, ctx: &RenderContext<'
             stretch,
         },
     );
+    leaf.set_accessibility_target(as_view(&stepper));
 
     // Signal → control: binding changes land on the stepper and refresh
     // the announced value.

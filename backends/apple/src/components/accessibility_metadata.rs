@@ -145,16 +145,24 @@ const fn role(role: &AccessibilityRole) -> Role {
     }
 }
 
-/// Composes an explicit accessibility hint with the `busy` state flag so
-/// setting either one never clobbers the other.
-fn compose_hint(hint: Option<&str>, busy: bool) -> Option<String> {
-    let hint = hint.filter(|text| !text.is_empty());
-    match (busy, hint) {
-        (true, Some(hint)) => Some(format!("Busy, {hint}")),
-        (true, None) => Some(String::from("Busy")),
-        (false, Some(hint)) => Some(String::from(hint)),
-        (false, None) => None,
+/// Composes an explicit accessibility hint with the `invalid` error message and
+/// `busy` state flag so setting any of them never clobbers the others.
+fn compose_hint(hint: Option<&str>, invalid: Option<&str>, busy: bool) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(message) = invalid {
+        if message.is_empty() {
+            parts.push(String::from("Invalid"));
+        } else {
+            parts.push(format!("Invalid: {message}"));
+        }
     }
+    if busy {
+        parts.push(String::from("Busy"));
+    }
+    if let Some(hint) = hint.filter(|text| !text.is_empty()) {
+        parts.push(String::from(hint));
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
 }
 
 /// Applies an `AccessibilityState` to the view — `applyState`.
@@ -176,6 +184,7 @@ fn apply_state(
         checked_value_written,
         original_value,
         state.is_busy(),
+        state.error_message().map(waterui_core::Str::as_str),
         original_hint,
         manage_hint,
     );
@@ -196,6 +205,7 @@ fn apply_state(
         state.checked_state().map(checked),
         state.expanded_state(),
         state.is_busy(),
+        state.error_message().map(waterui_core::Str::as_str),
         original_help,
         manage_help,
     );
@@ -246,29 +256,31 @@ fn render_state(
         .state()
         .clone();
     let mut leaf = ctx.with_env(&env).realize(content);
-    let target = view::retain_base(leaf.view());
+    let state_target = view::retain_base(leaf.accessibility_target());
+    let hidden_target = view::retain_base(leaf.view());
     let has_scoped_hint = env.get::<AccessibilityHint>().cloned();
     if let Some(hint) = has_scoped_hint
         && leaf.claim_accessibility_hint()
     {
-        bind_composed_hint(&mut leaf, target.clone(), &hint, Some(&merged), &env);
+        bind_composed_hint(&mut leaf, state_target.clone(), &hint, Some(&merged), &env);
     }
     leaf.keep(env);
     if !leaf.claim_accessibility_state() {
         return leaf;
     }
     let manage_hint = leaf.claim_accessibility_hint();
-    leaf.keep(target.clone());
+    leaf.keep(state_target.clone());
+    leaf.keep(hidden_target.clone());
     #[cfg(target_os = "ios")]
     {
         use core::cell::Cell;
         let wrote_checked = Cell::new(false);
-        let original_value = a11y::value(&target);
-        let original_hint = a11y::hint(&target);
-        let original_hidden = read_original_hidden(&target);
+        let original_value = a11y::value(&state_target);
+        let original_hint = a11y::hint(&state_target);
+        let original_hidden = read_original_hidden(&hidden_target);
         leaf.bind(&merged, move |state| {
             apply_state(
-                &target,
+                &state_target,
                 &state,
                 wrote_checked.get(),
                 original_value.as_deref(),
@@ -278,23 +290,23 @@ fn render_state(
             if state.checked_state().is_some() {
                 wrote_checked.set(true);
             }
-            apply_hidden(&target, state.is_hidden(), original_hidden);
+            apply_hidden(&hidden_target, state.is_hidden(), original_hidden);
         });
     }
     #[cfg(target_os = "macos")]
     {
-        let original_help = a11y::hint(target::of(&target));
-        let original_hidden = read_original_hidden(&target);
+        let original_help = a11y::hint(target::of(&state_target));
+        let original_hidden = read_original_hidden(&hidden_target);
         leaf.bind(&merged, move |state| {
-            apply_state(&target, &state, original_help.as_deref(), manage_hint);
-            apply_hidden(&target, state.is_hidden(), original_hidden);
+            apply_state(&state_target, &state, original_help.as_deref(), manage_hint);
+            apply_hidden(&hidden_target, state.is_hidden(), original_hidden);
         });
     }
     leaf
 }
 
 /// Binds an explicit `AccessibilityHint` (optionally composed with a scoped
-/// `AccessibilityStateSignal`'s `busy` flag) onto `target`.
+/// `AccessibilityStateSignal`'s `invalid` and `busy` fields) onto `target`.
 fn bind_composed_hint(
     leaf: &mut NativeLeaf,
     target: cocoa_ui::Retained<PlatformView>,
@@ -307,13 +319,17 @@ fn bind_composed_hint(
     if let Some(state_signal) = state {
         let combined = nami::zip::zip(hint_signal, state_signal.clone());
         leaf.bind(&combined, move |(hint_text, state)| {
-            let composed = compose_hint(Some(hint_text.as_str()), state.is_busy());
+            let composed = compose_hint(
+                Some(hint_text.as_str()),
+                state.error_message().map(waterui_core::Str::as_str),
+                state.is_busy(),
+            );
             let ns = composed.as_deref().map(NSString::from_str);
             a11y::set_hint(target::of(&target), ns.as_deref());
         });
     } else {
         leaf.bind(&hint_signal, move |hint_text| {
-            let composed = compose_hint(Some(hint_text.as_str()), false);
+            let composed = compose_hint(Some(hint_text.as_str()), None, false);
             let ns = composed.as_deref().map(NSString::from_str);
             a11y::set_hint(target::of(&target), ns.as_deref());
         });
@@ -406,7 +422,7 @@ pub fn realize_accessibility_hint_metadata(
     let scoped = scope_env(ctx, &metadata.value);
     let mut leaf = ctx.with_env(&scoped).realize(metadata.content);
     if leaf.claim_accessibility_hint() {
-        let target = view::retain_base(leaf.view());
+        let target = view::retain_base(leaf.accessibility_target());
         let state_signal = scoped
             .get::<AccessibilityStateSignal>()
             .map(|scope| scope.state().clone());

@@ -11,9 +11,11 @@ use alloc::string::{String, ToString};
 use nami::{Binding, SignalExt};
 #[cfg(feature = "regex-validation")]
 use regex::Regex;
+use waterui_accessibility::{AccessibilityHidden, AccessibilityState, AccessibilityStateSignal};
 use waterui_controls::LabelKind;
 use waterui_controls::text_field::TextField;
-use waterui_core::{Str, View};
+use waterui_core::dynamic::Dynamic;
+use waterui_core::{Metadata, Str, View};
 use waterui_layout::stack::vstack;
 use waterui_text::Text;
 use waterui_text::styled::StyledStr;
@@ -106,18 +108,25 @@ where
     V: Validatable<Value: Clone>,
 {
     fn body(mut self, _env: &waterui_core::Environment) -> impl View {
-        // The label observes the field's own binding, so a rejected entry is
-        // visible to the validator and its error is shown beside the field.
+        // Observe the field's own binding so a rejected entry immediately
+        // surfaces its error through `AccessibilityState::invalid` on the
+        // control and a visual error row below it; while valid, the error row
+        // is omitted entirely.
         let value = self.view.validable().clone();
+        let validator = self.validator;
+        let error = value.map(move |v| {
+            validator
+                .validate(v)
+                .err()
+                .map(|reason| Str::from(reason.to_string()))
+        });
+        let a11y_state = error.map(|err| AccessibilityState::new().invalid(err));
+        let error_row = Dynamic::watch(error, |err| {
+            err.map(|msg| Metadata::new(Text::new(msg), AccessibilityHidden::new(true)))
+        });
         vstack((
-            self.view,
-            Text::computed(value.map(move |v| {
-                if let Err(reason) = self.validator.validate(v) {
-                    reason.to_string().into()
-                } else {
-                    Str::new()
-                }
-            })),
+            Metadata::new(self.view, AccessibilityStateSignal::new(a11y_state)),
+            error_row,
         ))
     }
 }

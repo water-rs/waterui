@@ -279,6 +279,8 @@ pub struct NodeSnapshot {
     pub(crate) checked: Option<CheckedState>,
     pub(crate) expanded: Option<bool>,
     pub(crate) busy: bool,
+    pub(crate) invalid: bool,
+    pub(crate) error_message: Option<String>,
     pub(crate) hidden: bool,
     pub(crate) children: Vec<NodeId>,
     pub(crate) actions: Vec<AccessibilityAction>,
@@ -375,6 +377,18 @@ impl NodeSnapshot {
         self.busy
     }
 
+    /// Returns whether the node reports an invalid value.
+    #[must_use]
+    pub const fn invalid(&self) -> bool {
+        self.invalid
+    }
+
+    /// Returns the validation error message associated with this node, if any.
+    #[must_use]
+    pub fn error_message(&self) -> Option<&str> {
+        self.error_message.as_deref()
+    }
+
     /// Returns node bounds, if present.
     #[must_use]
     pub const fn bounds(&self) -> Option<NodeBounds> {
@@ -431,6 +445,7 @@ impl NodeSnapshot {
         id: AccessibilityNodeId,
         node: &AccessibilityNode,
         content_type: Option<ContentType>,
+        error_message: Option<String>,
     ) -> Self {
         let checked = match node.toggled() {
             Some(AccessibilityToggled::True) => Some(CheckedState::True),
@@ -459,6 +474,8 @@ impl NodeSnapshot {
             checked,
             expanded,
             busy: node.is_busy(),
+            invalid: node.invalid().is_some(),
+            error_message,
             hidden: node.is_hidden(),
             children: node.children().iter().copied().map(NodeId::from).collect(),
             actions: PROBED_ACTIONS
@@ -506,10 +523,27 @@ impl TreeSnapshot {
             return Self::from_update(revision, update, content_types);
         }
         let mut nodes = self.nodes.clone();
+        let update_labels: BTreeMap<AccessibilityNodeId, String> = update
+            .nodes
+            .iter()
+            .filter_map(|(id, node)| node.label().map(|label| (*id, label.to_owned())))
+            .collect();
         for (id, node) in update.nodes {
+            let error_message = node.error_message().and_then(|err_id| {
+                update_labels.get(&err_id).cloned().or_else(|| {
+                    nodes
+                        .get(&NodeId::from(err_id))
+                        .and_then(|n| n.label.clone())
+                })
+            });
             nodes.insert(
                 NodeId::from(id),
-                NodeSnapshot::from_accesskit(id, &node, content_types.get(&id).copied()),
+                NodeSnapshot::from_accesskit(
+                    id,
+                    &node,
+                    content_types.get(&id).copied(),
+                    error_message,
+                ),
             );
         }
         Self {
@@ -530,12 +564,25 @@ impl TreeSnapshot {
             |tree| NodeId::from(tree.root),
         );
         let focus = NodeId::from(update.focus);
+        let update_labels: BTreeMap<AccessibilityNodeId, String> = update
+            .nodes
+            .iter()
+            .filter_map(|(id, node)| node.label().map(|label| (*id, label.to_owned())))
+            .collect();
         let mut nodes = BTreeMap::new();
         for (id, node) in update.nodes {
             let stable_id = NodeId::from(id);
+            let error_message = node
+                .error_message()
+                .and_then(|err_id| update_labels.get(&err_id).cloned());
             nodes.insert(
                 stable_id,
-                NodeSnapshot::from_accesskit(id, &node, content_types.get(&id).copied()),
+                NodeSnapshot::from_accesskit(
+                    id,
+                    &node,
+                    content_types.get(&id).copied(),
+                    error_message,
+                ),
             );
         }
 

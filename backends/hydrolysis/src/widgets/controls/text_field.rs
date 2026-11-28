@@ -104,7 +104,8 @@ impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
         renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
-        self.label_view.ensure_built(renderer, env);
+        let label_env = crate::renderer::control_label_env(env);
+        self.label_view.ensure_built(renderer, &label_env);
     }
 
     /// Consume the label sub-view's layout-dirty marks: its measured size
@@ -159,7 +160,8 @@ impl<E: crate::text::TextEngine> SecureFieldRenderState<E> {
         renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
-        self.label_view.ensure_built(renderer, env);
+        let label_env = crate::renderer::control_label_env(env);
+        self.label_view.ensure_built(renderer, &label_env);
     }
 
     /// Consume the label sub-view's layout-dirty marks: its measured size
@@ -1448,8 +1450,10 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
         }
     }
     // The floating label is a real node subtree in the retained tree — emit
-    // its semantics exactly as the unsuppressed rendered flush does.
-    state.label_view.emit_accessibility(renderer, env);
+    // its semantics with the field's own control-scoped metadata stripped so
+    // state like `invalid` belongs only to the text input itself.
+    let label_env = crate::renderer::strip_control_accessibility_env(env);
+    state.label_view.emit_accessibility(renderer, &label_env);
 }
 
 /// Emits a retained secure field's accessibility node and text-input target
@@ -1575,7 +1579,8 @@ pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
             });
         }
     }
-    state.label_view.emit_accessibility(renderer, env);
+    let label_env = crate::renderer::strip_control_accessibility_env(env);
+    state.label_view.emit_accessibility(renderer, &label_env);
 }
 
 #[cfg(test)]

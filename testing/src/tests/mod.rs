@@ -108,6 +108,8 @@ fn node(
         expanded: None,
         busy: false,
         hidden: false,
+        invalid: false,
+        error_message: None,
         children: Vec::new(),
         actions: Vec::new(),
         scroll_x: None,

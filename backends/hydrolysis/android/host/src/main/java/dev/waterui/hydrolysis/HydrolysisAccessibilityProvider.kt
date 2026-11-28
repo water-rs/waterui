@@ -339,6 +339,25 @@ internal class HydrolysisAccessibilityProvider(
                 if (properties.optBoolean("expanded")) "Expanded" else "Collapsed"
         }
         if (properties != null && properties.has("level")) info.isHeading = true
+        val errorNodeId =
+            if (properties != null && properties.has("errorMessage")) {
+                properties.optLong("errorMessage", INVALID_ID)
+            } else {
+                INVALID_ID
+            }
+        val invalid = properties?.optString("invalid").orEmpty()
+        if (invalid.isNotEmpty()) {
+            info.isContentInvalid = true
+            val errorText =
+                if (errorNodeId != INVALID_ID) {
+                    nodes[errorNodeId]?.let(::props)?.optString("label").orEmpty()
+                } else {
+                    ""
+                }
+            if (errorText.isNotEmpty()) {
+                info.error = errorText
+            }
+        }
 
         // `bounds` is host-view-local; boundsInWindow is the surviving field
         // in the same coordinate space (boundsInParent is dead state services
@@ -397,7 +416,9 @@ internal class HydrolysisAccessibilityProvider(
         advertiseActions(info, node)
 
         for (childId in childrenOf[id].orEmpty()) {
-            if (nodes.containsKey(childId)) info.addChild(host, childId.toInt())
+            if (childId != errorNodeId && nodes.containsKey(childId)) {
+                info.addChild(host, childId.toInt())
+            }
         }
         return info
     }

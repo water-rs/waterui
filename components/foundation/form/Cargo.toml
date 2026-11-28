@@ -16,6 +16,7 @@ jiff = { workspace = true, optional = true }
 # `calendar.rs` renders month, year and weekday names through `format::date`.
 waterui-locale = { workspace = true, optional = true }
 waterui-core.workspace = true
+waterui-accessibility = { workspace = true, optional = true }
 waterui-interaction = { workspace = true, optional = true }
 waterui-layout = { workspace = true, optional = true }
 nami.workspace = true
@@ -58,7 +59,7 @@ slider = ["waterui-controls/slider"]
 stepper = ["waterui-controls/stepper"]
 text-field = ["waterui-controls/text-field"]
 toggle = ["waterui-controls/toggle"]
-validation = ["text-field", "dep:waterui-layout", "dep:waterui-text"]
+validation = ["text-field", "dep:waterui-accessibility", "dep:waterui-layout", "dep:waterui-text"]
 std = []
 # `SecureString::hash`, which derives a bcrypt hash from the field's contents.
 # Off by default: a form that only collects a password and hands it to a server

@@ -179,6 +179,8 @@ fn node_change_mask(before: &Node, after: &Node) -> Option<i32> {
     if before.toggled() != after.toggled()
         || before.is_selected() != after.is_selected()
         || before.is_expanded() != after.is_expanded()
+        || before.invalid() != after.invalid()
+        || before.error_message() != after.error_message()
         || before.level() != after.level()
         || before.position_in_set() != after.position_in_set()
         || before.size_of_set() != after.size_of_set()

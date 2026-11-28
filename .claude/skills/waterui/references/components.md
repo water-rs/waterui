@@ -1034,7 +1034,9 @@ the inner content, then `.a11y_role(..)` + `.a11y_label(..)` on the wrapper — 
 build it with `Label::new(semantic_text, || content)`, which does this for you.
 
 Three more modifiers carry explicit semantics. `.a11y_state(..)` accepts either a
-constant `AccessibilityState` or a reactive signal of one. `.a11y_children(
+constant `AccessibilityState` or a reactive signal of one (including `.invalid(Option<error>)`
+to expose validation errors on a control — `ValidatableView` sets it automatically and omits
+its visual error row while valid). `.a11y_children(
 AccessibilityChildren::ExcludeDescendants)` hides every descendant and exposes only this
 node, `.a11y_children(AccessibilityChildren::Combine)` merges descendants' labels in
 reading order (unless `.a11y_label(..)` overrides it) and keeps their actions on this

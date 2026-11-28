@@ -794,16 +794,13 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
             .expect("hydrolysis accessibility suppression underflow");
     }
 
-    pub(crate) fn apply_state(env: &Environment, node: &mut AccessibilityNode) {
+    pub(crate) fn apply_state(env: &Environment, node: &mut AccessibilityNode) -> Option<String> {
         // The tree build stores accessibility state as a live signal (a static
         // state is a constant signal), so a reactive state — e.g. a filter chip's
         // selected binding — is resolved fresh on every emission.
-        let Some(state) = env
+        let state = env
             .get::<AccessibilityStateSignal>()
-            .map(|signal| signal.state().snapshot())
-        else {
-            return;
-        };
+            .map(|signal| signal.state().snapshot())?;
         if state.is_disabled() {
             node.set_disabled();
         }
@@ -826,6 +823,14 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         if state.is_hidden() {
             node.set_hidden();
         }
+        if state.is_invalid() {
+            node.set_invalid(accesskit::Invalid::True);
+            return state
+                .error_message()
+                .filter(|msg| !msg.is_empty())
+                .map(|msg| msg.as_str().to_owned());
+        }
+        None
     }
 
     /// Registers `node` and returns its stable id.
@@ -858,7 +863,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         if let Some(scope) = env.get::<ScopedAccessibilitySemantics<E>>() {
             self.consumed_semantics_scopes.insert(scope.key());
         }
-        Self::apply_state(env, &mut node);
+        let error_message = Self::apply_state(env, &mut node);
         if node.role() == AccessibilityNodeRole::Heading
             && node.level().is_none()
             && let Some(AccessibilityRole::Heading(level)) = env.get::<AccessibilityRole>()
@@ -885,6 +890,14 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
             node.set_author_id(scope.value().as_str().to_string());
         }
         let node_id = self.stable_node_id(semantic_key);
+        let error_node = error_message.map(|message| {
+            let error_id = self.stable_node_id(None);
+            let mut error_node = AccessibilityNode::new(AccessibilityNodeRole::Label);
+            error_node.set_label(message);
+            node.set_error_message(error_id);
+            node.push_child(error_id);
+            (error_id, error_node)
+        });
         if let Some(placement) = placement {
             self.node_regions.insert(node_id, placement.region);
         }
@@ -894,6 +907,14 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         }
         self.node_index.insert(node_id, self.nodes.len());
         self.nodes.push((node_id, node));
+        if let Some((error_id, error_node)) = error_node {
+            self.node_owners.insert(error_id, self.emit_owner.clone());
+            if let Some(owner) = self.emit_owner.upgrade() {
+                owner.a11y_emitted.borrow_mut().push(error_id);
+            }
+            self.node_index.insert(error_id, self.nodes.len());
+            self.nodes.push((error_id, error_node));
+        }
         if attach_to_root {
             if let Some(parent_id) = self.parent_stack.last().copied() {
                 let parent = self
@@ -1274,6 +1295,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
             || container.toggled().is_some()
             || container.is_disabled()
             || container.is_busy()
+            || container.invalid().is_some()
             || container.is_modal()
         {
             return None;
@@ -1637,6 +1659,28 @@ impl<E: crate::text::TextEngine> AccessibilityContainerScope<E> {
     };
 }
 
+/// Strips control-scoped accessibility metadata from `env` so a control or
+/// claiming container's own modifiers never leak onto its internal label or
+/// sub-views.
+#[cfg(feature = "accessibility")]
+#[must_use]
+pub fn strip_control_accessibility_env(env: &Environment) -> Environment {
+    let mut child_env = env.clone();
+    child_env.remove::<ScopedAccessibilityIdentifier>();
+    child_env.remove::<AccessibilityLabel>();
+    child_env.remove::<AccessibilityValue>();
+    child_env.remove::<AccessibilityHint>();
+    child_env.remove::<AccessibilityCustomActions>();
+    child_env.remove::<AccessibilityAdjustable>();
+    child_env.remove::<AccessibilityRole>();
+    child_env.remove::<AccessibilityHidden>();
+    child_env.remove::<AccessibilityChildren>();
+    child_env.remove::<AccessibilityGeometry>();
+    child_env.remove::<AccessibilityState>();
+    child_env.remove::<AccessibilityStateSignal>();
+    child_env
+}
+
 /// The environment a container hands its children when the container itself
 /// carries accessibility naming metadata.
 ///
@@ -1665,19 +1709,7 @@ pub fn accessibility_container_child_environment(env: &Environment) -> Option<En
         return None;
     }
 
-    let mut child_env = env.clone();
-    child_env.remove::<ScopedAccessibilityIdentifier>();
-    child_env.remove::<AccessibilityLabel>();
-    child_env.remove::<AccessibilityValue>();
-    child_env.remove::<AccessibilityHint>();
-    child_env.remove::<AccessibilityCustomActions>();
-    child_env.remove::<AccessibilityAdjustable>();
-    child_env.remove::<AccessibilityRole>();
-    child_env.remove::<AccessibilityHidden>();
-    child_env.remove::<AccessibilityChildren>();
-    child_env.remove::<AccessibilityGeometry>();
-    child_env.remove::<AccessibilityState>();
-    child_env.remove::<AccessibilityStateSignal>();
+    let mut child_env = strip_control_accessibility_env(env);
     // Every claim boundary re-derives text consumption: an enclosing
     // consuming claim's marker is dropped here so a nested claim decides for
     // its own subtree — the nearer claim owns the text. `Combine` merges all

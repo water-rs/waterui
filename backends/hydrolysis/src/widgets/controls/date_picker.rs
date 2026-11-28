@@ -85,7 +85,8 @@ impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
         renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
-        self.label_view.ensure_built(renderer, env);
+        let label_env = crate::renderer::control_label_env(env);
+        self.label_view.ensure_built(renderer, &label_env);
     }
 
     /// Consume the label sub-view's layout-dirty marks: its measured size
@@ -470,5 +471,6 @@ pub fn emit_date_picker_accessibility<E: crate::text::TextEngine>(
     if !hidden {
         date_picker_accessibility(renderer, None, &state.config, env, &[interaction_key]);
     }
-    state.label_view.emit_accessibility(renderer, env);
+    let label_env = crate::renderer::strip_control_accessibility_env(env);
+    state.label_view.emit_accessibility(renderer, &label_env);
 }
