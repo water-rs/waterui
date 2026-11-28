@@ -1952,7 +1952,7 @@ mod tests {
         use waterui_core::{Environment, Metadata};
         use waterui_locale::{TranslationCatalog, locales};
 
-        let locale = Binding::new(locales::EN.clone());
+        let locale = Binding::new(locales::EN);
         let mut env = Environment::new();
         env.insert(locale.clone());
         env.insert(
