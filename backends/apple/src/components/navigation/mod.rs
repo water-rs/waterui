@@ -204,9 +204,15 @@ pub fn button_bar_item(
     };
     // A bar item the chrome draws follows the button's enabled state — the
     // programmatic `sendActions` the action runs ignores `isEnabled`, so the
-    // bar item is what disables it.
+    // bar item is what disables it. Non-button custom items bind their resolved
+    // disabled signal directly to the `UIBarButtonItem`.
     if let Some(leaf_button) = &leaf_button {
         cocoa_ui::uikit::mirror_enabled(leaf_button, &button);
+    } else if let Some(disabled) = &item.disabled {
+        keep.bind(disabled, {
+            let button = button.clone();
+            move |disabled| button.setEnabled(!disabled)
+        });
     }
     if let Some(title) = &item.title {
         keep.bind(title, {
@@ -217,6 +223,150 @@ pub fn button_bar_item(
         });
     }
     button
+}
+
+/// Pre-built `UIKit` bar items for one page, filtered by each item's reactive
+/// visibility signal without rebuilding `UIBarButtonItem` instances or leaking
+/// watchers when visibility changes.
+#[cfg(target_os = "ios")]
+#[derive(Debug)]
+pub struct BuiltBarItems {
+    fallback_title_view: Option<cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIView>>,
+    principals: alloc::vec::Vec<(
+        Option<nami::Computed<bool>>,
+        cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIView>,
+    )>,
+    leading: alloc::vec::Vec<(
+        Option<nami::Computed<bool>>,
+        cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem>,
+    )>,
+    trailing: alloc::vec::Vec<(
+        Option<nami::Computed<bool>>,
+        cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem>,
+    )>,
+    bottom: alloc::vec::Vec<(
+        Option<nami::Computed<bool>>,
+        cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem>,
+    )>,
+}
+
+#[cfg(target_os = "ios")]
+impl BuiltBarItems {
+    /// Builds every bar item once for `bar`.
+    pub fn build(
+        bar: &bar::BarState,
+        keep: &mut crate::contract::KeepAlive,
+        mut make_button: impl FnMut(
+            &bar::BarItem,
+            &mut crate::contract::KeepAlive,
+        )
+            -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem>,
+    ) -> Self {
+        let fallback_title_view = if bar.title.text.is_some() {
+            None
+        } else {
+            Some(cocoa_ui::view::retain_base(bar.title.leaf.view()))
+        };
+        let principals = bar
+            .principal_items()
+            .map(|item| {
+                (
+                    item.visible.clone(),
+                    cocoa_ui::view::retain_base(item.leaf.view()),
+                )
+            })
+            .collect();
+        let leading = bar
+            .leading_items()
+            .map(|item| (item.visible.clone(), make_button(item, keep)))
+            .collect();
+        let trailing = bar
+            .trailing_items()
+            .map(|item| (item.visible.clone(), make_button(item, keep)))
+            .collect();
+        let bottom = bar
+            .bottom_items()
+            .map(|item| (item.visible.clone(), make_button(item, keep)))
+            .collect();
+        Self {
+            fallback_title_view,
+            principals,
+            leading,
+            trailing,
+            bottom,
+        }
+    }
+
+    /// The first currently visible principal view, or the non-text title view.
+    #[must_use]
+    pub fn visible_title_view(&self) -> Option<cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIView>> {
+        use nami::Signal;
+
+        self.principals
+            .iter()
+            .find(|(visible, _)| visible.as_ref().is_none_or(Signal::snapshot))
+            .map(|(_, view)| view.clone())
+            .or_else(|| self.fallback_title_view.clone())
+    }
+
+    /// Currently visible leading bar items in declaration order.
+    #[must_use]
+    pub fn visible_leading(
+        &self,
+    ) -> alloc::vec::Vec<cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem>> {
+        Self::filter_visible(&self.leading)
+    }
+
+    /// Currently visible trailing bar items in declaration order.
+    #[must_use]
+    pub fn visible_trailing(
+        &self,
+    ) -> alloc::vec::Vec<cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem>> {
+        Self::filter_visible(&self.trailing)
+    }
+
+    /// Currently visible bottom bar items in declaration order.
+    #[must_use]
+    pub fn visible_bottom(
+        &self,
+    ) -> alloc::vec::Vec<cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem>> {
+        Self::filter_visible(&self.bottom)
+    }
+
+    /// Watches every item's reactive visibility signal and invokes `on_change`.
+    pub fn watch_visibility(
+        &self,
+        keep: &mut crate::contract::KeepAlive,
+        on_change: impl Fn() + 'static,
+    ) {
+        let on_change = alloc::rc::Rc::new(on_change);
+        let signals = self
+            .principals
+            .iter()
+            .filter_map(|(v, _)| v.as_ref())
+            .chain(self.leading.iter().filter_map(|(v, _)| v.as_ref()))
+            .chain(self.trailing.iter().filter_map(|(v, _)| v.as_ref()))
+            .chain(self.bottom.iter().filter_map(|(v, _)| v.as_ref()));
+        for visible in signals {
+            let on_change = alloc::rc::Rc::clone(&on_change);
+            keep.watch(visible, move |_| on_change());
+        }
+    }
+
+    fn filter_visible(
+        items: &[(
+            Option<nami::Computed<bool>>,
+            cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem>,
+        )],
+    ) -> alloc::vec::Vec<cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem>> {
+        use nami::Signal;
+
+        items
+            .iter()
+            .filter(|(visible, _)| visible.as_ref().is_none_or(Signal::snapshot))
+            .map(|(_, item)| item.clone())
+            .collect()
+    }
 }
 
 /// What one hosted subtree contributes to a text-button decision.

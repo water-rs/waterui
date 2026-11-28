@@ -56,7 +56,7 @@ mod modifiers;
 
 pub use collections::{grid, scroll};
 pub use containers::{absolute, aspect_ratio, container, frame, spacer};
-pub use modifiers::{alignment_guide, background, overlay, padding, safe_area};
+pub use modifiers::{alignment_guide, background, overlay, padding, report_size, safe_area};
 
 pub use spacer::{Spacer, spacer, spacer_min};
 pub mod stack;
@@ -77,6 +77,7 @@ pub use container::LazyContainer;
 
 pub use background::{BackgroundLayout, BackgroundView, background};
 pub use overlay::{Overlay, OverlayLayout, overlay};
+pub use report_size::ReportSize;
 pub use safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
 
 pub use absolute::{

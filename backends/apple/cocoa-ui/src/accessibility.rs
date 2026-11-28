@@ -311,6 +311,20 @@ mod imp {
         view.accessibilityHint(objc2::MainThreadMarker::from(view))
     }
 
+    /// Marks `view` as busy (`"Busy"` hint) or restores `original_hint`.
+    pub fn set_busy(view: &UIView, busy: bool, original_hint: Option<&NSString>) {
+        let mtm = objc2::MainThreadMarker::from(view);
+        let busy_hint = NSString::from_str("Busy");
+        view.setAccessibilityHint(
+            if busy {
+                Some(&*busy_hint)
+            } else {
+                original_hint
+            },
+            mtm,
+        );
+    }
+
     /// Applies the dynamic accessibility state.
     ///
     /// `disabled`, `selected`, `busy` toggle traits and the hint; `checked`
@@ -358,15 +372,7 @@ mod imp {
             view.setAccessibilityValue(original_value, mtm);
         }
         if manage_hint {
-            let busy_hint = NSString::from_str("Busy");
-            view.setAccessibilityHint(
-                if busy {
-                    Some(&*busy_hint)
-                } else {
-                    original_hint
-                },
-                mtm,
-            );
+            set_busy(view, busy, original_hint);
         }
     }
 }
@@ -554,6 +560,12 @@ mod imp {
         element.isAccessibilityElement()
     }
 
+    /// Marks `element` as busy (`"Busy"` help text) or clears it.
+    pub fn set_busy(element: &ProtocolObject<dyn NSAccessibility>, busy: bool) {
+        let busy_label = NSString::from_str("Busy");
+        element.setAccessibilityHelp(if busy { Some(&*busy_label) } else { None });
+    }
+
     /// Applies the dynamic accessibility state: enabled, selected, checked,
     /// expanded, busy.
     #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
@@ -585,12 +597,11 @@ mod imp {
             element.setAccessibilityExpanded(expanded);
         }
         if manage_help {
-            let busy_label = NSString::from_str("Busy");
-            element.setAccessibilityHelp(if busy {
-                Some(&*busy_label)
+            if busy {
+                set_busy(element, true);
             } else {
-                original_help
-            });
+                element.setAccessibilityHelp(original_help);
+            }
         }
     }
 }

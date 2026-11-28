@@ -969,6 +969,8 @@ native_backend! {
         retain: waterui_core::metadata::Retain,
         /// A layout priority.
         layout_priority: waterui_core::layout::LayoutPriority,
+        /// Reports the view's committed placed size after layout.
+        report_size: waterui_layout::report_size::ReportSize,
         /// A view subtree's refresh-rate vote.
         frame_rate: FrameRateVote,
         /// A lifecycle hook.

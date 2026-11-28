@@ -375,6 +375,26 @@ pub fn navigation_block_08() -> NavigationView<impl View, impl NavigationToolbar
 }
 
 // ---------------------------------------------------------------------------
+// navigation.md § "## Toolbars" — rust block 9/17
+// ---------------------------------------------------------------------------
+// navigation.md writes `mdi::` qualified so the icon set stays visible.
+#[allow(unknown_lints, qualified_waterui_path)]
+pub fn navigation_block_toolbar_item_state() {
+    use waterui::navigation::{NavigationToolbarItem, NavigationToolbarPlacement};
+
+    let draft_empty = Binding::new(true);
+    let is_editing = Binding::new(true);
+
+    let _ = NavigationToolbarItem::action(
+        NavigationToolbarPlacement::Confirmation,
+        label("Send").icon(mdi::send()),
+        send_draft,
+    )
+    .disabled(draft_empty)
+    .visible(is_editing);
+}
+
+// ---------------------------------------------------------------------------
 // navigation.md § "## Toolbars" (prose): `NavigationToolbar::new(vec![items…])`
 // and the complete placement set. Not counted as a rust block.
 // ---------------------------------------------------------------------------

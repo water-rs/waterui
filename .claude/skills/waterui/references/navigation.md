@@ -258,6 +258,19 @@ Toolbar items carry a *semantic* placement. Each platform decides where that lan
 `.navigation_title(..)` comes first. `NavigationToolbarItem::action(placement, label, handler)` is
 the semantic form — its name and icon reach each platform's native item — while
 `NavigationToolbarItem::new(placement, view)` places an arbitrary view as given.
+Chain `.disabled(signal)` and `.visible(signal)` directly on `NavigationToolbarItem` (both take
+`impl IntoComputed<bool>`) to disable or hide an item reactively while keeping its semantic title
+and icon:
+
+```rust
+NavigationToolbarItem::action(
+    NavigationToolbarPlacement::Confirmation,
+    label("Send").icon(mdi::send()),
+    send_draft,
+)
+.disabled(draft_empty)
+.visible(is_editing)
+```
 
 The complete placement set: `Principal` (title-area content), `PrimaryAction`,
 `SecondaryAction`, `Confirmation`, `Cancellation`, `BottomBar`, `Status`,

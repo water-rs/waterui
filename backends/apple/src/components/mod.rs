@@ -41,6 +41,8 @@ pub mod drop_destination;
 pub mod dynamic;
 pub mod dynamic_range;
 pub mod empty;
+#[cfg(any(feature = "text_field", feature = "secure_field"))]
+mod field_input;
 #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
 pub mod filtered;
 pub mod fixed_container;
@@ -99,6 +101,7 @@ pub mod picture;
 #[cfg(feature = "plain")]
 pub mod plain;
 pub mod progress;
+pub mod report_size;
 pub mod resolved_color;
 pub mod resolved_gradient;
 pub mod resolved_shape;

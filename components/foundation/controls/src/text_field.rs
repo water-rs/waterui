@@ -13,7 +13,9 @@ use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::handler::{Handler, SharedAction};
 use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Environment, Native, NativeView, View, contract_violation};
-use waterui_text::{IntoText, Text, TextConfig, styled::StyledStr};
+use waterui_text::{IntoText, TextConfig, styled::StyledStr};
+
+use crate::input::{FieldInput, ResolvedFieldInput};
 
 use crate::label::{ControlLabel, IntoLabel, Label, LabelKind, impl_label_style_methods};
 use crate::menu::{MenuItem, MenuView, ResolvedMenuItem, resolve_menu_items};
@@ -55,27 +57,18 @@ pub struct TextFieldConfig<S> {
     label: ControlLabel<S>,
     /// The binding to the text value.
     value: Binding<StyledStr>,
-    /// The resolved placeholder text shown when the field is empty.
-    prompt: TextConfig,
+    /// Shared resolved input configuration (prompt, content type, submit label, submit action).
+    input: ResolvedFieldInput,
     /// The type of keyboard to use for input.
     keyboard: KeyboardType,
-    /// The semantic content type the field declares for autofill.
-    content_type: Option<ContentType>,
     /// Resolved autocapitalization behavior for this field.
     autocapitalization: Capitalization,
     /// Resolved autocorrection behavior for this field.
     autocorrect: bool,
-    /// Label and action shown on the software keyboard's Return key.
-    submit_label: SubmitLabel,
     /// Optional selected-text menu items resolved for the effective locale.
     selection_menu: Computed<Vec<ResolvedMenuItem<S>>>,
     /// Maximum number of lines the field renders. `None` removes the limit.
     line_limit: Computed<Option<NonZeroUsize>>,
-    /// The action run when the user submits the field with Return or Enter.
-    ///
-    /// A field without one leaves Return unconsumed, so it bubbles to the
-    /// field's ancestors like any other key it does not use.
-    on_submit: Option<SharedAction>,
 }
 
 impl<S> TextFieldConfig<S> {
@@ -104,7 +97,7 @@ impl<S> TextFieldConfig<S> {
     /// The resolved placeholder text shown when the field is empty.
     #[must_use]
     pub const fn prompt(&self) -> &TextConfig {
-        &self.prompt
+        self.input.prompt()
     }
 
     /// The resolved type of keyboard to use for input.
@@ -116,7 +109,7 @@ impl<S> TextFieldConfig<S> {
     /// The semantic content type the field declares for autofill.
     #[must_use]
     pub const fn content_type(&self) -> Option<ContentType> {
-        self.content_type
+        self.input.content_type()
     }
 
     /// The resolved autocapitalization behavior for this field.
@@ -134,7 +127,7 @@ impl<S> TextFieldConfig<S> {
     /// The label and action shown on the software keyboard's Return key.
     #[must_use]
     pub const fn submit_label(&self) -> SubmitLabel {
-        self.submit_label
+        self.input.submit_label()
     }
 
     /// Optional selected-text menu items resolved for the effective locale.
@@ -155,7 +148,7 @@ impl<S> TextFieldConfig<S> {
     /// field's ancestors like any other key it does not use.
     #[must_use]
     pub const fn on_submit(&self) -> Option<&SharedAction> {
-        self.on_submit.as_ref()
+        self.input.on_submit()
     }
 
     /// Takes the value apart into its fields, in declaration order.
@@ -179,18 +172,19 @@ impl<S> TextFieldConfig<S> {
         Computed<Option<NonZeroUsize>>,
         Option<SharedAction>,
     ) {
+        let (prompt, content_type, submit_label, on_submit) = self.input.into_parts();
         (
             self.label,
             self.value,
-            self.prompt,
+            prompt,
             self.keyboard,
-            self.content_type,
+            content_type,
             self.autocapitalization,
             self.autocorrect,
-            self.submit_label,
+            submit_label,
             self.selection_menu,
             self.line_limit,
-            self.on_submit,
+            on_submit,
         )
     }
 }
@@ -209,12 +203,10 @@ impl<S: 'static> MapSlots<S> for TextFieldConfig<S> {
         TextFieldConfig {
             label: self.label.map_slots(f),
             value: self.value,
-            prompt: self.prompt,
+            input: self.input,
             keyboard: self.keyboard,
-            content_type: self.content_type,
             autocapitalization: self.autocapitalization,
             autocorrect: self.autocorrect,
-            submit_label: self.submit_label,
             selection_menu: self
                 .selection_menu
                 .map(move |items| {
@@ -225,7 +217,6 @@ impl<S: 'static> MapSlots<S> for TextFieldConfig<S> {
                 })
                 .computed(),
             line_limit: self.line_limit,
-            on_submit: self.on_submit,
         }
     }
 }
@@ -243,31 +234,20 @@ pub struct TextField<L> {
     label: Label<L>,
     /// The binding to the text value.
     value: Binding<StyledStr>,
-    /// The placeholder text shown when the field is empty.
-    prompt: Text,
+    /// Shared input configuration (prompt, content type, submit label, submit action).
+    input: FieldInput,
     /// Explicit keyboard override; when `None`, derived from `content_type`.
     keyboard: Option<KeyboardType>,
-    /// The semantic content type the field declares for autofill.
-    ///
-    /// `None` declares none — the field is not offered to autofill services.
-    content_type: Option<ContentType>,
     /// Explicit autocapitalization override; when `None`, derived from `content_type` or `keyboard`.
     autocapitalization: Option<Capitalization>,
     /// Explicit autocorrection override; when `None`, derived from `content_type` or `keyboard`.
     autocorrect: Option<bool>,
-    /// Label and action shown on the software keyboard's Return key.
-    submit_label: SubmitLabel,
     /// Optional selected-text menu items.
     ///
     /// These actions are shown by native text selection UI.
     selection_menu: Computed<Vec<MenuItem>>,
     /// Maximum number of lines the field renders. `None` removes the limit.
     line_limit: Computed<Option<NonZeroUsize>>,
-    /// The action run when the user submits the field with Return or Enter.
-    ///
-    /// A field without one leaves Return unconsumed, so it bubbles to the
-    /// field's ancestors like any other key it does not use.
-    on_submit: Option<SharedAction>,
 }
 
 impl<L> TextField<L> {
@@ -282,15 +262,12 @@ impl<L> TextField<L> {
         Self {
             label: label.into_label(),
             value: V::into_text_field_binding(value),
-            prompt: Text::default(),
+            input: FieldInput::new(),
             keyboard: None,
-            content_type: None,
             autocapitalization: None,
             autocorrect: None,
-            submit_label: SubmitLabel::default(),
             selection_menu: Computed::constant(Vec::new()),
             line_limit: Computed::constant(NonZeroUsize::new(1)),
-            on_submit: None,
         }
     }
 
@@ -314,13 +291,13 @@ impl<L> TextField<L> {
     /// In a field without a line limit Return inserts a line break and never
     /// submits.
     pub fn on_submit<Args>(mut self, action: impl Handler<Args, ()>) -> Self {
-        self.on_submit = Some(SharedAction::new(action));
+        self.input.set_on_submit(action);
         self
     }
 
     /// Sets the prompt for the text field.
     pub fn prompt(mut self, prompt: impl IntoText) -> Self {
-        self.prompt = prompt.into_text();
+        self.input.set_prompt(prompt);
         self
     }
 
@@ -357,7 +334,7 @@ impl<L> TextField<L> {
     /// Also sets sensible defaults for keyboard, autocapitalization, and
     /// autocorrection unless explicitly overridden.
     pub const fn content_type(mut self, content_type: ContentType) -> Self {
-        self.content_type = Some(content_type);
+        self.input.set_content_type(content_type);
         self
     }
 
@@ -379,7 +356,7 @@ impl<L> TextField<L> {
 
     /// Sets the label and action shown on the software keyboard's Return key.
     pub const fn submit_label(mut self, label: SubmitLabel) -> Self {
-        self.submit_label = label;
+        self.input.set_submit_label(label);
         self
     }
 }
@@ -387,30 +364,28 @@ impl<L> TextField<L> {
 impl<L: LabelKind> TextField<L> {
     fn into_config<S: ChildSlot>(self, env: &Environment) -> TextFieldConfig<S> {
         let selection_menu = resolve_menu_items(&self.selection_menu, env);
+        let content_type = self.input.content_type();
         let keyboard = self
             .keyboard
-            .or_else(|| self.content_type.map(ContentType::default_keyboard))
+            .or_else(|| content_type.map(ContentType::default_keyboard))
             .unwrap_or_default();
         let autocapitalization = self
             .autocapitalization
-            .or_else(|| self.content_type.map(ContentType::default_capitalization))
+            .or_else(|| content_type.map(ContentType::default_capitalization))
             .unwrap_or_else(|| keyboard.default_capitalization());
         let autocorrect = self
             .autocorrect
-            .or_else(|| self.content_type.map(ContentType::default_autocorrect))
+            .or_else(|| content_type.map(ContentType::default_autocorrect))
             .unwrap_or_else(|| keyboard.default_autocorrect());
         TextFieldConfig {
             label: self.label.into_control_label::<S>(env),
             value: self.value,
-            prompt: self.prompt.resolve(env),
+            input: self.input.resolve(env),
             keyboard,
-            content_type: self.content_type,
             autocapitalization,
             autocorrect,
-            submit_label: self.submit_label,
             selection_menu,
             line_limit: self.line_limit,
-            on_submit: self.on_submit,
         }
     }
 }

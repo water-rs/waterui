@@ -278,7 +278,6 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             #[cfg(feature = "accessibility")]
             accessibility_child_env,
             placed: Vec::new(),
-            #[cfg(feature = "accessibility")]
             geometry: None,
             layout_dirty,
             _guards: guards,
@@ -1059,6 +1058,19 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_wrapper(WrapperEffect::LayoutPriority(value), content, env, renderer)
+    }
+
+    fn report_size<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui_layout::report_size::ReportSize, C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        mark_reached!("report_size");
+        let metadata = metadata.map_content(C::into_child);
+        let renderer = &mut *self.renderer;
+        let Metadata { content, value } = metadata;
+        RenderNode::build_wrapper(WrapperEffect::ReportSize(value), content, env, renderer)
     }
 
     fn cursor<C: ChildView<Self>>(

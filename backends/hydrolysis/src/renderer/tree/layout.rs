@@ -598,10 +598,18 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         proposal: ProposalSize,
         bounds: Rect,
     ) {
+        renderer.state.layout_depth += 1;
         let core = self.core().clone();
         renderer.with_reader(&core, ReaderPhase::Layout, |renderer| {
             self.layout_inner(renderer, env, safe_area, proposal, bounds);
         });
+        renderer.state.layout_depth -= 1;
+        if renderer.state.layout_depth == 0 && !renderer.state.pending_size_reports.is_empty() {
+            let pending = core::mem::take(&mut renderer.state.pending_size_reports);
+            for (report, placed) in pending {
+                report.report(placed);
+            }
+        }
     }
 
     #[expect(
@@ -635,15 +643,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         subs.iter().map(|sub| sub as &dyn SubView).collect();
                     placed_layout(&*container.layout, bounds, proposal, &refs)
                 };
-                #[cfg(feature = "accessibility")]
-                {
-                    container.geometry = Some(PlacedGeometry {
-                        proposal,
-                        answer: placement.answer,
-                        allocation,
-                        response_rect: placement.response_rect,
-                    });
-                }
+                container.geometry = Some(PlacedGeometry {
+                    proposal,
+                    answer: placement.answer,
+                    allocation,
+                    response_rect: placement.response_rect,
+                });
                 for (child, child_placement) in
                     container.children.iter_mut().zip(&placement.children)
                 {
@@ -724,6 +729,19 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         child_proposal,
                         Rect::new(bounds.origin(), child_size),
                     );
+                } else if let WrapperEffect::ReportSize(report) = &node.effect {
+                    let report = report.clone();
+                    node.child
+                        .layout_in(renderer, &node_env, safe_area, proposal, bounds);
+                    let placed = committed_placed_size(
+                        &node.child,
+                        &mut renderer.state,
+                        &node_env,
+                        &theme,
+                        bounds,
+                        proposal,
+                    );
+                    renderer.state.pending_size_reports.push((report, placed));
                 } else {
                     node.child
                         .layout_in(renderer, &node_env, safe_area, proposal, bounds);
@@ -959,6 +977,113 @@ pub(super) fn resolved_or_collapsed(
             rect: Rect::new(bounds.origin(), Size::zero()),
         }
     })
+}
+
+/// The committed placed size (`response_rect.size()`) of `node` immediately
+/// after its layout pass ran over `(bounds, proposal)`.
+///
+/// Containers, collections, text leaves and accessibility-enabled lazy stacks
+/// already retained their [`PlacedGeometry`] during layout, so this reads it
+/// without re-running layout; leaves without a retained geometry slot resolve
+/// through [`NodeSubView::resolve_extent`].
+fn committed_placed_size<E: TextEngine>(
+    node: &RenderNode<E>,
+    state: &mut HydroState<E>,
+    env: &Environment,
+    theme: &Rc<dyn WidgetTheme>,
+    bounds: Rect,
+    proposal: ProposalSize,
+) -> Size {
+    match node {
+        RenderNode::Container(container) => {
+            if let Some(geometry) = container.geometry {
+                return *geometry.response_rect.size();
+            }
+        }
+        RenderNode::Collection(collection) => {
+            if let Some(geometry) = collection.geometry {
+                return *geometry.response_rect.size();
+            }
+        }
+        RenderNode::Text(text) => {
+            if let Some(geometry) = text.geometry {
+                return *geometry.response_rect.size();
+            }
+        }
+        #[cfg(feature = "accessibility")]
+        RenderNode::LazyStack(lazy) => {
+            if let Some(geometry) = lazy.geometry {
+                return *geometry.response_rect.size();
+            }
+        }
+        RenderNode::Opacity(inner) => {
+            return committed_placed_size(&inner.child, state, env, theme, bounds, proposal);
+        }
+        RenderNode::Scale(inner) => {
+            return committed_placed_size(&inner.child, state, env, theme, bounds, proposal);
+        }
+        RenderNode::Rotation(inner) => {
+            return committed_placed_size(&inner.child, state, env, theme, bounds, proposal);
+        }
+        RenderNode::Offset(inner) => {
+            return committed_placed_size(&inner.child, state, env, theme, bounds, proposal);
+        }
+        RenderNode::Retain(inner) => {
+            return committed_placed_size(&inner.child, state, env, theme, bounds, proposal);
+        }
+        RenderNode::Fill(inner) => {
+            return committed_placed_size(&inner.child, state, env, theme, bounds, proposal);
+        }
+        RenderNode::Env(inner) => {
+            return committed_placed_size(&inner.child, state, &inner.env, theme, bounds, proposal);
+        }
+        #[cfg(waterui_feature = "effects")]
+        RenderNode::Filtered(inner) => {
+            return committed_placed_size(&inner.child, state, &inner.env, theme, bounds, proposal);
+        }
+        RenderNode::Dynamic(inner) => {
+            return committed_placed_size(
+                &inner.child.borrow(),
+                state,
+                env,
+                theme,
+                bounds,
+                proposal,
+            );
+        }
+        RenderNode::Wrapper(inner) => {
+            let (child_bounds, child_proposal) =
+                if matches!(inner.effect, WrapperEffect::IgnoreSafeArea(_)) {
+                    let released = inner.released_offsets.get();
+                    let child_size = Size::new(
+                        bounds.width() + crate::num_cast::f64_as_f32(released.horizontal()),
+                        bounds.height() + crate::num_cast::f64_as_f32(released.vertical()),
+                    );
+                    (
+                        Rect::new(bounds.origin(), child_size),
+                        ProposalSize::new(
+                            proposal.width.map(|_| child_size.width),
+                            proposal.height.map(|_| child_size.height),
+                        ),
+                    )
+                } else {
+                    (bounds, proposal)
+                };
+            return committed_placed_size(
+                &inner.child,
+                state,
+                &inner.env,
+                theme,
+                child_bounds,
+                child_proposal,
+            );
+        }
+        _ => {}
+    }
+    let cell = RefCell::new(state);
+    let sub = NodeSubView::new(node, &cell, env, theme);
+    let resolved = resolved_or_collapsed(sub.resolve_extent(bounds, proposal), bounds);
+    *resolved.rect.size()
 }
 
 /// A text leaf's answer to `proposal`, shaped under `env`.

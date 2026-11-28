@@ -128,7 +128,7 @@ fn content(state: Editor) -> impl View {
 }
 ```
 
-Async is the same shape: `.action_async(|State(x): State<Binding<Str>>| async move { … })`.
+Async is the same shape: `.action_async(|State(x): State<Binding<Str>>| async move { … })` — single-flight (disables the button and reports busy until the future completes or drops; chain `.pending(&saving)` in either order to observe it).
 
 ### 4. A changing set of views is a collection, not a `watch`
 

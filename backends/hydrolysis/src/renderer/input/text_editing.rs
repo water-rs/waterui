@@ -33,8 +33,8 @@ impl Default for TextInputOptions {
 }
 
 impl TextInputOptions {
-    /// Resolved input options for a password secure field.
-    #[cfg(feature = "secure-field")]
+    /// Resolved input options for a password secure field in unit tests.
+    #[cfg(all(feature = "secure-field", test))]
     pub(crate) const fn password_default() -> Self {
         Self {
             keyboard: KeyboardType::Text,
@@ -90,7 +90,11 @@ pub enum TextInputModel {
         input: TextInputOptions,
     },
     #[cfg(feature = "secure-field")]
-    SecureField { value: nami::Binding<FormSecure> },
+    SecureField {
+        value: nami::Binding<FormSecure>,
+        on_submit: Option<SharedAction>,
+        input: TextInputOptions,
+    },
 }
 
 /// Text editing state that outlives a frame.
@@ -488,7 +492,7 @@ impl TextInputModel {
             #[cfg(feature = "text-field")]
             Self::TextField { on_submit, .. } => on_submit.as_ref(),
             #[cfg(feature = "secure-field")]
-            Self::SecureField { .. } => None,
+            Self::SecureField { on_submit, .. } => on_submit.as_ref(),
         }
     }
 
@@ -497,7 +501,7 @@ impl TextInputModel {
             #[cfg(feature = "text-field")]
             Self::TextField { value, .. } => value.snapshot().to_plain().to_string(),
             #[cfg(feature = "secure-field")]
-            Self::SecureField { value } => value.snapshot().expose().to_owned(),
+            Self::SecureField { value, .. } => value.snapshot().expose().to_owned(),
         }
     }
 
@@ -506,7 +510,7 @@ impl TextInputModel {
             #[cfg(feature = "text-field")]
             Self::TextField { value, .. } => value.set(StyledStr::plain(text)),
             #[cfg(feature = "secure-field")]
-            Self::SecureField { value } => {
+            Self::SecureField { value, .. } => {
                 let mut next = FormSecure::default();
                 next.set(text);
                 value.set(next);
@@ -544,7 +548,7 @@ impl TextInputModel {
             #[cfg(feature = "text-field")]
             Self::TextField { input, .. } => *input,
             #[cfg(feature = "secure-field")]
-            Self::SecureField { .. } => TextInputOptions::password_default(),
+            Self::SecureField { input, .. } => *input,
         }
     }
 
@@ -2503,6 +2507,8 @@ mod tests {
         secure.set(value.to_owned());
         TextInputModel::SecureField {
             value: Binding::new(secure),
+            on_submit: None,
+            input: TextInputOptions::password_default(),
         }
     }
 

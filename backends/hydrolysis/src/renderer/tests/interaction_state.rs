@@ -531,3 +531,114 @@ fn custom_button_and_toggle_styles_report_interaction_without_chrome() {
     let _ = rt.pump(false);
     assert_eq!(clicks.get(), 1, "disabled custom button must not fire");
 }
+
+#[test]
+fn async_button_ignores_pointer_double_tap_and_reports_disabled_while_pending() {
+    use core::cell::{Cell, RefCell};
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll, Waker};
+    use nami::{Binding, Signal as _};
+    use waterui::component::button::button;
+
+    struct Gate {
+        ready: Cell<bool>,
+        waker: RefCell<Option<Waker>>,
+    }
+    impl Gate {
+        fn new() -> Rc<Self> {
+            Rc::new(Self {
+                ready: Cell::new(false),
+                waker: RefCell::new(None),
+            })
+        }
+        fn complete(&self) {
+            self.ready.set(true);
+            if let Some(waker) = self.waker.borrow_mut().take() {
+                waker.wake();
+            }
+        }
+    }
+    struct Wait(Rc<Gate>);
+    impl Future for Wait {
+        type Output = ();
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.0.ready.get() {
+                Poll::Ready(())
+            } else {
+                *self.0.waker.borrow_mut() = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+    }
+
+    let saving = Binding::new(false);
+    let state = Binding::new(InteractionState::empty());
+    let calls = Rc::new(Cell::new(0u32));
+    let gate = Rc::new(RefCell::new(Gate::new()));
+
+    let calls_action = Rc::clone(&calls);
+    let gate_action = Rc::clone(&gate);
+    let view = AnyView::new(
+        button("Save")
+            .action_async(move || {
+                calls_action.set(calls_action.get() + 1);
+                let g = Rc::clone(&gate_action.borrow());
+                async move {
+                    Wait(g).await;
+                }
+            })
+            .pending(&saving)
+            .interaction_state(&state),
+    );
+
+    let env = test_environment();
+    let mut rt = runtime(env.clone(), view, MinimalTestTheme::default());
+    assert!(!saving.snapshot());
+    assert!(!state.snapshot().contains(InteractionState::DISABLED));
+
+    // Rapid double-tap on the centered button (400, 300 in 800x600 window).
+    pointer_down(&mut rt, 400.0, 300.0);
+    pointer_up(&mut rt, 400.0, 300.0);
+    pointer_down(&mut rt, 400.0, 300.0);
+    pointer_up(&mut rt, 400.0, 300.0);
+    let _ = rt.pump(false);
+
+    assert_eq!(
+        calls.get(),
+        1,
+        "rapid double-tap must invoke async handler once"
+    );
+    assert!(saving.snapshot());
+    assert!(
+        state.snapshot().contains(InteractionState::DISABLED),
+        "pending button must report DISABLED interaction state"
+    );
+
+    // Another pointer tap after re-flush is also suppressed.
+    pointer_down(&mut rt, 400.0, 300.0);
+    pointer_up(&mut rt, 400.0, 300.0);
+    let _ = rt.pump(false);
+    assert_eq!(calls.get(), 1);
+
+    let parked = env
+        .get::<super::ParkedRunnables>()
+        .expect("test_environment installs ParkedRunnables");
+    parked.drain();
+    gate.borrow().complete();
+    parked.drain();
+    let _ = rt.pump(false);
+
+    assert!(!saving.snapshot());
+    assert!(!state.snapshot().contains(InteractionState::DISABLED));
+
+    // Once completed, the button accepts a new tap.
+    *gate.borrow_mut() = Gate::new();
+    pointer_down(&mut rt, 400.0, 300.0);
+    pointer_up(&mut rt, 400.0, 300.0);
+    let _ = rt.pump(false);
+    assert_eq!(calls.get(), 2);
+    parked.drain();
+    gate.borrow().complete();
+    parked.drain();
+}

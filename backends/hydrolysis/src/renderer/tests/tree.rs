@@ -67,7 +67,6 @@ fn render_node_container_lays_out_and_flushes_text() {
         #[cfg(feature = "accessibility")]
         accessibility_child_env: None,
         placed: Vec::new(),
-        #[cfg(feature = "accessibility")]
         geometry: None,
         layout_dirty: Rc::new(Cell::new(false)),
         _guards: Vec::new(),
@@ -129,7 +128,6 @@ fn geometry_static_flush_reuses_cached_placement() {
         #[cfg(feature = "accessibility")]
         accessibility_child_env: None,
         placed: Vec::new(),
-        #[cfg(feature = "accessibility")]
         geometry: None,
         layout_dirty: Rc::new(Cell::new(false)),
         _guards: Vec::new(),
