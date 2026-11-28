@@ -1567,7 +1567,7 @@ impl HostAppearance {
 
 /// Initial host snapshot supplied to [`AndroidSession::create`]: layout
 /// metrics, system appearance, and initial Activity lifecycle phase.
-pub(super) struct SessionInit {
+pub struct SessionInit {
     pub metrics: MetricsSnapshot,
     pub appearance: HostAppearance,
     pub initial_phase: AppPhase,
