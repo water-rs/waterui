@@ -59,9 +59,9 @@ use crate::component::list::{ListMinRowHeight, ListRowDeletable, ListRowInsets, 
 use crate::haptic::Feedback;
 use crate::{
     accessibility::{
-        self, AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden,
-        AccessibilityIdentifier, AccessibilityLabel, AccessibilityRole, AccessibilityState,
-        AccessibilityValue,
+        self, AccessibilityAdjustable, AccessibilityChildren, AccessibilityCustomActions,
+        AccessibilityGeometry, AccessibilityHidden, AccessibilityHint, AccessibilityIdentifier,
+        AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityValue,
     },
     background::IntoBackground,
     border::Border,
@@ -273,6 +273,17 @@ pub trait ViewExt: View + Sized {
         S: IntoToggleStyle<Marker>,
     {
         hook::Hooks::new(self, ToggleStyleHook::new(style.into_toggle_style()))
+    }
+
+    /// Sets the default [`PickerStyle`](crate::form::picker::PickerStyle) for
+    /// [`Picker`](crate::form::picker::Picker) views in this subtree that did not
+    /// specify an explicit `.style(...)`.
+    #[cfg(feature = "picker")]
+    fn picker_style(
+        self,
+        style: crate::form::picker::PickerStyle,
+    ) -> Installed<Self, crate::form::picker::PickerStyle> {
+        Installed::new(self, style)
     }
 
     /// Sets this view as the content of a navigation view with the specified title.
@@ -986,6 +997,75 @@ pub trait ViewExt: View + Sized {
         state: impl IntoComputed<accessibility::AccessibilityState>,
     ) -> Metadata<accessibility::AccessibilityStateSignal, Self> {
         Metadata::new(self, accessibility::AccessibilityStateSignal::new(state))
+    }
+
+    /// Sets the accessibility hint for this view.
+    ///
+    /// A hint supplements the label and role with the outcome of acting on the
+    /// view (for example, `"Opens the thread"`). Accepts any [`IntoText`]
+    /// value: string literals resolve through the active translation catalog in
+    /// the surrounding [`Environment`], and reactive signals stay current
+    /// without rebuilding the subtree.
+    fn a11y_hint(self, hint: impl IntoText) -> Metadata<AccessibilityHint, Self> {
+        let hint = hint.into_text();
+        Metadata::new(
+            self,
+            accessibility::AccessibilityHint::resolved(move |env| {
+                hint.resolve(env)
+                    .content()
+                    .map(|styled| styled.to_plain())
+                    .computed()
+            }),
+        )
+    }
+
+    /// Attaches a named custom accessibility action to this view.
+    ///
+    /// Use custom actions to make interactions backed by gestures such as
+    /// swipe, drag, or long press reachable from `VoiceOver`'s actions rotor and
+    /// `TalkBack`'s local context menu. Chaining multiple `.a11y_action(...)`
+    /// modifiers appends actions in declaration order rather than replacing
+    /// earlier ones.
+    fn a11y_action<H, Args>(
+        self,
+        name: impl IntoText,
+        action: H,
+    ) -> Metadata<AccessibilityCustomActions, Self>
+    where
+        H: Handler<Args, ()>,
+    {
+        let name = name.into_text();
+        let action = accessibility::AccessibilityCustomAction::resolved(
+            move |env| {
+                name.resolve(env)
+                    .content()
+                    .map(|styled| styled.to_plain())
+                    .computed()
+            },
+            action,
+        );
+        Metadata::new(
+            self,
+            accessibility::AccessibilityCustomActions::single(action),
+        )
+    }
+
+    /// Makes this view adjustable by assistive technologies through increment
+    /// and decrement actions (for example, `VoiceOver` swipe up/down or `TalkBack`
+    /// scroll forward/backward on a custom rating control).
+    fn a11y_adjustable<Inc, IncArgs, Dec, DecArgs>(
+        self,
+        increment: Inc,
+        decrement: Dec,
+    ) -> Metadata<AccessibilityAdjustable, Self>
+    where
+        Inc: Handler<IncArgs, ()>,
+        Dec: Handler<DecArgs, ()>,
+    {
+        Metadata::new(
+            self,
+            accessibility::AccessibilityAdjustable::new(increment, decrement),
+        )
     }
 
     /// Observes a gesture and executes an action whose handler consumes
@@ -1940,6 +2020,59 @@ mod tests {
         locale.set(locales::FR);
         assert_eq!(label_signal.snapshot().as_str(), "Fermer la fenêtre");
         assert_eq!(value_signal.snapshot().as_str(), "Prêt");
+    }
+
+    #[test]
+    fn a11y_hint_action_and_adjustable_resolve_and_invoke() {
+        use nami::{Binding, Signal as _};
+        use waterui_core::{Environment, Metadata};
+        use waterui_locale::{TranslationCatalog, locales};
+
+        let locale = Binding::new(locales::EN);
+        let mut env = Environment::new();
+        env.insert(locale.clone());
+        env.insert(
+            TranslationCatalog::new()
+                .add_toml(
+                    locales::FR,
+                    "\"Opens the thread\" = \"Ouvre la discussion\"\n\"Archive\" = \"Archiver\"",
+                )
+                .expect("test catalog must parse"),
+        );
+
+        let Metadata { value: hint, .. } = ().a11y_hint("Opens the thread");
+        let hint_signal = hint.resolve(&env);
+        assert_eq!(hint_signal.snapshot().as_str(), "Opens the thread");
+        locale.set(locales::FR);
+        assert_eq!(hint_signal.snapshot().as_str(), "Ouvre la discussion");
+
+        let ran = Binding::new(0_i32);
+        let ran_action = ran.clone();
+        let Metadata { value: actions, .. } =
+            ().a11y_action("Archive", move || ran_action.set(ran_action.snapshot() + 1));
+        assert_eq!(actions.actions().len(), 1);
+        assert_eq!(
+            actions.actions()[0].resolve_name(&env).snapshot().as_str(),
+            "Archiver"
+        );
+        actions.actions()[0]
+            .invoke(&env)
+            .expect("custom action runs");
+        assert_eq!(ran.snapshot(), 1);
+
+        let rating = Binding::new(3_i32);
+        let inc_rating = rating.clone();
+        let dec_rating = rating.clone();
+        let Metadata {
+            value: adjustable, ..
+        } = ().a11y_adjustable(
+            move || inc_rating.set(inc_rating.snapshot() + 1),
+            move || dec_rating.set(dec_rating.snapshot() - 1),
+        );
+        adjustable.increment(&env).expect("increment runs");
+        assert_eq!(rating.snapshot(), 4);
+        adjustable.decrement(&env).expect("decrement runs");
+        assert_eq!(rating.snapshot(), 3);
     }
 
     #[cfg(feature = "navigation")]

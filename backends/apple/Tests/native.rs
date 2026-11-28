@@ -393,12 +393,29 @@ fn trials() -> Vec<Trial> {
             tests.extend(capture_order::trials());
         }
     }
+    #[cfg(target_os = "macos")]
+    {
+        tests.push(Trial::test(
+            "resolve::a_wheel_picker_on_macos_renders_and_syncs_selection",
+            || {
+                resolve::a_wheel_picker_on_macos_renders_and_syncs_selection();
+                Ok(())
+            },
+        ));
+    }
     #[cfg(target_os = "ios")]
     {
         tests.push(Trial::test(
             "resolve::a_wheel_picker_spaces_rows_at_the_swiftui_pitch",
             || {
                 resolve::a_wheel_picker_spaces_rows_at_the_swiftui_pitch();
+                Ok(())
+            },
+        ));
+        tests.push(Trial::test(
+            "resolve::a_radio_picker_on_ios_renders_a_radio_group",
+            || {
+                resolve::a_radio_picker_on_ios_renders_a_radio_group();
                 Ok(())
             },
         ));
@@ -434,6 +451,7 @@ fn trials() -> Vec<Trial> {
     tests.extend(button_keyboard_shortcut::trials());
     tests.extend(markdown_a11y::trials());
     tests.extend(icon_a11y::trials());
+    tests.extend(a11y_actions_modifiers::trials());
     #[cfg(feature = "highlight")]
     tests.extend(code::trials());
     tests.extend(a11y_combine::trials());
@@ -1666,7 +1684,7 @@ mod resolve {
         }
     }
 
-    /// water-rs/waterui#3596: the radio style's `UIPickerView` wheel asks
+    /// water-rs/waterui#3596: the wheel style's `UIPickerView` asks
     /// its delegate for the row height and gets `SwiftUI`'s wheel pitch,
     /// not `UIKit`'s 32 pt style default for a wheel this tall.
     #[cfg(target_os = "ios")]
@@ -1680,7 +1698,7 @@ mod resolve {
             waterui::text!("Two").tag(1),
             waterui::text!("Three").tag(2),
         ];
-        let leaf = render(picker("Mode", items, &selection).style(PickerStyle::Radio));
+        let leaf = render(picker("Mode", items, &selection).wheel());
         let size = leaf
             .layout()
             .measure(ProposalSize::new(Some(300.0), None))
@@ -1695,7 +1713,7 @@ mod resolve {
             .into_iter()
             .filter(|view| view.downcast_ref::<UIPickerView>().is_some())
             .collect();
-        assert_eq!(wheels.len(), 1, "the radio picker hosts one wheel");
+        assert_eq!(wheels.len(), 1, "the wheel picker hosts one UIPickerView");
         let wheel = wheels[0]
             .downcast_ref::<UIPickerView>()
             .expect("filtered to wheels above");
@@ -1704,6 +1722,115 @@ mod resolve {
             WHEEL_ROW_HEIGHT.to_bits(),
             "the wheel's row height"
         );
+    }
+
+    /// water-rs/waterui#4432: on iOS, `PickerStyle::Radio` renders a native
+    /// `UIKit` radio-button group (not a `UIPickerView` wheel) with one row per
+    /// option and reactive selection state.
+    #[cfg(target_os = "ios")]
+    pub fn a_radio_picker_on_ios_renders_a_radio_group() {
+        use cocoa_ui::objc2_ui_kit::{UIControl, UIPickerView};
+
+        let selection = binding(1_i32);
+        let items = vec![
+            waterui::text!("Low").tag(0),
+            waterui::text!("Medium").tag(1),
+            waterui::text!("High").tag(2),
+        ];
+        let leaf = render(picker("Priority", items, &selection).radio());
+        let size = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        assert!(size.width > 0.0 && size.height > 0.0);
+        let host = leaf.view();
+        cocoa_ui::view::set_frame(
+            host,
+            cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+        );
+        cocoa_ui::view::layout_immediately(host);
+        let subviews = cocoa_ui::view::subviews(host);
+        assert!(
+            subviews
+                .iter()
+                .all(|v| v.downcast_ref::<UIPickerView>().is_none()),
+            "Radio must not mount a UIPickerView on iOS"
+        );
+        let group = &subviews[0];
+        let rows = cocoa_ui::view::subviews(group);
+        assert_eq!(rows.len(), 3, "radio group mounts one row per item");
+        let row_controls: Vec<_> = rows
+            .iter()
+            .map(|r| {
+                r.downcast_ref::<UIControl>()
+                    .expect("radio row is a UIControl")
+            })
+            .collect();
+        assert!(!row_controls[0].isSelected());
+        assert!(row_controls[1].isSelected());
+        assert!(!row_controls[2].isSelected());
+
+        selection.set(2);
+        assert!(!row_controls[1].isSelected());
+        assert!(row_controls[2].isSelected());
+    }
+
+    /// water-rs/waterui#4432: on macOS, `PickerStyle::Wheel` (direct or via
+    /// ambient `ViewExt::picker_style`) renders a clipped native wheel drum
+    /// view with intrinsic height for its visible rows and syncs selection.
+    #[cfg(target_os = "macos")]
+    pub fn a_wheel_picker_on_macos_renders_and_syncs_selection() {
+        use cocoa_ui::objc2_app_kit::NSAccessibility;
+        use cocoa_ui::objc2_foundation::NSString;
+
+        let selection = binding(1_i32);
+        let items = || {
+            vec![
+                waterui::text!("Small").tag(0),
+                waterui::text!("Medium").tag(1),
+                waterui::text!("Large").tag(2),
+            ]
+        };
+        let leaf = render(picker("Unit", items(), &selection).wheel());
+        let size = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        assert!(
+            size.width >= 128.0 && size.height >= 100.0,
+            "wheel drum must measure a multi-row intrinsic size, got {size:?}"
+        );
+        let host = leaf.view();
+        cocoa_ui::view::set_frame(
+            host,
+            cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+        );
+        cocoa_ui::view::layout_immediately(host);
+        let subviews = cocoa_ui::view::subviews(host);
+        // Subviews on macOS: the wheel drum control and the leading label.
+        assert_eq!(subviews.len(), 2, "wheel picker mounts drum and label");
+        let wheel = &subviews[0];
+        // The wheel drum holds its highlight band plus one label per item.
+        assert_eq!(cocoa_ui::view::subviews(wheel).len(), 4);
+        assert_eq!(
+            wheel
+                .accessibilityValue()
+                .and_then(|v| v.downcast::<NSString>().ok())
+                .map(|s| s.to_string()),
+            Some(String::from("Medium"))
+        );
+
+        selection.set(2);
+        assert_eq!(
+            wheel
+                .accessibilityValue()
+                .and_then(|v| v.downcast::<NSString>().ok())
+                .map(|s| s.to_string()),
+            Some(String::from("Large"))
+        );
+
+        // Ambient `.picker_style(PickerStyle::Wheel)` produces the same drum.
+        let ambient_leaf =
+            render(picker("Unit", items(), &selection).picker_style(PickerStyle::Wheel));
+        let ambient_size = ambient_leaf
+            .layout()
+            .measure(ProposalSize::UNSPECIFIED)
+            .size;
+        assert_eq!(ambient_size.height.to_bits(), size.height.to_bits());
     }
 
     /// water-rs/waterui#1101: a semantic label leaves 8 pt between its
@@ -20390,6 +20517,288 @@ mod code {
             1,
             "activating native Copy button must invoke OnCopied"
         );
+    }
+}
+
+mod a11y_actions_modifiers {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use libtest_mimic::Trial;
+    use nami::{Binding, Signal as _, SignalExt as _};
+    use waterui::accessibility::{AccessibilityRole, AccessibilityState};
+    use waterui::component::text;
+    use waterui::layout::stack::vstack;
+    use waterui::{Str, ViewExt as _};
+
+    #[cfg(target_os = "ios")]
+    use super::mtm;
+    use super::resolve;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "a11y_actions_modifiers::hint_and_busy_compose_reactively",
+                || {
+                    hint_and_busy_compose_reactively();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "a11y_actions_modifiers::custom_actions_preserve_order_and_invoke",
+                || {
+                    custom_actions_preserve_order_and_invoke();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "a11y_actions_modifiers::adjustable_advertises_and_dispatches_on_host_and_leaf",
+                || {
+                    adjustable_advertises_and_dispatches_on_host_and_leaf();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn hint_and_busy_compose_reactively() {
+        let hint = Binding::new(Str::from_static("Opens the thread"));
+        let busy = Binding::new(false);
+        let state = busy.map(|b| AccessibilityState::new().busy(b));
+
+        // Hint inner, state outer.
+        let leaf_a = resolve::render(
+            text("Item")
+                .a11y_hint(hint.clone())
+                .a11y_state(state.clone()),
+        );
+        // State inner, hint outer.
+        let leaf_b = resolve::render(text("Item").a11y_state(state).a11y_hint(hint.clone()));
+
+        let read_hint = |view: &cocoa_ui::PlatformView| -> Option<String> {
+            #[cfg(target_os = "macos")]
+            {
+                use cocoa_ui::objc2::runtime::ProtocolObject;
+                use cocoa_ui::objc2_app_kit::NSAccessibility;
+                ProtocolObject::<dyn NSAccessibility>::from_ref(view)
+                    .accessibilityHelp()
+                    .map(|s| s.to_string())
+            }
+            #[cfg(target_os = "ios")]
+            {
+                use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+                view.accessibilityHint(mtm()).map(|s| s.to_string())
+            }
+        };
+
+        assert_eq!(
+            read_hint(leaf_a.view()).as_deref(),
+            Some("Opens the thread")
+        );
+        assert_eq!(
+            read_hint(leaf_b.view()).as_deref(),
+            Some("Opens the thread")
+        );
+
+        busy.set(true);
+        assert_eq!(
+            read_hint(leaf_a.view()).as_deref(),
+            Some("Busy, Opens the thread")
+        );
+        assert_eq!(
+            read_hint(leaf_b.view()).as_deref(),
+            Some("Busy, Opens the thread")
+        );
+
+        hint.set(Str::from_static("Opens archive"));
+        assert_eq!(
+            read_hint(leaf_a.view()).as_deref(),
+            Some("Busy, Opens archive")
+        );
+        assert_eq!(
+            read_hint(leaf_b.view()).as_deref(),
+            Some("Busy, Opens archive")
+        );
+
+        busy.set(false);
+        assert_eq!(read_hint(leaf_a.view()).as_deref(), Some("Opens archive"));
+        assert_eq!(read_hint(leaf_b.view()).as_deref(), Some("Opens archive"));
+    }
+
+    fn custom_actions_preserve_order_and_invoke() {
+        let log = Rc::new(RefCell::new(Vec::<&'static str>::new()));
+        let archive_log = Rc::clone(&log);
+        let pin_log = Rc::clone(&log);
+        let pin_name = Binding::new(Str::from_static("Pin"));
+
+        let leaf = resolve::render(
+            vstack((text("Thread"),))
+                .a11y_label("Thread row")
+                .a11y_action("Archive", move || archive_log.borrow_mut().push("archive"))
+                .a11y_action(pin_name.clone(), move || pin_log.borrow_mut().push("pin")),
+        );
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::ProtocolObject;
+            use cocoa_ui::objc2_app_kit::NSAccessibility;
+
+            let element = ProtocolObject::<dyn NSAccessibility>::from_ref(leaf.view());
+            let actions = element
+                .accessibilityCustomActions()
+                .expect("custom actions must be installed");
+            let names: Vec<String> = actions.iter().map(|a| a.name().to_string()).collect();
+            assert_eq!(names, ["Archive", "Pin"]);
+
+            for action in actions.to_vec().into_iter().rev() {
+                let block = action.handler();
+                assert!(!block.is_null(), "custom action must carry a handler block");
+                // SAFETY: `NSAccessibilityCustomAction::handler` returns a valid
+                // `BOOL (^)(void)` block installed by `cocoa-ui`.
+                let handled = unsafe { (*block).call(()) };
+                assert!(handled.as_bool());
+            }
+            assert_eq!(*log.borrow(), ["pin", "archive"]);
+
+            pin_name.set(Str::from_static("Unpin"));
+            let refreshed = element
+                .accessibilityCustomActions()
+                .expect("custom actions must stay installed after rename");
+            let refreshed_names: Vec<String> =
+                refreshed.iter().map(|a| a.name().to_string()).collect();
+            assert_eq!(refreshed_names, ["Archive", "Unpin"]);
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibilityAction as _;
+            use core::ptr::NonNull;
+
+            let actions = leaf
+                .view()
+                .accessibilityCustomActions(mtm())
+                .expect("custom actions must be installed");
+            let names: Vec<String> = actions.iter().map(|a| a.name().to_string()).collect();
+            assert_eq!(names, ["Archive", "Pin"]);
+
+            for action in actions.to_vec().into_iter().rev() {
+                // SAFETY: `UIAccessibilityCustomAction::actionHandler` returns the
+                // block installed by `cocoa-ui`.
+                let block = unsafe { action.actionHandler() };
+                assert!(!block.is_null(), "custom action must carry a handler block");
+                // SAFETY: valid block pointer taking the action itself.
+                let handled = unsafe { (*block).call((NonNull::from(&*action),)) };
+                assert!(handled.as_bool());
+            }
+            assert_eq!(*log.borrow(), ["pin", "archive"]);
+
+            pin_name.set(Str::from_static("Unpin"));
+            let refreshed = leaf
+                .view()
+                .accessibilityCustomActions(mtm())
+                .expect("custom actions must stay installed after rename");
+            let refreshed_names: Vec<String> =
+                refreshed.iter().map(|a| a.name().to_string()).collect();
+            assert_eq!(refreshed_names, ["Archive", "Unpin"]);
+        }
+    }
+
+    fn adjustable_advertises_and_dispatches_on_host_and_leaf() {
+        let container_rating = Binding::new(2_i32);
+        let inc_c = container_rating.clone();
+        let dec_c = container_rating.clone();
+        let host_leaf = resolve::render(
+            vstack((text("Stars"),))
+                .a11y_label("Container rating")
+                .a11y_adjustable(
+                    move || inc_c.set(inc_c.snapshot() + 1),
+                    move || dec_c.set(dec_c.snapshot() - 1),
+                )
+                .a11y_role(AccessibilityRole::Group),
+        );
+
+        let text_rating = Binding::new(4_i32);
+        let inc_t = text_rating.clone();
+        let dec_t = text_rating.clone();
+        let text_leaf = resolve::render(
+            text("4 stars")
+                .a11y_label("Text rating")
+                .a11y_value("4 of 5")
+                .a11y_adjustable(
+                    move || inc_t.set(inc_t.snapshot() + 1),
+                    move || dec_t.set(dec_t.snapshot() - 1),
+                ),
+        );
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::ProtocolObject;
+            use cocoa_ui::objc2::sel;
+            use cocoa_ui::objc2_app_kit::NSAccessibility;
+
+            for (leaf, rating, expected_label) in [
+                (&host_leaf, &container_rating, "Container rating"),
+                (&text_leaf, &text_rating, "Text rating"),
+            ] {
+                let element = ProtocolObject::<dyn NSAccessibility>::from_ref(leaf.view());
+                assert!(element.isAccessibilityElement());
+                assert_eq!(
+                    element
+                        .accessibilityLabel()
+                        .map(|l| l.to_string())
+                        .as_deref(),
+                    Some(expected_label)
+                );
+                // SAFETY: querying standard `NSAccessibility` selectors on a main-thread view.
+                unsafe {
+                    assert!(
+                        element.isAccessibilitySelectorAllowed(sel!(accessibilityPerformIncrement))
+                    );
+                    assert!(
+                        element.isAccessibilitySelectorAllowed(sel!(accessibilityPerformDecrement))
+                    );
+                }
+                let start = rating.snapshot();
+                assert!(element.accessibilityPerformIncrement());
+                assert_eq!(rating.snapshot(), start + 1);
+                assert!(element.accessibilityPerformDecrement());
+                assert_eq!(rating.snapshot(), start);
+            }
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::{
+                NSObjectUIAccessibility as _, NSObjectUIAccessibilityAction as _,
+                UIAccessibilityTraitAdjustable,
+            };
+
+            // SAFETY: immutable UIKit trait constant.
+            let adjustable_trait = unsafe { UIAccessibilityTraitAdjustable };
+            for (leaf, rating, expected_label) in [
+                (&host_leaf, &container_rating, "Container rating"),
+                (&text_leaf, &text_rating, "Text rating"),
+            ] {
+                assert!(leaf.view().isAccessibilityElement(mtm()));
+                assert_ne!(
+                    leaf.view().accessibilityTraits(mtm()) & adjustable_trait,
+                    0,
+                    "adjustable trait must remain set even with explicit role"
+                );
+                assert_eq!(
+                    leaf.view()
+                        .accessibilityLabel(mtm())
+                        .map(|l| l.to_string())
+                        .as_deref(),
+                    Some(expected_label)
+                );
+                let start = rating.snapshot();
+                leaf.view().accessibilityIncrement(mtm());
+                assert_eq!(rating.snapshot(), start + 1);
+                leaf.view().accessibilityDecrement(mtm());
+                assert_eq!(rating.snapshot(), start);
+            }
+        }
     }
 }
 

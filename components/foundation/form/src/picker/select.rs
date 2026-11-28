@@ -6,6 +6,7 @@ use waterui_controls::label::{ControlLabel, Label, LabelKind};
 use waterui_controls::{ControlSize, IntoLabel, impl_label_style_methods};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::layout::StretchAxis;
+use waterui_core::plugin::Plugin;
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
 use waterui_core::id::{Id, Mapping, TaggedView};
@@ -27,19 +28,19 @@ pub enum PickerStyle {
     /// Displays as a button that opens a menu when tapped.
     Menu,
     /// A radio button group style picker.
-    /// Displays all options vertically with radio button indicators.
-    ///
-    /// Platforms without a radio group render their inline picker instead:
-    /// iOS has no radio group in `UIKit` or `SwiftUI`, so the Apple backend
-    /// renders this style as the inline wheel picker there, exactly as
-    /// `SwiftUI`'s `.inline` style does in the same place, while macOS keeps
-    /// its native radio buttons. The asymmetry is documented rather than
-    /// faked with a self-drawn list.
+    /// Displays all options vertically with radio button indicators on every platform.
     Radio,
     /// A segmented button style picker.
     /// Displays all options horizontally as mutually exclusive segments.
     Segmented,
+    /// A wheel style picker.
+    /// Displays options in a scrollable vertical drum with a centered selection band.
+    Wheel,
 }
+
+/// A picker style installed on a subtree becomes the default for pickers
+/// that did not specify an explicit `.style(...)`.
+impl Plugin for PickerStyle {}
 
 #[non_exhaustive]
 #[derive(Debug, Clone)]
@@ -166,7 +167,7 @@ pub type PickerItem<T> = TaggedView<T, Text>;
 /// A segmented picker takes the width it is offered: it answers the
 /// proposed width and its intrinsic height, dividing the width into equal
 /// segments, and answers its intrinsic width when the width is unbounded.
-/// Every other style (automatic, menu, radio) answers the platform
+/// Every other style (automatic, menu, radio, wheel) answers the platform
 /// control's intrinsic size and never stretches to fill extra space
 /// (`docs/layout-spec.md` §6).
 #[derive(Debug, Clone)]
@@ -175,7 +176,7 @@ pub struct Picker<L> {
     label: Label<L>,
     items: Computed<Vec<PickerItem<Id>>>,
     selection: Binding<Id>,
-    style: PickerStyle,
+    style: Option<PickerStyle>,
     size: Option<ControlSize>,
 }
 
@@ -210,7 +211,7 @@ impl<L> Picker<L> {
             label: label.into_label(),
             items,
             selection: mapping.binding(selection),
-            style: PickerStyle::default(),
+            style: None,
             size: None,
         }
     }
@@ -221,7 +222,7 @@ impl<L> Picker<L> {
 
     /// Sets the visual style of the picker.
     pub const fn style(mut self, style: PickerStyle) -> Self {
-        self.style = style;
+        self.style = Some(style);
         self
     }
 
@@ -235,19 +236,39 @@ impl<L> Picker<L> {
         self
     }
 
+    /// Changes the picker to dropdown menu style.
+    pub const fn menu(self) -> Self {
+        self.style(PickerStyle::Menu)
+    }
+
+    /// Changes the picker to radio button group style.
+    pub const fn radio(self) -> Self {
+        self.style(PickerStyle::Radio)
+    }
+
     /// Changes the picker to segmented button style.
     pub const fn segmented(self) -> Self {
         self.style(PickerStyle::Segmented)
+    }
+
+    /// Changes the picker to wheel drum style.
+    pub const fn wheel(self) -> Self {
+        self.style(PickerStyle::Wheel)
     }
 }
 
 impl<L: LabelKind> Picker<L> {
     fn into_config<S: ChildSlot>(self, env: &Environment) -> PickerConfig<S> {
+        let style = self.style.unwrap_or_else(|| {
+            env.get::<PickerStyle>()
+                .copied()
+                .unwrap_or(PickerStyle::Automatic)
+        });
         PickerConfig {
             label: self.label.into_control_label::<S>(env),
             items: self.items,
             selection: self.selection,
-            style: self.style,
+            style,
             size: ControlSize::resolve(self.size, env, ControlSize::Small),
         }
         .resolve(env)
@@ -262,7 +283,7 @@ impl<L: LabelKind> Picker<L> {
             label: self.label.into_unscoped_control_label(),
             items: self.items,
             selection: self.selection,
-            style: self.style,
+            style: self.style.unwrap_or(PickerStyle::Automatic),
             size: self.size.unwrap_or(ControlSize::Small),
         }
     }
@@ -275,7 +296,7 @@ impl<S: View> From<PickerConfig<S>> for Picker<ControlLabel<S>> {
             label: Label::from_control_label(value.label, mode),
             items: value.items,
             selection: value.selection,
-            style: value.style,
+            style: Some(value.style),
             size: Some(value.size),
         }
     }
@@ -306,8 +327,9 @@ pub fn picker<T: Ord + Clone + 'static, L: IntoLabel>(
 #[cfg(test)]
 mod tests {
     use nami::Binding;
-    use waterui_core::NativeView;
     use waterui_core::layout::StretchAxis;
+    use waterui_core::plugin::Plugin;
+    use waterui_core::{AnyView, Environment, NativeView};
     use waterui_text::Text;
 
     use super::{Picker, PickerStyle, TaggedView};
@@ -322,6 +344,7 @@ mod tests {
             (PickerStyle::Menu, StretchAxis::None),
             (PickerStyle::Radio, StretchAxis::None),
             (PickerStyle::Segmented, StretchAxis::Horizontal),
+            (PickerStyle::Wheel, StretchAxis::None),
         ];
         for (style, expected) in cases {
             let picker = Picker::new(
@@ -341,8 +364,6 @@ mod tests {
     #[test]
     fn picker_control_size_inherits_from_environment_and_explicit_size_wins() {
         use waterui_controls::ControlSize;
-        use waterui_core::plugin::Plugin as _;
-        use waterui_core::{AnyView, Environment};
 
         let selection = Binding::new(0_i32);
         let base_env = Environment::new();
@@ -374,5 +395,60 @@ mod tests {
                 .size(),
             ControlSize::Large
         );
+    }
+
+    #[test]
+    fn style_shorthands_select_their_variant() {
+        let selection = Binding::new(0_i32);
+        let items = || alloc::vec![TaggedView::new(0, Text::new("One"))];
+        assert_eq!(
+            Picker::new("Mode", items(), &selection)
+                .menu()
+                .config()
+                .style(),
+            PickerStyle::Menu
+        );
+        assert_eq!(
+            Picker::new("Mode", items(), &selection)
+                .radio()
+                .config()
+                .style(),
+            PickerStyle::Radio
+        );
+        assert_eq!(
+            Picker::new("Mode", items(), &selection)
+                .segmented()
+                .config()
+                .style(),
+            PickerStyle::Segmented
+        );
+        assert_eq!(
+            Picker::new("Mode", items(), &selection)
+                .wheel()
+                .config()
+                .style(),
+            PickerStyle::Wheel
+        );
+    }
+
+    #[test]
+    fn ambient_picker_style_applies_unless_overridden() {
+        let selection = Binding::new(0_i32);
+        let items = || alloc::vec![TaggedView::new(0, Text::new("One"))];
+        let mut env = Environment::new();
+        PickerStyle::Wheel.install(&mut env);
+
+        let inherited = Picker::new("Mode", items(), &selection).into_config::<AnyView>(&env);
+        assert_eq!(inherited.style(), PickerStyle::Wheel);
+
+        let overridden = Picker::new("Mode", items(), &selection)
+            .radio()
+            .into_config::<AnyView>(&env);
+        assert_eq!(overridden.style(), PickerStyle::Radio);
+
+        let explicit_auto = Picker::new("Mode", items(), &selection)
+            .style(PickerStyle::Automatic)
+            .into_config::<AnyView>(&env);
+        assert_eq!(explicit_auto.style(), PickerStyle::Automatic);
     }
 }

@@ -891,13 +891,19 @@ fn sizes() -> [PickerItem<&'static str>; 3] {
 
 picker("Size", sizes(), &choice)                 // ergonomic constructor
 Picker::new(text!("Sort by"), options, &choice)  // labels may be localized text!
-    .style(PickerStyle::Menu)                    // Automatic | Menu | Radio | Segmented
+    .style(PickerStyle::Menu)                    // Automatic | Menu | Radio | Segmented | Wheel
     .hide_label()
+picker("Unit", units, &unit).wheel()             // shorthands: .menu() .radio() .segmented() .wheel()
+vstack((picker("Size", sizes(), &choice),))
+    .picker_style(PickerStyle::Menu)             // subtree default unless overridden by .style(...)
 ```
 
 Picker style is an attribute, never a separate type — there is no `RadioPicker`. The same
 holds for toggles (switch vs checkbox) and lists (plain vs inset vs sidebar).
-`.segmented()` is the shorthand for `PickerStyle::Segmented`.
+`.menu()`, `.radio()`, `.segmented()`, and `.wheel()` are shorthands for the corresponding
+`PickerStyle` variants, and `ViewExt::picker_style(...)` sets the ambient style for a subtree.
+`PickerStyle::Radio` renders a radio button group on every platform (including iOS), while
+`PickerStyle::Wheel` renders a scrollable wheel drum (`UIPickerView` on iOS).
 
 Date and color pickers bind typed values. The civil date types are `jiff`'s, re-exported
 from `waterui::form::picker::date::{Date, DateTime, Time}` — no `jiff` dependency of your
@@ -1014,10 +1020,13 @@ in when the picture is the subject, such as a full-width profile header. `.focus
 use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 
 .a11y_label("Delete message")          // override the derived label
+.a11y_hint("Opens the thread")         // supplemental outcome hint (IntoText)
 .a11y_id("inbox.row.3")                // stable automation id — reaches XCUITest and Android
 .a11y_role(AccessibilityRole::Button)
 .a11y_hidden(true)                     // or a reactive boolean signal
 .a11y_state(active.map(|a| AccessibilityState::new().selected(a)))
+.a11y_action("Archive", archive)       // chainable named actions in declaration order
+.a11y_adjustable(increment, decrement) // VoiceOver / TalkBack increment & decrement
 ```
 
 The idiom for a composed row that should read as a single node: `.a11y_hidden(true)` on

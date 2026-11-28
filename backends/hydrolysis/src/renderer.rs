@@ -145,23 +145,15 @@ use std::sync::Arc;
 
 #[cfg(feature = "menu")]
 use crate::widgets::inset_rect;
-#[cfg(all(
-    feature = "accessibility",
-    any(
-        feature = "slider",
-        feature = "stepper",
-        feature = "date-picker",
-        feature = "text-field",
-        feature = "secure-field"
-    )
-))]
+#[cfg(feature = "accessibility")]
 use accesskit::ActionData as AccessibilityActionData;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, ActionRequest as AccessibilityActionRequest,
-    Node as AccessibilityNode, NodeId as AccessibilityNodeId, Rect as AccessibilityRect,
-    Role as AccessibilityNodeRole, TextDirection as AccessibilityTextDirection,
-    Toggled as AccessibilityToggled, TreeId as AccessibilityTreeId, TreeInfo as AccessibilityTree,
+    CustomAction as AccessibilityCustomAction, Node as AccessibilityNode,
+    NodeId as AccessibilityNodeId, Rect as AccessibilityRect, Role as AccessibilityNodeRole,
+    TextDirection as AccessibilityTextDirection, Toggled as AccessibilityToggled,
+    TreeId as AccessibilityTreeId, TreeInfo as AccessibilityTree,
     TreeUpdate as AccessibilityTreeUpdate,
 };
 use cherenkov_record::Paint;
@@ -169,7 +161,8 @@ use executor_core::spawn_local;
 use nami::{Binding, Signal};
 use waterkit_clipboard::Clipboard;
 use waterui_accessibility::{
-    AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden, AccessibilityIdentifier,
+    AccessibilityAdjustable, AccessibilityChildren, AccessibilityCustomActions,
+    AccessibilityGeometry, AccessibilityHidden, AccessibilityHint, AccessibilityIdentifier,
     AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
     AccessibilityValue,
 };

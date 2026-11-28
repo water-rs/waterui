@@ -15,8 +15,12 @@
 //! layout.
 
 use waterui_controls::ControlSize;
+use waterui_core::Environment;
 use waterui_core::layout::LayoutDirection;
 use waterui_graphics::color::Color;
+use waterui_graphics::color::token::{
+    Border, Foreground, MutedForeground, SelectionContainer, Surface,
+};
 
 use super::look::{Label, SpecTint};
 use super::{Chrome, ToggleControl};
@@ -200,4 +204,146 @@ impl RadioGroupLook {
     pub const fn get_label(&self) -> &Label {
         &self.label
     }
+}
+
+/// The measures a wheel picker drum is laid out by, in points.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WheelPickerLayout {
+    /// Minimum wheel drum width.
+    pub min_width: f32,
+    /// Height of a single item row.
+    pub row_height: f32,
+    /// Number of visible rows in the wheel drum (odd so one row centers).
+    pub visible_rows: usize,
+    /// Horizontal inset of row labels inside the drum.
+    pub horizontal_inset: f32,
+    /// Vertical gap between a visible heading label and the wheel drum.
+    pub label_spacing: f32,
+    /// Corner radius of the wheel drum container.
+    pub corner_radius: f32,
+    /// Corner radius of the centered selection band.
+    pub highlight_corner_radius: f32,
+    /// Horizontal inset of the centered selection band inside the drum.
+    pub highlight_inset: f32,
+}
+
+/// How a wheel picker looks: its layout metrics, container/highlight colours,
+/// focus ring colour, and text styles for selected and off-center rows.
+#[derive(Debug, Clone)]
+pub struct WheelPickerLook {
+    layout: WheelPickerLayout,
+    surface: Color,
+    border: Color,
+    highlight: Color,
+    focus_ring: Color,
+    selected_label: Label,
+    unselected_label: Label,
+}
+
+impl WheelPickerLook {
+    /// A wheel picker laid out by `layout` with semantic theme colours.
+    #[must_use]
+    pub fn new(
+        layout: WheelPickerLayout,
+        surface: Color,
+        border: Color,
+        highlight: Color,
+        focus_ring: Color,
+    ) -> Self {
+        Self {
+            layout,
+            surface,
+            border,
+            highlight,
+            focus_ring,
+            selected_label: Label::new().color(Color::new(Foreground)),
+            unselected_label: Label::new().color(Color::new(MutedForeground)),
+        }
+    }
+
+    /// Styles the centered selected row's label.
+    #[must_use]
+    pub fn selected_label(mut self, label: Label) -> Self {
+        self.selected_label = label;
+        self
+    }
+
+    /// Styles off-center unselected rows' labels.
+    #[must_use]
+    pub fn unselected_label(mut self, label: Label) -> Self {
+        self.unselected_label = label;
+        self
+    }
+
+    /// The wheel drum's layout measures.
+    #[must_use]
+    pub const fn layout(&self) -> WheelPickerLayout {
+        self.layout
+    }
+
+    /// The drum container fill colour.
+    #[must_use]
+    pub const fn surface(&self) -> &Color {
+        &self.surface
+    }
+
+    /// The drum container border colour.
+    #[must_use]
+    pub const fn border(&self) -> &Color {
+        &self.border
+    }
+
+    /// The centered selection highlight band fill colour.
+    #[must_use]
+    pub const fn highlight(&self) -> &Color {
+        &self.highlight
+    }
+
+    /// The keyboard focus ring colour.
+    #[must_use]
+    pub const fn focus_ring(&self) -> &Color {
+        &self.focus_ring
+    }
+
+    /// The styling of the centered selected row's label.
+    #[must_use]
+    pub const fn get_selected_label(&self) -> &Label {
+        &self.selected_label
+    }
+
+    /// The styling of off-center rows' labels.
+    #[must_use]
+    pub const fn get_unselected_label(&self) -> &Label {
+        &self.unselected_label
+    }
+}
+
+/// Default wheel picker look derived purely from the theme's colour tokens and
+/// the picker's [`ControlSize`].
+#[must_use]
+pub fn default_wheel_picker_look(spec: &PickerSpec, _env: &Environment) -> WheelPickerLook {
+    let (row_height, min_width) = match spec.size() {
+        ControlSize::ExtraSmall => (24.0, 120.0),
+        ControlSize::Small => (28.0, 144.0),
+        ControlSize::Large => (36.0, 192.0),
+        ControlSize::ExtraLarge => (40.0, 216.0),
+        // `ControlSize::Medium` and any future size variants use the medium drum metrics.
+        _ => (32.0, 168.0),
+    };
+    WheelPickerLook::new(
+        WheelPickerLayout {
+            min_width,
+            row_height,
+            visible_rows: 5,
+            horizontal_inset: 16.0,
+            label_spacing: 6.0,
+            corner_radius: 10.0,
+            highlight_corner_radius: 6.0,
+            highlight_inset: 6.0,
+        },
+        Color::new(Surface),
+        Color::new(Border),
+        Color::new(SelectionContainer),
+        spec.tint(),
+    )
 }

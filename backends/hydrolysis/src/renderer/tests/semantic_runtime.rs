@@ -667,6 +667,55 @@ fn radio_picker_hidden_label_still_names_the_group() {
 }
 
 #[test]
+fn wheel_picker_emits_value_options_and_steps_selection() {
+    let selection = Binding::new(0i32);
+    let selection_for_view = selection.clone();
+    let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(vstack((picker(
+            "Unit",
+            vec![
+                text("Celsius").tag(0i32),
+                text("Fahrenheit").tag(1i32),
+                text("Kelvin").tag(2i32),
+            ],
+            &selection_for_view,
+        )
+        .wheel(),)))
+    }));
+
+    let update = pumped(&mut runtime);
+    let (wheel_id, wheel_node) =
+        find_by_label(&update, Role::ListBox, "Unit").expect("the wheel picker is missing");
+    assert_eq!(wheel_node.value(), Some("Celsius"));
+    let children = wheel_node.children();
+    assert_eq!(children.len(), 3);
+    assert_eq!(lookup(&update, children[0]).is_selected(), Some(true));
+    assert_eq!(lookup(&update, children[1]).is_selected(), Some(false));
+
+    assert!(
+        act(&mut runtime, Action::Increment, wheel_id),
+        "wheel Increment must advance selection"
+    );
+    assert_eq!(selection.snapshot(), 1);
+    let update = pumped(&mut runtime);
+    let (_, wheel_node) =
+        find_by_label(&update, Role::ListBox, "Unit").expect("the wheel picker is missing");
+    assert_eq!(wheel_node.value(), Some("Fahrenheit"));
+
+    assert!(
+        act(&mut runtime, Action::Click, children[2]),
+        "clicking a wheel option must select it"
+    );
+    assert_eq!(selection.snapshot(), 2);
+
+    assert!(
+        act(&mut runtime, Action::Decrement, wheel_id),
+        "wheel Decrement must step back"
+    );
+    assert_eq!(selection.snapshot(), 1);
+}
+
+#[test]
 fn date_picker_emits_and_set_value_edits() {
     let day = Binding::new(jiff::civil::date(2025, 1, 15));
     let day_for_view = day.clone();

@@ -377,6 +377,7 @@ fn apply_selection_and_sort_chrome(state: &TableState) {
                     None,
                     false,
                     None,
+                    false,
                 );
             }
         }

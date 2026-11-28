@@ -118,6 +118,9 @@ pub fn realize_environment_metadata(
     restore_a11y!(
         waterui_accessibility::AccessibilityLabel,
         waterui_accessibility::AccessibilityValue,
+        waterui_accessibility::AccessibilityHint,
+        waterui_accessibility::AccessibilityCustomActions,
+        waterui_accessibility::AccessibilityAdjustable,
         waterui_accessibility::AccessibilityRole,
         waterui_accessibility::AccessibilityHidden,
         waterui_accessibility::AccessibilityChildren,

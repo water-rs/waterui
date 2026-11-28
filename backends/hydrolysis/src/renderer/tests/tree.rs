@@ -1629,6 +1629,77 @@ fn radio_picker_draws_its_label_above_the_option_rows() {
     );
 }
 
+#[cfg(feature = "accessibility")]
+#[test]
+fn wheel_picker_renders_and_handles_scroll_and_click() {
+    use accesskit::Role;
+    use std::time::Instant;
+    use waterui::reactive::binding;
+    use waterui_core::handler::AnyViewBuilder;
+    use waterui_form::picker::picker;
+    use waterui_layout::stack::vstack;
+    use waterui_text::text;
+
+    let selection = binding(1i32);
+    let selection_for_view = selection.clone();
+    let builder = AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(vstack((picker(
+            "Size",
+            vec![
+                text("Small").tag(0i32),
+                text("Medium").tag(1i32),
+                text("Large").tag(2i32),
+            ],
+            &selection_for_view,
+        )
+        .wheel(),)))
+    });
+    let mut runtime = crate::HeadlessRuntime::new_for_tests(
+        test_environment(),
+        builder,
+        320,
+        240,
+        MinimalTestTheme::default(),
+    );
+    let result = runtime.pump_at(true, Instant::now());
+    let update = result
+        .tree_update()
+        .expect("the wheel picker must publish a tree");
+    let (_, wheel_node) = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == Role::ListBox && node.label() == Some("Size"))
+        .expect("the wheel picker's ListBox node must exist");
+    assert_eq!(wheel_node.value(), Some("Medium"));
+    let bounds = wheel_node
+        .bounds()
+        .expect("the wheel picker node must carry bounds");
+    let center_x = crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1));
+    let center_y = crate::num_cast::f64_as_f32(f64::midpoint(bounds.y0, bounds.y1));
+
+    // Scrolling down (negative dy) advances from Medium (1) to Large (2).
+    runtime.push_input_event(crate::platform::InputEvent::Scroll {
+        x: center_x,
+        y: center_y,
+        dx: 0.0,
+        dy: -1.0,
+        is_line_delta: true,
+    });
+    let _ = runtime.pump_at(false, Instant::now());
+    assert_eq!(selection.snapshot(), 2);
+
+    // Scrolling up (positive dy) steps back from Large (2) to Medium (1).
+    runtime.push_input_event(crate::platform::InputEvent::Scroll {
+        x: center_x,
+        y: center_y,
+        dx: 0.0,
+        dy: 1.0,
+        is_line_delta: true,
+    });
+    let _ = runtime.pump_at(false, Instant::now());
+    assert_eq!(selection.snapshot(), 1);
+}
+
 /// The segmented picker's group label is drawn: its ink band sits above the
 /// segment row inside the group's bounds. A hidden label draws nothing and
 /// takes no space — the segment-label band alone remains — while the group

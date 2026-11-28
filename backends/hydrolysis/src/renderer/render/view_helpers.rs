@@ -107,6 +107,9 @@ pub fn restore_a11y_naming_scope<E: crate::text::TextEngine>(
     restore!(
         AccessibilityLabel,
         AccessibilityValue,
+        AccessibilityHint,
+        AccessibilityCustomActions,
+        AccessibilityAdjustable,
         AccessibilityRole,
         AccessibilityChildren,
         AccessibilityGeometry,
@@ -179,6 +182,21 @@ pub fn a11y_scoped_identifier_env(
     env.clone()
 }
 
+/// The `Env` scoping for [`AccessibilityCustomActions`]: chained
+/// `.a11y_action(...)` wrappers merge in declaration order instead of
+/// overwriting earlier actions, and open a naming scope so a container with
+/// custom actions synthesizes its own element when no control claims it.
+pub fn a11y_scoped_env_for_custom_actions<E: crate::text::TextEngine>(
+    env: &Environment,
+    value: &AccessibilityCustomActions,
+) -> Environment {
+    let mut scoped = env.clone();
+    AccessibilityCustomActions::install(&mut scoped, value);
+    #[cfg(feature = "accessibility")]
+    scoped.insert(ScopedAccessibilitySemantics::<E>::new());
+    scoped
+}
+
 /// The `Env` scoping for [`AccessibilityChildren`]: `Combine` opens a naming
 /// scope so the container (or gesture host) it decorates claims its own
 /// combined element even without an explicit role or label, whereas
@@ -213,6 +231,9 @@ macro_rules! accessibility_scope_table {
             // once — and a container that no control spoke for synthesizes
             // the node carrying it.
             accessibility_value: AccessibilityValue => a11y_naming_scoped_env::<AccessibilityValue, E>;
+            accessibility_hint: AccessibilityHint => a11y_naming_scoped_env::<AccessibilityHint, E>;
+            accessibility_custom_actions: AccessibilityCustomActions => a11y_scoped_env_for_custom_actions::<E>;
+            accessibility_adjustable: AccessibilityAdjustable => a11y_naming_scoped_env::<AccessibilityAdjustable, E>;
             accessibility_identifier: AccessibilityIdentifier => a11y_scoped_identifier_env;
             accessibility_role: AccessibilityRole => a11y_naming_scoped_env::<AccessibilityRole, E>;
             accessibility_hidden: AccessibilityHidden => a11y_scoped_env::<AccessibilityHidden>;

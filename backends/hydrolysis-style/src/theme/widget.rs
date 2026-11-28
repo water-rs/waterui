@@ -603,6 +603,13 @@ pub trait WidgetTheme {
         env: &Environment,
     ) -> super::SegmentedLook;
 
+    /// The look of a wheel picker drum: its row height, visible row count,
+    /// surface/border/selection-band colours, and row label styles.
+    #[cfg(waterui_feature = "picker")]
+    fn wheel_picker(&self, spec: &super::PickerSpec, env: &Environment) -> super::WheelPickerLook {
+        super::picker::default_wheel_picker_look(spec, env)
+    }
+
     /// Return how the slider of `spec` looks and responds, as plain data
     /// (water-rs/waterui#1434): the measures it is laid out by, its track,
     /// fill, knob and value indicator as parts over the normalized value,

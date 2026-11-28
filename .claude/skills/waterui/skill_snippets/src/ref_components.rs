@@ -1275,16 +1275,20 @@ pub mod components_block_32 {
         };
         let _ = {
             Picker::new(text!("Sort by"), options, &choice) // labels may be localized text!
-                .style(PickerStyle::Menu) // Automatic | Menu | Radio | Segmented
+                .style(PickerStyle::Menu) // Automatic | Menu | Radio | Segmented | Wheel
                 .hide_label()
         };
 
-        // The remaining style variants named in the trailing comment, and the
-        // `.segmented()` shorthand named in the prose.
+        // The remaining style variants, shorthands, and ambient `picker_style`.
         let _ = PickerStyle::Automatic;
         let _ = PickerStyle::Radio;
         let _ = PickerStyle::Segmented;
+        let _ = PickerStyle::Wheel;
+        let _ = Picker::new("Size", sizes(), &choice).menu();
+        let _ = Picker::new("Size", sizes(), &choice).radio();
         let _ = Picker::new("Size", sizes(), &choice).segmented();
+        let _ = Picker::new("Size", sizes(), &choice).wheel();
+        let _ = vstack((picker("Size", sizes(), &choice),)).picker_style(PickerStyle::Menu);
 
         // Keep the other picker imports live so they are proven to resolve.
         use waterui::component::label::TitleLabel;
@@ -1603,12 +1607,19 @@ pub fn components_table_prose() {
 // ---------------------------------------------------------------------------
 pub fn components_block_38() {
     let active = Binding::new(true);
+    let archive = || {};
+    let increment = || {};
+    let decrement = || {};
 
     use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 
     let view = Divider;
     let _ = {
         view.a11y_label("Delete message") // override the derived label
+    };
+    let view = Divider;
+    let _ = {
+        view.a11y_hint("Opens the thread") // supplemental outcome hint (IntoText)
     };
     let view = Divider;
     let _ = {
@@ -1622,6 +1633,14 @@ pub fn components_block_38() {
     };
     let view = Divider;
     let _ = { view.a11y_state(active.map(|a| AccessibilityState::new().selected(a))) };
+    let view = Divider;
+    let _ = {
+        view.a11y_action("Archive", archive) // chainable named actions in declaration order
+    };
+    let view = Divider;
+    let _ = {
+        view.a11y_adjustable(increment, decrement) // VoiceOver / TalkBack increment & decrement
+    };
 }
 
 // ---------------------------------------------------------------------------
