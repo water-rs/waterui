@@ -18,6 +18,7 @@ use crate::theme::ModalInteraction;
 #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
 use crate::theme::SheetLook;
 use kurbo::Affine;
+#[cfg(hydrolysis_cherenkov)]
 use waterui_core::resolve::Resolvable as _;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
@@ -302,13 +303,21 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     if selectable {
                         let plain = styled.to_plain();
                         let text_rect = ctx.bounds();
-                        let selection_color = renderer.read_signal(
-                            &waterui_controls::theme::color::SelectionContainer.resolve(env),
-                        );
-                        let highlight_alpha = selection_color.components[3].min(0.35);
-                        let selection_paint = cherenkov_record::Paint::Solid(
-                            selection_color.with_alpha(highlight_alpha),
-                        );
+                        #[cfg(hydrolysis_cherenkov)]
+                        let paints = {
+                            let selection_color = renderer.read_signal(
+                                &waterui_controls::theme::color::SelectionContainer.resolve(env),
+                            );
+                            let highlight_alpha = selection_color.components[3].min(0.35);
+                            let selection_paint = cherenkov_record::Paint::Solid(
+                                selection_color.with_alpha(highlight_alpha),
+                            );
+                            Some(crate::renderer::CaretPaints::selection_only(
+                                selection_paint,
+                            ))
+                        };
+                        #[cfg(not(hydrolysis_cherenkov))]
+                        let paints = None;
                         let interaction_key = crate::renderer::InteractionKey::for_rc(
                             &text.accessibility_identity,
                             0,
@@ -341,9 +350,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                                 text_bounds: text_rect,
                                 text_clip_bounds: text_rect,
                                 content_alpha,
-                                paints: Some(crate::renderer::CaretPaints::selection_only(
-                                    selection_paint,
-                                )),
+                                paints,
                                 layout: layout.clone(),
                                 display_text: plain.clone(),
                                 display_layout: layout,

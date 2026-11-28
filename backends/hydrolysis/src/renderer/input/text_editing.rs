@@ -84,13 +84,11 @@ impl CaretPaints {
     }
 
     /// Selection-only paint for read-only selectable text (no blinking caret).
+    #[cfg(hydrolysis_cherenkov)]
     pub fn selection_only(selection: cherenkov_record::Paint) -> Self {
-        #[cfg(not(hydrolysis_cherenkov))]
-        let _ = selection;
         Self {
             #[cfg(any(feature = "text-field", feature = "secure-field"))]
             caret: None,
-            #[cfg(hydrolysis_cherenkov)]
             selection: crate::theme::Driven::from(selection),
         }
     }
