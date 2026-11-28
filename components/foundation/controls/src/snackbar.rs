@@ -51,6 +51,7 @@ use core::time::Duration;
 
 use executor_core::spawn_local;
 use nami::{Binding, Computed, Signal as _, SignalExt as _};
+use waterui_accessibility::AccessibilityAnnouncer;
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::env::Installed;
 use waterui_core::extract::State;
@@ -72,6 +73,44 @@ use crate::{IntoLabel, Label, SemanticLabel, slot::SlotBuilder};
 /// snackbar arrives over this limit at the same placement, the oldest live one
 /// at that placement is dismissed with [`SnackbarDismissReason::Replaced`].
 const MAX_VISIBLE_SNACKBARS: usize = 3;
+
+/// Translation catalog key for a closeable snackbar's dismiss button label.
+///
+/// Backends render this button via [`snackbar_close_label`], which falls back
+/// to `"Close"` when no translation catalog overrides this key.
+pub const SNACKBAR_CLOSE_LABEL_KEY: &str = "waterui.snackbar.close";
+
+/// Default auto-dismiss duration for [`Snackbar::new`] when no assistive
+/// technology is active.
+pub const DEFAULT_SNACKBAR_DURATION: Duration = Duration::from_secs(3);
+
+/// Minimum auto-dismiss duration for timed snackbars when assistive technology
+/// is active.
+///
+/// Gives `VoiceOver` and `TalkBack` users sufficient time to hear the message
+/// and reach its action or close buttons.
+pub const ASSISTIVE_TECHNOLOGY_SNACKBAR_MIN_DURATION: Duration = Duration::from_secs(10);
+
+/// Returns the localized accessible label for a snackbar's close button,
+/// resolving [`SNACKBAR_CLOSE_LABEL_KEY`] with `"Close"` as fallback.
+pub fn snackbar_close_label() -> Text {
+    Text::localized_or(SNACKBAR_CLOSE_LABEL_KEY, "Close")
+}
+
+/// Computes the effective auto-dismiss timeout given the snackbar's configured
+/// `duration` and whether assistive technology is currently active.
+///
+/// Persistent snackbars (`Duration::ZERO`) remain persistent; when assistive
+/// technology is inactive the configured duration is unchanged; when active,
+/// non-zero durations are extended to at least
+/// [`ASSISTIVE_TECHNOLOGY_SNACKBAR_MIN_DURATION`].
+#[must_use]
+pub fn effective_snackbar_duration(duration: Duration, assistive_tech_active: bool) -> Duration {
+    if duration.is_zero() || !assistive_tech_active {
+        return duration;
+    }
+    duration.max(ASSISTIVE_TECHNOLOGY_SNACKBAR_MIN_DURATION)
+}
 
 /// Position for snackbar display.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -332,7 +371,7 @@ impl Snackbar<NoIcon> {
             message: message.into_text(),
             icon: None,
             action: None,
-            duration: Duration::from_secs(3),
+            duration: DEFAULT_SNACKBAR_DURATION,
             position: SnackbarPosition::default(),
             closeable: false,
             dismissal: None,
@@ -745,6 +784,9 @@ struct SnackbarManagerState<I: 'static = NoIcon> {
     active: Binding<Vec<ActiveSnackbar<I>>>,
     /// Monotonic presentation identifier used to ignore stale timers.
     next_id: u64,
+    /// Host announcer captured when the snackbar host binds to an environment,
+    /// used to detect active assistive technology for timeout extension.
+    announcer: Option<AccessibilityAnnouncer>,
 }
 
 /// Manages snackbar notifications in a FIFO queue.
@@ -794,8 +836,15 @@ impl<I: SnackbarIconSlot> SnackbarManager<I> {
         let state = Rc::new(RefCell::new(SnackbarManagerState {
             active: active.clone(),
             next_id: 0,
+            announcer: None,
         }));
         (Self { state }, active)
+    }
+
+    fn bind_environment(&self, env: &Environment) {
+        if let Some(announcer) = AccessibilityAnnouncer::from_env(env) {
+            self.state.borrow_mut().announcer = Some(announcer);
+        }
     }
 
     /// Builds a view subtree paired with a snackbar host, inferring `I` from
@@ -823,7 +872,15 @@ impl<I: SnackbarIconSlot> SnackbarManager<I> {
     /// more than `u64::MAX` snackbars.
     pub fn show(&self, snackbar: impl Into<Snackbar<I>>) {
         let snackbar = snackbar.into();
-        let duration = snackbar.duration;
+        let assistive_tech_active = self
+            .state
+            .borrow()
+            .announcer
+            .as_ref()
+            .is_some_and(AccessibilityAnnouncer::is_assistive_technology_active)
+            || AccessibilityAnnouncer::from_env(&snackbar.captured_env)
+                .is_some_and(|announcer| announcer.is_assistive_technology_active());
+        let duration = effective_snackbar_duration(snackbar.duration, assistive_tech_active);
         let position = snackbar.position;
         let id = {
             let mut state = self.state.borrow_mut();
@@ -979,12 +1036,14 @@ struct SnackbarHostView<V, I: 'static> {
 }
 
 impl<V: View, I: SnackbarIconSlot> View for SnackbarHostView<V, I> {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
+        self.manager.bind_environment(env);
         let overlay = SnackbarHostConfig::<AnyView>::from_active(&self.active, self.manager);
         Metadata::new(self.content, overlay)
     }
 
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        self.manager.bind_environment(env);
         let overlay = SnackbarHostConfig::<B::Slot>::from_active(&self.active, self.manager);
         backend.metadata(
             Metadata::new(B::Slot::from_view(self.content), overlay),
@@ -1020,8 +1079,9 @@ impl<V, I> SnackbarHost<V, I> {
 }
 
 impl<V: View, I: SnackbarIconSlot> View for SnackbarHost<V, I> {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         let (manager, active) = SnackbarManager::<I>::create();
+        manager.bind_environment(env);
         let content = attach_manager(self.content, &manager);
         let overlay = SnackbarHostConfig::<AnyView>::from_active(&active, manager);
         Metadata::new(content, overlay)
@@ -1029,6 +1089,7 @@ impl<V: View, I: SnackbarIconSlot> View for SnackbarHost<V, I> {
 
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
         let (manager, active) = SnackbarManager::<I>::create();
+        manager.bind_environment(env);
         let content = attach_manager(self.content, &manager);
         let overlay = SnackbarHostConfig::<B::Slot>::from_active(&active, manager);
         backend.metadata(Metadata::new(B::Slot::from_view(content), overlay), env, cx)
@@ -1291,6 +1352,59 @@ mod tests {
                 .to_plain()
                 .as_str(),
             "Annuler"
+        );
+    }
+
+    #[test]
+    fn snackbar_close_label_falls_back_and_localizes() {
+        use waterui_locale::{TranslationCatalog, locales};
+
+        let env = Environment::new();
+        assert_eq!(
+            snackbar_close_label()
+                .resolve(&env)
+                .content()
+                .snapshot()
+                .to_plain()
+                .as_str(),
+            "Close"
+        );
+
+        let mut fr_env = Environment::new();
+        fr_env.insert(Binding::new(locales::FR));
+        fr_env.insert(
+            TranslationCatalog::new()
+                .add_toml(locales::FR, "\"waterui.snackbar.close\" = \"Fermer\"")
+                .expect("test catalog must parse"),
+        );
+        assert_eq!(
+            snackbar_close_label()
+                .resolve(&fr_env)
+                .content()
+                .snapshot()
+                .to_plain()
+                .as_str(),
+            "Fermer"
+        );
+    }
+
+    #[test]
+    fn effective_duration_extends_only_when_assistive_technology_is_active() {
+        assert_eq!(
+            effective_snackbar_duration(DEFAULT_SNACKBAR_DURATION, false),
+            Duration::from_secs(3)
+        );
+        assert_eq!(
+            effective_snackbar_duration(DEFAULT_SNACKBAR_DURATION, true),
+            ASSISTIVE_TECHNOLOGY_SNACKBAR_MIN_DURATION
+        );
+        assert_eq!(
+            effective_snackbar_duration(Duration::from_secs(20), true),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            effective_snackbar_duration(Duration::ZERO, true),
+            Duration::ZERO
         );
     }
 }

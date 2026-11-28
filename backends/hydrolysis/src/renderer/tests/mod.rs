@@ -4937,3 +4937,232 @@ fn a_toolbar_item_keeps_icon_only_labels_inside_an_environment_snapshot() {
         Some(LabelDisplayMode::IconOnly)
     ));
 }
+
+#[cfg(all(feature = "accessibility", feature = "testing", hydrolysis_cherenkov))]
+#[test]
+fn a11y_live_region_and_status_alert_roles_update_accesskit_nodes() {
+    use waterui_accessibility::{AccessibilityRole, LiveRegion};
+
+    let live = Binding::new(LiveRegion::Polite);
+    let live_view = live.clone();
+    let mut host = crate::runner::HeadlessRuntime::new_for_tests(
+        test_environment(),
+        move || {
+            vstack((
+                text("Saved")
+                    .a11y_role(AccessibilityRole::Status)
+                    .a11y_live(live_view.clone()),
+                text("Disk full")
+                    .a11y_role(AccessibilityRole::Alert)
+                    .a11y_live(LiveRegion::Assertive),
+            ))
+        },
+        320,
+        200,
+        MinimalTestTheme::default(),
+    );
+    host.pump(false);
+
+    let tree = host.accessibility_tree().expect("initial tree");
+    let status = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Saved"))
+        .map(|(_, node)| node)
+        .expect("status node must exist");
+    assert_eq!(status.role(), AccessibilityNodeRole::Status);
+    assert_eq!(status.live(), Some(accesskit::Live::Polite));
+
+    let alert = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Disk full"))
+        .map(|(_, node)| node)
+        .expect("alert node must exist");
+    assert_eq!(alert.role(), AccessibilityNodeRole::Alert);
+    assert_eq!(alert.live(), Some(accesskit::Live::Assertive));
+
+    live.set(LiveRegion::Off);
+    host.pump(false);
+    let tree = host.accessibility_tree().expect("updated tree");
+    let status = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Saved"))
+        .map(|(_, node)| node)
+        .expect("status node must exist after switching Off");
+    assert_eq!(status.live(), None);
+}
+
+#[cfg(all(feature = "accessibility", feature = "testing", hydrolysis_cherenkov))]
+#[test]
+fn announcer_extracts_in_headless_runtime_and_publishes_live_announcement_nodes() {
+    use waterui_accessibility::{AccessibilityAnnouncer, LiveRegion};
+    use waterui_controls::button::button;
+
+    let mut host = crate::runner::HeadlessRuntime::new_for_tests(
+        test_environment(),
+        || {
+            vstack((
+                button("Polite").action(|a: AccessibilityAnnouncer| {
+                    a.announce("Upload complete");
+                }),
+                button("Assertive").action(|a: AccessibilityAnnouncer| {
+                    a.announce_assertive("Connection lost");
+                }),
+            ))
+        },
+        320,
+        200,
+        MinimalTestTheme::default(),
+    );
+    host.pump(false);
+
+    let tree = host.accessibility_tree().expect("initial tree");
+    let polite_id = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Polite"))
+        .map(|(id, _)| *id)
+        .expect("polite button node");
+    let assertive_id = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Assertive"))
+        .map(|(id, _)| *id)
+        .expect("assertive button node");
+
+    let click = |host: &mut crate::runner::HeadlessRuntime, target_node| {
+        assert!(
+            host.perform_accessibility_action(AccessibilityActionRequest {
+                action: AccessibilityAction::Click,
+                target_tree: AccessibilityTreeId::ROOT,
+                target_node,
+                data: None,
+            })
+        );
+        host.pump(false);
+    };
+
+    click(&mut host, polite_id);
+
+    let tree_after_first = host
+        .accessibility_tree()
+        .expect("tree after polite announce");
+    let (first_id, first_node) = tree_after_first
+        .nodes
+        .iter()
+        .find(|(_, node)| {
+            node.role() == AccessibilityNodeRole::Status && node.label() == Some("Upload complete")
+        })
+        .expect("polite announcement node must appear in tree");
+    assert_eq!(first_node.live(), Some(accesskit::Live::Polite));
+
+    // Repeating the exact same announcement alternates node id so assistive tech
+    // speaks it again instead of treating the node as unchanged.
+    click(&mut host, polite_id);
+    let tree_after_repeat = host
+        .accessibility_tree()
+        .expect("tree after repeat announce");
+    let (repeat_id, _) = tree_after_repeat
+        .nodes
+        .iter()
+        .find(|(_, node)| {
+            node.role() == AccessibilityNodeRole::Status && node.label() == Some("Upload complete")
+        })
+        .expect("repeated polite announcement node must appear");
+    assert_ne!(
+        first_id, repeat_id,
+        "repeated announcements must alternate node ids"
+    );
+
+    click(&mut host, assertive_id);
+    let tree_after_assertive = host.accessibility_tree().expect("tree after assertive");
+    let alert_node = tree_after_assertive
+        .nodes
+        .iter()
+        .find(|(_, node)| {
+            node.role() == AccessibilityNodeRole::Alert && node.label() == Some("Connection lost")
+        })
+        .map(|(_, node)| node)
+        .expect("assertive announcement node must appear with Alert role");
+    assert_eq!(alert_node.live(), Some(accesskit::Live::Assertive));
+
+    let history = host.take_accessibility_announcements();
+    assert_eq!(history.len(), 3);
+    assert_eq!(history[0].message.as_str(), "Upload complete");
+    assert_eq!(history[0].priority, LiveRegion::Polite);
+    assert_eq!(history[1].message.as_str(), "Upload complete");
+    assert_eq!(history[1].priority, LiveRegion::Polite);
+    assert_eq!(history[2].message.as_str(), "Connection lost");
+    assert_eq!(history[2].priority, LiveRegion::Assertive);
+    assert_eq!(host.accessibility_announcements(), []);
+}
+
+#[cfg(all(feature = "accessibility", feature = "testing", hydrolysis_cherenkov))]
+#[test]
+fn snackbar_exposes_status_polite_live_region_and_localized_close_label() {
+    use core::time::Duration;
+    use waterui_controls::button::button;
+    use waterui_controls::snackbar::{Snackbar, SnackbarManager};
+    use waterui_locale::{TranslationCatalog, locales};
+
+    let mut env = test_environment();
+    env.insert(Binding::new(locales::FR));
+    env.insert(
+        TranslationCatalog::new()
+            .add_toml(locales::FR, "\"waterui.snackbar.close\" = \"Fermer\"")
+            .expect("test catalog must parse"),
+    );
+
+    let mut host = crate::runner::HeadlessRuntime::new_for_tests(
+        env,
+        || {
+            button("Notify")
+                .action(|manager: SnackbarManager| {
+                    manager.show(
+                        Snackbar::new("Draft saved")
+                            .closeable()
+                            .duration(Duration::ZERO),
+                    );
+                })
+                .snackbar_host()
+        },
+        400,
+        300,
+        MinimalTestTheme::default(),
+    );
+    host.pump(false);
+
+    let tree = host.accessibility_tree().expect("initial tree");
+    let trigger = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Notify"))
+        .map(|(id, _)| *id)
+        .expect("notify button");
+    assert!(
+        host.perform_accessibility_action(AccessibilityActionRequest {
+            action: AccessibilityAction::Click,
+            target_tree: AccessibilityTreeId::ROOT,
+            target_node: trigger,
+            data: None,
+        })
+    );
+    host.pump(false);
+
+    let tree = host.accessibility_tree().expect("tree with snackbar");
+    let status = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == AccessibilityNodeRole::Status)
+        .map(|(_, node)| node)
+        .expect("snackbar must publish a Status node");
+    assert_eq!(status.live(), Some(accesskit::Live::Polite));
+    assert!(
+        tree.nodes.iter().any(|(_, node)| {
+            node.role() == AccessibilityNodeRole::Button && node.label() == Some("Fermer")
+        }),
+        "snackbar close button must resolve the localized close label"
+    );
+}

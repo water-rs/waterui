@@ -471,6 +471,7 @@ fn install_scoped_or_ambient(
     ambient: bool,
 ) {
     keepalive.keep(crate::reduce_motion::install(env, mtm));
+    crate::accessibility_announcer::install(env);
     if ambient {
         keepalive.keep(crate::locale::install(env, mtm));
     }

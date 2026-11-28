@@ -973,6 +973,11 @@ pub fn run<W: Windows, M: AppMenuBar>(
     let _ = env.get_or_insert_with::<crate::renderer::WindowIdentities, _>(
         crate::renderer::WindowIdentities::default,
     );
+    let accessibility_active = Rc::new(Cell::new(false));
+    let _ = {
+        let active = Rc::clone(&accessibility_active);
+        super::install_accessibility_announcer(&mut env, false, Some(Rc::new(move || active.get())))
+    };
     let _ = env.get_or_insert_with::<MenuShortcutRegistry<crate::text::ParleyEngine>, _>(
         MenuShortcutRegistry::default,
     );
@@ -1137,6 +1142,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
         painter: None,
         accesskit_adapters: HashMap::new(),
         last_accessibility_updates: HashMap::new(),
+        accessibility_active,
         local_executor: Some(local_executor),
         local_runnable_rx,
         event_proxy,
@@ -1224,6 +1230,7 @@ struct WinitRunner {
     painter: Option<WinitPainter>,
     accesskit_adapters: HashMap<WindowId, AccessKitAdapter>,
     last_accessibility_updates: HashMap<WindowId, accesskit::TreeUpdate>,
+    accessibility_active: Rc<Cell<bool>>,
     /// The executor is installed the first time the active event loop is
     /// reachable (the first `resumed`), which is the earliest winit 0.30
     /// exposes monitor enumeration.
@@ -2110,6 +2117,7 @@ impl WinitRunner {
         };
         match event.window_event {
             AccessKitWindowEvent::InitialTreeRequested => {
+                self.accessibility_active.set(true);
                 tracing::trace!(
                     target: "waterui::hydrolysis::a11y",
                     window_id = ?event.window_id,
@@ -2168,7 +2176,9 @@ impl WinitRunner {
                 }
                 self.flush_cross_window_rebuild_requests();
             }
-            AccessKitWindowEvent::AccessibilityDeactivated => {}
+            AccessKitWindowEvent::AccessibilityDeactivated => {
+                self.accessibility_active.set(false);
+            }
         }
     }
 

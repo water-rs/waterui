@@ -277,6 +277,7 @@ fn prepare(
     let locale = install_locale(&mut env, mtm);
     keepers.keep(locale);
     keepers.keep(install_reduce_motion(&mut env, mtm));
+    crate::accessibility_announcer::install(&mut env);
     keepers.keep(fonts);
     Ok(env)
 }

@@ -150,10 +150,10 @@ use accesskit::ActionData as AccessibilityActionData;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, ActionRequest as AccessibilityActionRequest,
-    CustomAction as AccessibilityCustomAction, Node as AccessibilityNode,
-    NodeId as AccessibilityNodeId, Rect as AccessibilityRect, Role as AccessibilityNodeRole,
-    TextDirection as AccessibilityTextDirection, Toggled as AccessibilityToggled,
-    TreeId as AccessibilityTreeId, TreeInfo as AccessibilityTree,
+    CustomAction as AccessibilityCustomAction, Live as AccessibilityLive,
+    Node as AccessibilityNode, NodeId as AccessibilityNodeId, Rect as AccessibilityRect,
+    Role as AccessibilityNodeRole, TextDirection as AccessibilityTextDirection,
+    Toggled as AccessibilityToggled, TreeId as AccessibilityTreeId, TreeInfo as AccessibilityTree,
     TreeUpdate as AccessibilityTreeUpdate,
 };
 use cherenkov_record::Paint;
@@ -163,8 +163,8 @@ use waterkit_clipboard::Clipboard;
 use waterui_accessibility::{
     AccessibilityAdjustable, AccessibilityChildren, AccessibilityCustomActions,
     AccessibilityGeometry, AccessibilityHidden, AccessibilityHint, AccessibilityIdentifier,
-    AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
-    AccessibilityValue,
+    AccessibilityLabel, AccessibilityLiveRegion, AccessibilityRole, AccessibilityState,
+    AccessibilityStateSignal, AccessibilityValue, LiveRegion,
 };
 #[cfg(feature = "navigation")]
 use waterui_backend_core::navigation::tab::{TabStyle, TabsLayout};

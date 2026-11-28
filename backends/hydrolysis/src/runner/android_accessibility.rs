@@ -709,4 +709,29 @@ mod tests {
                 && e.content_change_types & CHANGE_STATE_DESCRIPTION != 0
         }));
     }
+
+    #[test]
+    fn live_region_property_and_label_changes_emit_scoped_events() {
+        let mut initial = node(1, Role::Status, &[]).1;
+        initial.set_label("Saving");
+        let old = update(
+            vec![node(0, Role::Window, &[1]), (NodeId::from(1), initial)],
+            0,
+            0,
+        );
+        let mut polite = node(1, Role::Status, &[]).1;
+        polite.set_label("Saved");
+        polite.set_live(accesskit::Live::Polite);
+        let new = update(
+            vec![node(0, Role::Window, &[1]), (NodeId::from(1), polite)],
+            0,
+            0,
+        );
+        let events = diff_events(Some(&old), &new);
+        assert!(events.iter().any(|e| {
+            e.node == Some(NodeId::from(1))
+                && e.event_type == TYPE_WINDOW_CONTENT_CHANGED
+                && e.content_change_types & CHANGE_CONTENT_DESCRIPTION != 0
+        }));
+    }
 }

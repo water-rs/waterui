@@ -358,6 +358,12 @@ internal class HydrolysisAccessibilityProvider(
                 info.error = errorText
             }
         }
+        info.liveRegion =
+            when (properties?.optString("live")) {
+                "polite" -> View.ACCESSIBILITY_LIVE_REGION_POLITE
+                "assertive" -> View.ACCESSIBILITY_LIVE_REGION_ASSERTIVE
+                else -> View.ACCESSIBILITY_LIVE_REGION_NONE
+            }
 
         // `bounds` is host-view-local; boundsInWindow is the surviving field
         // in the same coordinate space (boundsInParent is dead state services

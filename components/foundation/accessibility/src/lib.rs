@@ -21,10 +21,13 @@ use core::fmt;
 use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoComputed, zip::zip};
 use suiteki::Str;
 
+use waterui_core::extract::{ExtractionState, Extractor, State};
 use waterui_core::handler::{BoxedAction, ExtractionError, Handler, boxed_action};
 use waterui_core::layout::{PlacedGeometry, Rect};
 use waterui_core::metadata::MetadataKey;
-use waterui_core::{Environment, Metadata, OneOf2, View};
+use waterui_core::plugin::Plugin;
+use waterui_core::{Environment, Error, Metadata, OneOf2, View};
+use waterui_text::IntoText;
 
 type TextResolverFn = dyn Fn(&Environment) -> Computed<Str>;
 
@@ -449,6 +452,232 @@ pub enum AccessibilityRole {
     Group,
     /// Modal dialog or alert surface.
     Dialog,
+    /// Non-modal status update region (for example, a snackbar or save indicator).
+    Status,
+    /// Urgent alert message that interrupts or demands immediate attention.
+    Alert,
+}
+
+/// Politeness level for an accessibility live region.
+///
+/// When content inside a live region updates, assistive technologies (such as
+/// `VoiceOver`, `TalkBack`, NVDA, or Orca) announce the change without moving
+/// keyboard or accessibility focus.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed WAI-ARIA / AccessKit live-region politeness vocabulary (Off, Polite, Assertive)"
+)]
+pub enum LiveRegion {
+    /// Updates are not announced automatically.
+    #[default]
+    Off,
+    /// Announce updates politely once current speech finishes or the user is idle.
+    Polite,
+    /// Interrupt current speech to announce urgent updates immediately.
+    Assertive,
+}
+
+impl_constant!(LiveRegion);
+
+/// Marks a view subtree as an accessibility live region.
+///
+/// Accepts a constant [`LiveRegion`] or any reactive signal of [`LiveRegion`].
+#[derive(Debug, Clone)]
+pub struct AccessibilityLiveRegion(Computed<LiveRegion>);
+
+impl MetadataKey for AccessibilityLiveRegion {}
+
+impl AccessibilityLiveRegion {
+    /// Creates a live-region metadata wrapper from a static or reactive [`LiveRegion`].
+    #[must_use]
+    pub fn new(region: impl IntoComputed<LiveRegion>) -> Self {
+        Self(region.into_computed())
+    }
+
+    /// Returns the reactive live-region politeness signal.
+    #[must_use]
+    pub const fn region(&self) -> &Computed<LiveRegion> {
+        &self.0
+    }
+}
+
+/// A spoken announcement submitted through [`AccessibilityAnnouncer`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessibilityAnnouncement {
+    /// The resolved plain text to announce.
+    pub message: Str,
+    /// Politeness level (`Polite` or `Assertive`).
+    pub priority: LiveRegion,
+}
+
+type AnnouncementHandler = dyn Fn(&str, LiveRegion);
+type AssistiveTechActiveProbe = dyn Fn() -> bool;
+
+struct AnnouncerInner {
+    announce: Rc<AnnouncementHandler>,
+    assistive_tech_active: Option<Rc<AssistiveTechActiveProbe>>,
+}
+
+/// Imperative assistive-technology announcement service installed by backend
+/// runners into the application [`Environment`].
+///
+/// Extract `AccessibilityAnnouncer` directly in action handlers to speak
+/// transient notifications without moving focus:
+///
+/// ```ignore
+/// button("Upload").action(|announcer: AccessibilityAnnouncer| {
+///     announcer.announce("Upload complete");
+/// })
+/// ```
+///
+/// String literals and [`Text`](waterui_text::Text) values resolve through the
+/// active translation catalog and locale in the handler's [`Environment`].
+#[derive(Clone)]
+pub struct AccessibilityAnnouncer {
+    inner: Rc<AnnouncerInner>,
+    env: Environment,
+}
+
+impl fmt::Debug for AccessibilityAnnouncer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AccessibilityAnnouncer")
+            .field(
+                "assistive_technology_active",
+                &self.is_assistive_technology_active(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl Plugin for AccessibilityAnnouncer {
+    fn install(self, env: &mut Environment) {
+        env.insert(State(self));
+    }
+}
+
+impl Extractor for AccessibilityAnnouncer {
+    fn extract(env: &Environment) -> Result<Self, Error> {
+        let State(announcer) = State::<Self>::extract(env).map_err(|_| {
+            Error::msg(
+                "waterui_accessibility::AccessibilityAnnouncer not found in environment — \
+                 install it through the backend runner or `env.install(AccessibilityAnnouncer::new(...))`",
+            )
+        })?;
+        Ok(announcer.with_env(env.clone()))
+    }
+
+    fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
+        let State(announcer) = State::<Self>::extract_from_action(env, state).map_err(|_| {
+            Error::msg(
+                "waterui_accessibility::AccessibilityAnnouncer not found in environment — \
+                 install it through the backend runner or `env.install(AccessibilityAnnouncer::new(...))`",
+            )
+        })?;
+        Ok(announcer.with_env(env.clone()))
+    }
+}
+
+impl AccessibilityAnnouncer {
+    /// Creates an announcer backed by `handler`.
+    pub fn new(handler: impl Fn(&str, LiveRegion) + 'static) -> Self {
+        Self {
+            inner: Rc::new(AnnouncerInner {
+                announce: Rc::new(handler),
+                assistive_tech_active: None,
+            }),
+            env: Environment::new(),
+        }
+    }
+
+    /// Creates an announcer backed by `handler` together with a probe reporting
+    /// whether assistive technology (such as `VoiceOver` or `TalkBack`) is
+    /// currently active.
+    pub fn with_assistive_technology_probe(
+        handler: impl Fn(&str, LiveRegion) + 'static,
+        is_active: impl Fn() -> bool + 'static,
+    ) -> Self {
+        Self {
+            inner: Rc::new(AnnouncerInner {
+                announce: Rc::new(handler),
+                assistive_tech_active: Some(Rc::new(is_active)),
+            }),
+            env: Environment::new(),
+        }
+    }
+
+    /// Extracts the installed [`AccessibilityAnnouncer`] from `env`, bound to
+    /// `env` for text localization, if one is installed.
+    #[must_use]
+    pub fn from_env(env: &Environment) -> Option<Self> {
+        <Self as Extractor>::extract(env).ok()
+    }
+
+    /// Returns a clone bound to `env` for resolving localized [`IntoText`]
+    /// messages.
+    #[must_use]
+    pub fn with_env(&self, env: Environment) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
+            env,
+        }
+    }
+
+    /// Speaks `message` politely when assistive technology is idle.
+    pub fn announce(&self, message: impl IntoText) {
+        self.announce_with_priority(message, LiveRegion::Polite);
+    }
+
+    /// Speaks `message` assertively, interrupting current speech.
+    pub fn announce_assertive(&self, message: impl IntoText) {
+        self.announce_with_priority(message, LiveRegion::Assertive);
+    }
+
+    /// Speaks `message` at `priority` using the announcer's bound environment.
+    ///
+    /// [`LiveRegion::Off`] and empty resolved messages are ignored.
+    pub fn announce_with_priority(&self, message: impl IntoText, priority: LiveRegion) {
+        self.announce_in(message, priority, &self.env);
+    }
+
+    /// Speaks `message` at `priority`, resolving localized text against `env`.
+    ///
+    /// [`LiveRegion::Off`] and empty resolved messages are ignored.
+    pub fn announce_in(&self, message: impl IntoText, priority: LiveRegion, env: &Environment) {
+        if priority == LiveRegion::Off {
+            return;
+        }
+        let plain = message
+            .into_text()
+            .resolve(env)
+            .content()
+            .snapshot()
+            .to_plain();
+        if plain.is_empty() {
+            return;
+        }
+        (self.inner.announce)(plain.as_str(), priority);
+    }
+
+    /// Speaks an already-resolved plain string at `priority`.
+    ///
+    /// [`LiveRegion::Off`] and empty messages are ignored.
+    pub fn announce_plain(&self, message: &str, priority: LiveRegion) {
+        if priority == LiveRegion::Off || message.is_empty() {
+            return;
+        }
+        (self.inner.announce)(message, priority);
+    }
+
+    /// Reports whether assistive technology (such as a screen reader) is
+    /// currently active on the host platform.
+    #[must_use]
+    pub fn is_assistive_technology_active(&self) -> bool {
+        self.inner
+            .assistive_tech_active
+            .as_ref()
+            .is_some_and(|probe| probe())
+    }
 }
 
 impl MetadataKey for AccessibilityRole {}
@@ -1062,5 +1291,63 @@ mod tests {
         assert!(!cleared.is_invalid());
         assert_eq!(cleared.invalid_state(), Some(false));
         assert_eq!(cleared.error_message(), None);
+    }
+
+    #[test]
+    fn live_region_metadata_tracks_reactive_signal() {
+        let region = nami::Binding::new(super::LiveRegion::Polite);
+        let metadata = super::AccessibilityLiveRegion::new(region.clone());
+        assert_eq!(metadata.region().snapshot(), super::LiveRegion::Polite);
+
+        region.set(super::LiveRegion::Assertive);
+        assert_eq!(metadata.region().snapshot(), super::LiveRegion::Assertive);
+
+        region.set(super::LiveRegion::Off);
+        assert_eq!(metadata.region().snapshot(), super::LiveRegion::Off);
+    }
+
+    #[test]
+    fn announcer_extracts_and_speaks_with_priority_and_probe() {
+        use alloc::rc::Rc;
+        use alloc::string::String;
+        use alloc::vec::Vec;
+        use core::cell::{Cell, RefCell};
+        use waterui_core::extract::Extractor as _;
+
+        let spoken = Rc::new(RefCell::new(Vec::<(String, super::LiveRegion)>::new()));
+        let active = Rc::new(Cell::new(false));
+        let spoken_log = Rc::clone(&spoken);
+        let active_flag = Rc::clone(&active);
+
+        let announcer = super::AccessibilityAnnouncer::with_assistive_technology_probe(
+            move |msg, priority| {
+                spoken_log.borrow_mut().push((String::from(msg), priority));
+            },
+            move || active_flag.get(),
+        );
+        let mut env = Environment::new();
+        env.install(announcer);
+
+        let extracted = super::AccessibilityAnnouncer::extract(&env)
+            .expect("installed announcer extracts directly");
+        assert!(!extracted.is_assistive_technology_active());
+        active.set(true);
+        assert!(extracted.is_assistive_technology_active());
+
+        extracted.announce("Upload complete");
+        extracted.announce_assertive("Connection lost");
+        extracted.announce_with_priority("Ignored", super::LiveRegion::Off);
+        extracted.announce("");
+
+        assert_eq!(
+            *spoken.borrow(),
+            [
+                (String::from("Upload complete"), super::LiveRegion::Polite),
+                (
+                    String::from("Connection lost"),
+                    super::LiveRegion::Assertive
+                ),
+            ]
+        );
     }
 }

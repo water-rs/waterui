@@ -92,6 +92,7 @@ pub mod prelude {
         Snackbar, SnackbarDismissReason, SnackbarHost, SnackbarManager, SnackbarPosition,
     };
 
+    pub use super::accessibility::{AccessibilityAnnouncer, LiveRegion};
     pub use super::border::Border;
     pub use super::component::badge::BadgeValue;
     pub use super::component::*;

@@ -966,6 +966,20 @@ impl NativeBackend for AppleBackend {
         )
     }
 
+    fn accessibility_live_region<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui_accessibility::AccessibilityLiveRegion, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("accessibility_live_region");
+        let metadata = metadata.map_content(C::into_child);
+        crate::components::accessibility_metadata::realize_accessibility_live_region_metadata(
+            metadata,
+            &self.entry(env),
+        )
+    }
+
     fn accessibility_role<C: ChildView<Self>>(
         &mut self,
         metadata: Metadata<waterui_accessibility::AccessibilityRole, C>,

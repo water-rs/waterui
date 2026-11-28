@@ -41,10 +41,10 @@ use cocoa_ui::{PlatformView, Rect, response, view};
 use nami::Computed;
 use objc2_foundation::NSString;
 use waterui_accessibility::{
-    AccessibilityAdjustable, AccessibilityChecked, AccessibilityChildren,
+    AccessibilityAdjustable, AccessibilityAnnouncer, AccessibilityChecked, AccessibilityChildren,
     AccessibilityCustomActions, AccessibilityGeometry, AccessibilityHidden, AccessibilityHint,
-    AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
-    AccessibilityValue,
+    AccessibilityLabel, AccessibilityLiveRegion, AccessibilityRole, AccessibilityState,
+    AccessibilityStateSignal, AccessibilityValue, LiveRegion,
 };
 use waterui_core::handler::ReportExtraction as _;
 use waterui_core::layout::{
@@ -141,7 +141,32 @@ const fn role(role: &AccessibilityRole) -> Role {
         AccessibilityRole::Combobox => Role::Combobox,
         AccessibilityRole::Option => Role::Option,
         AccessibilityRole::Dialog => Role::Dialog,
+        AccessibilityRole::Status => Role::Status,
+        AccessibilityRole::Alert => Role::Alert,
         _ => Role::Group,
+    }
+}
+
+/// Active live-region scope propagated down a subtree on Apple backends so
+/// reactive text, label, and value updates trigger platform announcements
+/// while [`LiveRegion::Polite`] or [`LiveRegion::Assertive`] is active.
+#[derive(Clone)]
+pub struct LiveRegionScope {
+    region: Computed<LiveRegion>,
+    announcer: Option<AccessibilityAnnouncer>,
+}
+
+impl LiveRegionScope {
+    pub fn announce_update(&self, text: &str) {
+        let priority = self.region.snapshot();
+        if priority == LiveRegion::Off || text.is_empty() {
+            return;
+        }
+        if let Some(announcer) = &self.announcer {
+            announcer.announce_plain(text, priority);
+        } else {
+            a11y::announce(text, priority == LiveRegion::Assertive);
+        }
     }
 }
 
@@ -392,8 +417,18 @@ pub fn realize_accessibility_label_metadata(
     let target = view::retain_base(leaf.view());
     leaf.keep(target.clone());
     let signal = metadata.value.resolve(&scoped);
+    let live_region = scoped.get::<LiveRegionScope>().cloned();
+    let previous = RefCell::new(None::<String>);
     leaf.bind(&signal, move |label| {
         a11y::set_label(target::of(&target), &NSString::from_str(&label));
+        let mut prev = previous.borrow_mut();
+        if let Some(last) = prev.as_deref()
+            && last != label.as_str()
+            && let Some(scope) = &live_region
+        {
+            scope.announce_update(label.as_str());
+        }
+        *prev = Some(String::from(label.as_str()));
     });
     leaf.keep(scoped);
     leaf
@@ -408,9 +443,33 @@ pub fn realize_accessibility_value_metadata(
     let target = view::retain_base(leaf.view());
     leaf.keep(target.clone());
     let signal = metadata.value.resolve(&scoped);
+    let live_region = scoped.get::<LiveRegionScope>().cloned();
+    let previous = RefCell::new(None::<String>);
     leaf.bind(&signal, move |value| {
         a11y::set_value(target::of(&target), &NSString::from_str(&value));
+        let mut prev = previous.borrow_mut();
+        if let Some(last) = prev.as_deref()
+            && last != value.as_str()
+            && let Some(scope) = &live_region
+        {
+            scope.announce_update(value.as_str());
+        }
+        *prev = Some(String::from(value.as_str()));
     });
+    leaf.keep(scoped);
+    leaf
+}
+
+pub fn realize_accessibility_live_region_metadata(
+    metadata: Metadata<AccessibilityLiveRegion, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mut scoped = scope_env(ctx, &metadata.value);
+    scoped.insert(LiveRegionScope {
+        region: metadata.value.region().clone(),
+        announcer: AccessibilityAnnouncer::from_env(ctx.env()),
+    });
+    let mut leaf = ctx.with_env(&scoped).realize(metadata.content);
     leaf.keep(scoped);
     leaf
 }

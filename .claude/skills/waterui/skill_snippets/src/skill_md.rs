@@ -566,6 +566,8 @@ pub fn skill_block_15() {
         view.a11y_role(AccessibilityRole::Button) // [ellipsis filled]
     };
     let view = Divider;
+    let _ = { view.a11y_live(LiveRegion::Polite) };
+    let view = Divider;
     let _ = { view.a11y_action("Archive", || ()) };
     let view = Divider;
     let _ = { view.a11y_adjustable(|| (), || ()) };

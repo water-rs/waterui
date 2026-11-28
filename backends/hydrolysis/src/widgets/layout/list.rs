@@ -498,8 +498,8 @@ fn adopt_content_naming<E: crate::text::TextEngine>(
     use crate::renderer::accessibility::ScopedAccessibilityIdentifier;
     use waterui_accessibility::{
         AccessibilityAdjustable, AccessibilityChildren, AccessibilityCustomActions,
-        AccessibilityGeometry, AccessibilityHint, AccessibilityLabel, AccessibilityRole,
-        AccessibilityValue,
+        AccessibilityGeometry, AccessibilityHint, AccessibilityLabel, AccessibilityLiveRegion,
+        AccessibilityRole, AccessibilityValue,
     };
 
     macro_rules! adopt {
@@ -519,6 +519,7 @@ fn adopt_content_naming<E: crate::text::TextEngine>(
         AccessibilityHint,
         AccessibilityCustomActions,
         AccessibilityAdjustable,
+        AccessibilityLiveRegion,
         AccessibilityRole,
         ScopedAccessibilityIdentifier,
         AccessibilityHidden,

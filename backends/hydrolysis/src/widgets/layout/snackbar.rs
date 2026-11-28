@@ -11,7 +11,9 @@ use nami::{Binding, Signal as _, SignalExt as _};
 use waterui_backend_core::time::Instant;
 use waterui_backend_core::{Child, NativeBackendFamily, SlotView};
 use waterui_controls::slot::SlotBuilder;
-use waterui_controls::snackbar::{SnackbarHostConfig, SnackbarPosition, SnackbarPresentation};
+use waterui_controls::snackbar::{
+    SnackbarHostConfig, SnackbarPosition, SnackbarPresentation, snackbar_close_label,
+};
 use waterui_controls::theme::ForegroundOverride;
 use waterui_controls::{Button, ButtonStyle, Label, button, label};
 use waterui_core::env::Installed;
@@ -287,7 +289,7 @@ fn build_row_content<E: TextEngine>(
     let close_button = presentation.closeable().then(|| {
         let presentation_for_close = presentation.clone();
         Button::new(
-            label("Close")
+            label(snackbar_close_label())
                 .icon(CloseIcon {
                     color: look.supporting_text_color.clone(),
                     icon_size: look.close_icon_size,
@@ -384,6 +386,13 @@ fn build_rendered_snackbar<E: TextEngine>(
         look.viewport_padding.clone(),
         Frame::new(animated).alignment(position_alignment(position)),
     );
+    #[cfg(feature = "accessibility")]
+    let view = Metadata::new(
+        Metadata::new(view, waterui_accessibility::AccessibilityRole::Status),
+        waterui_accessibility::AccessibilityLiveRegion::new(
+            waterui_accessibility::LiveRegion::Polite,
+        ),
+    );
 
     RetainedSubview::new(view)
 }
@@ -406,12 +415,22 @@ fn build_semantic_snackbar<E: TextEngine>(
 
     let close_button = presentation.closeable().then(|| {
         let presentation_for_close = presentation.clone();
-        Button::new(label("Close").icon_only()).action(move |_env: Environment| {
+        Button::new(label(snackbar_close_label()).icon_only()).action(move |_env: Environment| {
             presentation_for_close.close();
         })
     });
 
-    RetainedSubview::new(hstack((label_view, action_button, close_button)))
+    let banner = Metadata::new(
+        Metadata::new(
+            hstack((label_view, action_button, close_button)),
+            waterui_accessibility::AccessibilityRole::Status,
+        ),
+        waterui_accessibility::AccessibilityLiveRegion::new(
+            waterui_accessibility::LiveRegion::Polite,
+        ),
+    );
+
+    RetainedSubview::new(banner)
 }
 
 /// Flushes the active snackbar overlay stack above the host's wrapped content.

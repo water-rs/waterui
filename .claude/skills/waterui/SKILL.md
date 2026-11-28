@@ -426,7 +426,7 @@ or capturing into closures; for reactive branching on a `Binding` or `Computed`,
 .opacity(signal) / .visible(signal) / .disabled(signal)
 .blur(signal) / .brightness(..) / .contrast(..) / .saturation(..) / .grayscale(..) / .hue_rotation(..)
 .a11y_label(..) / .a11y_value(..) / .a11y_hint(..) / .a11y_id("settings.wifi") / .a11y_role(..)
-.a11y_action("Archive", handler) / .a11y_adjustable(increment, decrement)
+.a11y_live(LiveRegion::Polite) / .a11y_action("Archive", handler) / .a11y_adjustable(increment, decrement)
 .on_appear(..) / .on_change(&signal, ..) / .on_tap(..) / .gesture(g, handler) / .context_menu(items)
 .cursor(style) / .ignore_safe_area(EdgeSet::ALL) / .floating() / .secure()   // .secure(): no screenshots
 .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM))   // regions × edges

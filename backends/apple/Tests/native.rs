@@ -449,19 +449,25 @@ fn trials() -> Vec<Trial> {
     tests.extend(link::trials());
     tests.extend(async_button_pending::trials());
     tests.extend(button_keyboard_shortcut::trials());
-    tests.extend(markdown_a11y::trials());
-    tests.extend(icon_a11y::trials());
-    tests.extend(a11y_actions_modifiers::trials());
+    tests.extend(a11y_trials());
     #[cfg(feature = "highlight")]
     tests.extend(code::trials());
-    tests.extend(a11y_combine::trials());
-    tests.extend(a11y_invalid::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
     tests.extend(catalyst_view_renderer::trials());
     #[cfg(feature = "webview")]
     tests.extend(webview::trials());
+    tests
+}
+
+fn a11y_trials() -> Vec<Trial> {
+    let mut tests = markdown_a11y::trials();
+    tests.extend(icon_a11y::trials());
+    tests.extend(a11y_actions_modifiers::trials());
+    tests.extend(a11y_live_and_announcer::trials());
+    tests.extend(a11y_combine::trials());
+    tests.extend(a11y_invalid::trials());
     tests
 }
 
@@ -21026,6 +21032,213 @@ mod a11y_combine {
             assert_eq!(replied.get(), 1);
             assert_eq!(archived.get(), 1);
         }
+    }
+}
+
+/// Live regions, `AccessibilityAnnouncer`, `Status`/`Alert` roles, and
+/// accessible snackbar (water-rs/waterui#4374).
+mod a11y_live_and_announcer {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use libtest_mimic::Trial;
+    use waterui::accessibility::{AccessibilityAnnouncer, AccessibilityRole, LiveRegion};
+    use waterui::layout::stack::vstack;
+    use waterui::prelude::*;
+    use waterui_core::Environment;
+
+    use super::resolve;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test("a11y_live_and_announcer::status_and_alert_roles", || {
+                status_and_alert_roles();
+                Ok(())
+            }),
+            Trial::test(
+                "a11y_live_and_announcer::live_region_announces_reactive_updates",
+                || {
+                    live_region_announces_reactive_updates();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "a11y_live_and_announcer::announcer_extracts_and_localizes",
+                || {
+                    announcer_extracts_and_localizes();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "a11y_live_and_announcer::snackbar_announces_and_localizes_close_button",
+                || {
+                    snackbar_announces_and_localizes_close_button();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn status_and_alert_roles() {
+        let status_leaf =
+            resolve::render(vstack((text("Saved"),)).a11y_role(AccessibilityRole::Status));
+        let alert_leaf =
+            resolve::render(vstack((text("Failed"),)).a11y_role(AccessibilityRole::Alert));
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::ProtocolObject;
+            use cocoa_ui::objc2_app_kit::{NSAccessibility, NSAccessibilityGroupRole};
+
+            let status = ProtocolObject::<dyn NSAccessibility>::from_ref(status_leaf.view());
+            let alert = ProtocolObject::<dyn NSAccessibility>::from_ref(alert_leaf.view());
+            // SAFETY: immutable AppKit role constant.
+            let group_role = unsafe { NSAccessibilityGroupRole };
+            assert_eq!(status.accessibilityRole().as_deref(), Some(group_role));
+            assert_eq!(
+                status
+                    .accessibilitySubrole()
+                    .map(|s| s.to_string())
+                    .as_deref(),
+                Some("AXApplicationStatus")
+            );
+            assert_eq!(alert.accessibilityRole().as_deref(), Some(group_role));
+            assert_eq!(
+                alert
+                    .accessibilitySubrole()
+                    .map(|s| s.to_string())
+                    .as_deref(),
+                Some("AXApplicationAlert")
+            );
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use super::mtm;
+            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+
+            // Container roles must not mark the wrapper an opaque accessibility
+            // leaf on UIKit, or interactive buttons inside a snackbar disappear.
+            assert!(!status_leaf.view().isAccessibilityElement(mtm()));
+            assert!(!alert_leaf.view().isAccessibilityElement(mtm()));
+        }
+    }
+
+    fn live_region_announces_reactive_updates() {
+        let spoken = Rc::new(RefCell::new(Vec::<(String, LiveRegion)>::new()));
+        let spoken_log = Rc::clone(&spoken);
+        let announcer = AccessibilityAnnouncer::new(move |msg, priority| {
+            spoken_log.borrow_mut().push((String::from(msg), priority));
+        });
+
+        let status = Binding::new(Str::from_static("Idle"));
+        let region = Binding::new(LiveRegion::Polite);
+        let label_text = Binding::new(Str::from_static("Initial"));
+
+        let _text_leaf =
+            resolve::render_with(text(status.clone()).a11y_live(region.clone()), |env| {
+                env.install(announcer.clone());
+            });
+        let _label_leaf = resolve::render_with(
+            vstack((text("Banner"),))
+                .a11y_label(label_text.clone())
+                .a11y_live(LiveRegion::Assertive),
+            |env| {
+                env.install(announcer);
+            },
+        );
+
+        // Initial render does not spam announcements.
+        assert_eq!(*spoken.borrow(), []);
+
+        status.set(Str::from_static("Saving"));
+        region.set(LiveRegion::Off);
+        status.set(Str::from_static("Quiet update"));
+        region.set(LiveRegion::Assertive);
+        status.set(Str::from_static("Save failed"));
+        label_text.set(Str::from_static("Network offline"));
+
+        assert_eq!(
+            *spoken.borrow(),
+            [
+                (String::from("Saving"), LiveRegion::Polite),
+                (String::from("Save failed"), LiveRegion::Assertive),
+                (String::from("Network offline"), LiveRegion::Assertive),
+            ]
+        );
+    }
+
+    fn announcer_extracts_and_localizes() {
+        use waterui_core::extract::Extractor as _;
+        use waterui_locale::{TranslationCatalog, locales};
+
+        let spoken = Rc::new(RefCell::new(Vec::<(String, LiveRegion)>::new()));
+        let spoken_log = Rc::clone(&spoken);
+        let mut env = Environment::new();
+        env.insert(Binding::new(locales::FR));
+        env.insert(
+            TranslationCatalog::new()
+                .add_toml(
+                    locales::FR,
+                    "\"Upload complete\" = \"Téléversement terminé\"",
+                )
+                .expect("test catalog must parse"),
+        );
+        env.install(AccessibilityAnnouncer::new(move |msg, priority| {
+            spoken_log.borrow_mut().push((String::from(msg), priority));
+        }));
+
+        let announcer =
+            AccessibilityAnnouncer::extract(&env).expect("announcer extracts from environment");
+        announcer.announce("Upload complete");
+
+        assert_eq!(
+            *spoken.borrow(),
+            [(String::from("Téléversement terminé"), LiveRegion::Polite)]
+        );
+    }
+
+    fn snackbar_announces_and_localizes_close_button() {
+        use core::time::Duration;
+        use waterui::graphics::color::WorkingColor;
+        use waterui::snackbar::{Snackbar, SnackbarManager};
+        use waterui::theme::color::{Accent, Border, Foreground, Surface};
+        use waterui_locale::{TranslationCatalog, locales};
+
+        let spoken = Rc::new(RefCell::new(Vec::<(String, LiveRegion)>::new()));
+        let spoken_log = Rc::clone(&spoken);
+
+        let _leaf = resolve::render_with(
+            SnackbarManager::host(|manager: SnackbarManager| {
+                manager.show(
+                    Snackbar::new("Draft saved")
+                        .closeable()
+                        .duration(Duration::ZERO),
+                );
+                text("Body")
+            }),
+            |env| {
+                let black = binding(WorkingColor::BLACK).computed();
+                waterui::theme::install_color_signal::<Foreground>(env, black.clone());
+                waterui::theme::install_color_signal::<Accent>(env, black.clone());
+                waterui::theme::install_color_signal::<Surface>(env, black.clone());
+                waterui::theme::install_color_signal::<Border>(env, black);
+                env.insert(Binding::new(locales::FR));
+                env.insert(
+                    TranslationCatalog::new()
+                        .add_toml(locales::FR, "\"waterui.snackbar.close\" = \"Fermer\"")
+                        .expect("test catalog must parse"),
+                );
+                env.install(AccessibilityAnnouncer::new(move |msg, priority| {
+                    spoken_log.borrow_mut().push((String::from(msg), priority));
+                }));
+            },
+        );
+
+        assert_eq!(
+            *spoken.borrow(),
+            [(String::from("Draft saved"), LiveRegion::Polite)]
+        );
     }
 }
 

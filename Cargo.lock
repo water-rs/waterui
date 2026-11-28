@@ -12812,6 +12812,7 @@ dependencies = [
  "nami",
  "suiteki",
  "waterui-core",
+ "waterui-text",
 ]
 
 [[package]]

@@ -5,7 +5,7 @@ use std::{
 };
 
 use accesskit::{
-    Action, ActionRequest, Invalid, Node, NodeId, Point, Role, Toggled, TreeId, TreeUpdate,
+    Action, ActionRequest, Invalid, Live, Node, NodeId, Point, Role, Toggled, TreeId, TreeUpdate,
 };
 use wasm_bindgen::{JsCast, closure::Closure};
 use waterui_core::contract_violation;
@@ -296,6 +296,33 @@ fn apply_validation_attributes(element: &HtmlElement, node: &Node) {
     set_optional_attribute(element, "aria-errormessage", error_message_id.as_deref());
 }
 
+fn apply_live_region_attributes(element: &HtmlElement, node: &Node) {
+    let live = match node.live() {
+        Some(Live::Polite) => Some("polite"),
+        Some(Live::Assertive) => Some("assertive"),
+        Some(Live::Off) | None => None,
+    };
+    set_optional_attribute(element, "aria-live", live);
+    set_optional_attribute(element, "aria-atomic", live.map(|_| "true"));
+}
+
+fn apply_bounds(element: &HtmlElement, node: &Node, origin: Point) {
+    if let Some(bounds) = node.bounds() {
+        let style = element.style();
+        for (name, value) in [
+            ("left", format!("{}px", bounds.x0 - origin.x)),
+            ("top", format!("{}px", bounds.y0 - origin.y)),
+            ("width", format!("{}px", bounds.width().max(0.0))),
+            ("height", format!("{}px", bounds.height().max(0.0))),
+        ] {
+            dom(
+                "set DOM accessibility bounds",
+                style.set_property(name, &value),
+            );
+        }
+    }
+}
+
 fn apply_node(element: &HtmlElement, node: &Node, origin: Point) {
     let is_text = matches!(node.role(), Role::TextRun | Role::Label | Role::Paragraph);
     element.set_text_content(is_text.then(|| node.label()).flatten());
@@ -306,6 +333,7 @@ fn apply_node(element: &HtmlElement, node: &Node, origin: Point) {
         (!is_text).then(|| node.label()).flatten(),
     );
     set_optional_attribute(element, "aria-description", node.description());
+    apply_live_region_attributes(element, node);
     set_optional_attribute(
         element,
         "aria-disabled",
@@ -379,20 +407,7 @@ fn apply_node(element: &HtmlElement, node: &Node, origin: Point) {
             -1
         },
     );
-    if let Some(bounds) = node.bounds() {
-        let style = element.style();
-        for (name, value) in [
-            ("left", format!("{}px", bounds.x0 - origin.x)),
-            ("top", format!("{}px", bounds.y0 - origin.y)),
-            ("width", format!("{}px", bounds.width().max(0.0))),
-            ("height", format!("{}px", bounds.height().max(0.0))),
-        ] {
-            dom(
-                "set DOM accessibility bounds",
-                style.set_property(name, &value),
-            );
-        }
-    }
+    apply_bounds(element, node, origin);
 }
 
 const fn aria_role(role: Role) -> Option<&'static str> {
@@ -437,6 +452,8 @@ const fn aria_role(role: Role) -> Option<&'static str> {
         Role::TabPanel => "tabpanel",
         Role::TextInput | Role::MultilineTextInput | Role::PasswordInput => "textbox",
         Role::SpinButton => "spinbutton",
+        Role::Status => "status",
+        Role::Alert => "alert",
         Role::ScrollView | Role::Section | Role::Region => "region",
         Role::RootWebArea | Role::Application => "application",
         _ => "group",

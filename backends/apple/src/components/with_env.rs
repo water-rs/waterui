@@ -117,6 +117,8 @@ pub fn realize_environment_metadata(
     }
     restore_a11y!(
         waterui_accessibility::AccessibilityLabel,
+        waterui_accessibility::AccessibilityLiveRegion,
+        crate::components::accessibility_metadata::LiveRegionScope,
         waterui_accessibility::AccessibilityValue,
         waterui_accessibility::AccessibilityHint,
         waterui_accessibility::AccessibilityCustomActions,

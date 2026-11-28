@@ -145,6 +145,18 @@ struct UiKitApplication {
     menu_watch: RefCell<Option<Box<dyn Any>>>,
 }
 
+#[cfg(feature = "accessibility")]
+fn install_uikit_accessibility_announcer(env: &mut Environment) {
+    let _ = crate::runner::install_accessibility_announcer(
+        env,
+        false,
+        Some(Rc::new(cocoa_ui::accessibility::is_voiceover_running)),
+    );
+}
+
+#[cfg(not(feature = "accessibility"))]
+const fn install_uikit_accessibility_announcer(_env: &mut Environment) {}
+
 impl UiKitApplication {
     /// Builds the application environment and starts opening the GPU
     /// context; scenes that connected first mount when it resolves.
@@ -191,6 +203,7 @@ impl UiKitApplication {
         let mut env = env.layered_on(&services);
         #[cfg(any(test, hydrolysis_platform_services))]
         install_platform_services(&mut env);
+        install_uikit_accessibility_announcer(&mut env);
         install_window_registries::<ParleyEngine>(&mut env);
         #[cfg(feature = "menu")]
         if let Some(ref menu_bar) = menu_bar {

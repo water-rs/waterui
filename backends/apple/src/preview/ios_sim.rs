@@ -209,6 +209,7 @@ extern "C" fn on_scene_ready(window_ptr: *mut c_void, user_data: *mut c_void) {
     let locale = install_locale(&mut env, mtm);
     keepers.keep(locale);
     keepers.keep(install_reduce_motion(&mut env, mtm));
+    crate::accessibility_announcer::install(&mut env);
     keepers.keep(fonts);
 
     let env_box = Box::new(env);

@@ -1001,6 +1001,8 @@ native_backend! {
         accessibility_identifier: waterui_accessibility::AccessibilityIdentifier,
         /// An accessibility label.
         accessibility_label: waterui_accessibility::AccessibilityLabel,
+        /// An accessibility live-region politeness setting.
+        accessibility_live_region: waterui_accessibility::AccessibilityLiveRegion,
         /// An accessibility role.
         accessibility_role: waterui_accessibility::AccessibilityRole,
         /// Accessibility state.

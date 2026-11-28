@@ -210,6 +210,128 @@ fn f32_interior_range(lo: f64, hi: f64) -> Option<(f32, f32)> {
 pub const ACCESSIBILITY_ROOT_NODE_ID: AccessibilityNodeId = AccessibilityNodeId(0);
 #[cfg(feature = "accessibility")]
 pub const ACCESSIBILITY_FIRST_NODE_ID: u64 = 1;
+/// Alternating virtual node ids reserved for imperative
+/// [`AccessibilityAnnouncer`](waterui_accessibility::AccessibilityAnnouncer)
+/// announcements. Both stay strictly below `i32::MAX` so Android's virtual
+/// view id contract (`id <= Int.MAX_VALUE`) serves them verbatim, and
+/// alternating ids per announcement guarantees assistive technologies speak
+/// repeated identical messages.
+#[cfg(feature = "accessibility")]
+const ACCESSIBILITY_ANNOUNCEMENT_NODE_ID_EVEN: AccessibilityNodeId =
+    AccessibilityNodeId((i32::MAX as u64) - 2);
+#[cfg(feature = "accessibility")]
+const ACCESSIBILITY_ANNOUNCEMENT_NODE_ID_ODD: AccessibilityNodeId =
+    AccessibilityNodeId((i32::MAX as u64) - 1);
+
+#[cfg(feature = "accessibility")]
+struct AnnouncementChannelState {
+    seq: u64,
+    latest: Option<waterui_accessibility::AccessibilityAnnouncement>,
+    dirty: bool,
+    history: Option<Vec<waterui_accessibility::AccessibilityAnnouncement>>,
+    wakes: Vec<Rc<dyn Fn()>>,
+}
+
+/// Shared channel bridging a runner's installed
+/// [`AccessibilityAnnouncer`](waterui_accessibility::AccessibilityAnnouncer)
+/// with the renderer's AccessKit tree so announcements reach desktop, iOS,
+/// Android, web, and headless observers uniformly.
+#[cfg(feature = "accessibility")]
+#[derive(Clone)]
+pub struct AccessibilityAnnouncementChannel {
+    inner: Rc<RefCell<AnnouncementChannelState>>,
+}
+
+#[cfg(feature = "accessibility")]
+impl AccessibilityAnnouncementChannel {
+    pub(crate) fn new(record_history: bool, on_announce: Option<Rc<dyn Fn()>>) -> Self {
+        let mut wakes = Vec::new();
+        if let Some(callback) = on_announce {
+            wakes.push(callback);
+        }
+        Self {
+            inner: Rc::new(RefCell::new(AnnouncementChannelState {
+                seq: 0,
+                latest: None,
+                dirty: false,
+                history: record_history.then(Vec::new),
+                wakes,
+            })),
+        }
+    }
+
+    pub(crate) fn attach_wake(&self, wake: Rc<dyn Fn()>) {
+        self.inner.borrow_mut().wakes.push(wake);
+    }
+
+    pub(crate) fn post(&self, message: &str, priority: LiveRegion) {
+        if priority == LiveRegion::Off || message.is_empty() {
+            return;
+        }
+        let wakes = {
+            let mut state = self.inner.borrow_mut();
+            state.seq = state.seq.wrapping_add(1);
+            let entry = waterui_accessibility::AccessibilityAnnouncement {
+                message: waterui_core::Str::from(String::from(message)),
+                priority,
+            };
+            if let Some(history) = &mut state.history {
+                history.push(entry.clone());
+            }
+            state.latest = Some(entry);
+            state.dirty = true;
+            state.wakes.clone()
+        };
+        for wake in wakes {
+            wake();
+        }
+    }
+
+    pub(crate) fn announcer(
+        &self,
+        is_active: Option<Rc<dyn Fn() -> bool>>,
+    ) -> waterui_accessibility::AccessibilityAnnouncer {
+        let channel = self.clone();
+        match is_active {
+            Some(probe) => {
+                waterui_accessibility::AccessibilityAnnouncer::with_assistive_technology_probe(
+                    move |message, priority| channel.post(message, priority),
+                    move || probe(),
+                )
+            }
+            None => waterui_accessibility::AccessibilityAnnouncer::new(move |message, priority| {
+                channel.post(message, priority);
+            }),
+        }
+    }
+
+    pub(crate) fn take_dirty(&self) -> bool {
+        let mut state = self.inner.borrow_mut();
+        let was_dirty = state.dirty;
+        state.dirty = false;
+        was_dirty
+    }
+
+    pub(crate) fn latest(&self) -> Option<(u64, waterui_accessibility::AccessibilityAnnouncement)> {
+        let state = self.inner.borrow();
+        state
+            .latest
+            .as_ref()
+            .map(|announcement| (state.seq, announcement.clone()))
+    }
+
+    pub(crate) fn history(&self) -> Vec<waterui_accessibility::AccessibilityAnnouncement> {
+        self.inner.borrow().history.clone().unwrap_or_default()
+    }
+
+    pub(crate) fn take_history(&self) -> Vec<waterui_accessibility::AccessibilityAnnouncement> {
+        self.inner
+            .borrow_mut()
+            .history
+            .as_mut()
+            .map_or_default(core::mem::take)
+    }
+}
 
 /// The id range the merged multi-window tree assigns each popup window:
 /// popup `i`'s node ids shift up by `(i + 1) * WINDOW_ID_STRIDE`, and the
@@ -515,6 +637,8 @@ pub struct AccessibilityBuilder<E: crate::text::TextEngine> {
     /// tree without their widget re-rendering, by the widget's interaction
     /// identity. Kept across flushes.
     live_selection: BTreeMap<InteractionKey, LiveSelection>,
+    /// Optional runner-installed channel carrying imperative announcements.
+    announcement_channel: Option<AccessibilityAnnouncementChannel>,
 }
 
 /// Formats a live numeric value into the accessibility node's spoken value text.
@@ -585,6 +709,7 @@ impl<E: crate::text::TextEngine> Default for AccessibilityBuilder<E> {
             has_emitted: false,
             live_numeric: BTreeMap::new(),
             live_selection: BTreeMap::new(),
+            announcement_channel: None,
         }
     }
 }
@@ -1303,12 +1428,16 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         let label = container.label().map(str::to_owned);
         let value = container.value().map(str::to_owned);
         let description = container.description().map(str::to_owned);
+        let live = container.live();
         let author_id = container.author_id().map(str::to_owned);
         let role = container.role();
-        let click = container.supports_action(AccessibilityAction::Click);
-        let focus = container.supports_action(AccessibilityAction::Focus);
-        let increment = container.supports_action(AccessibilityAction::Increment);
-        let decrement = container.supports_action(AccessibilityAction::Decrement);
+        let actions: [AccessibilityAction; 4] = [
+            AccessibilityAction::Click,
+            AccessibilityAction::Focus,
+            AccessibilityAction::Increment,
+            AccessibilityAction::Decrement,
+        ];
+        let supported: [bool; 4] = actions.map(|action| container.supports_action(action));
         let container_custom = self.take_custom_action_entries(container_id);
         let child_custom = self.take_custom_action_entries(child_id);
         let container_adjustable = self.adjustable_actions.remove(&container_id);
@@ -1326,20 +1455,13 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         if let Some(description) = description {
             child.set_description(description);
         }
-        // The container's advertised actions and action target — the activation
-        // a silenced tap delegated to it — move to the surviving node; a real
-        // action the child registered itself always wins.
-        if click {
-            child.add_action(AccessibilityAction::Click);
+        if let Some(live) = live {
+            child.set_live(live);
         }
-        if focus {
-            child.add_action(AccessibilityAction::Focus);
-        }
-        if increment {
-            child.add_action(AccessibilityAction::Increment);
-        }
-        if decrement {
-            child.add_action(AccessibilityAction::Decrement);
+        for (action, is_supported) in actions.into_iter().zip(supported) {
+            if is_supported {
+                child.add_action(action);
+            }
         }
         // The scope's automation id was claimed by the container, so it would
         // vanish with it. A child that carries its own id keeps it, matching
@@ -1424,22 +1546,49 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
     /// A modal node — a presented dialog's alert — makes the rest of the
     /// window inert: the root holds that node alone, and only its subtree is
     /// published, with focus kept inside it.
+    fn announcement_node(&self) -> Option<(AccessibilityNodeId, AccessibilityNode)> {
+        let (seq, announcement) = self.announcement_channel.as_ref()?.latest()?;
+        let id = if seq.is_multiple_of(2) {
+            ACCESSIBILITY_ANNOUNCEMENT_NODE_ID_EVEN
+        } else {
+            ACCESSIBILITY_ANNOUNCEMENT_NODE_ID_ODD
+        };
+        let role = match announcement.priority {
+            LiveRegion::Assertive => AccessibilityNodeRole::Alert,
+            LiveRegion::Polite | LiveRegion::Off => AccessibilityNodeRole::Status,
+        };
+        let mut node = AccessibilityNode::new(role);
+        node.set_live(live_region_to_accesskit_live(announcement.priority));
+        node.set_label(announcement.message.as_str().to_owned());
+        node.set_bounds(AccessibilityRect::new(0.0, 0.0, 0.0, 0.0));
+        Some((id, node))
+    }
+
     fn assembled_tree_update(&self) -> AccessibilityTreeUpdate {
         let mut root = AccessibilityNode::new(AccessibilityNodeRole::Window);
         root.set_label(self.root_label.clone());
         if self.root_bounds.width() > 0.0 && self.root_bounds.height() > 0.0 {
             root.set_bounds(kurbo_rect_to_accesskit_rect(self.root_bounds));
         }
+        let announcement = self.announcement_node();
         let modal = self
             .nodes
             .iter()
             .rev()
             .find_map(|(id, node)| node.is_modal().then_some(*id));
         let Some(modal) = modal else {
-            root.set_children(self.root_children.clone());
-            let mut nodes = Vec::with_capacity(self.nodes.len() + 1);
+            let mut root_children = self.root_children.clone();
+            if let Some((ann_id, _)) = &announcement {
+                root_children.push(*ann_id);
+            }
+            root.set_children(root_children);
+            let mut nodes =
+                Vec::with_capacity(self.nodes.len() + 1 + usize::from(announcement.is_some()));
             nodes.push((ACCESSIBILITY_ROOT_NODE_ID, root));
             nodes.extend(self.nodes.iter().cloned());
+            if let Some(ann) = announcement {
+                nodes.push(ann);
+            }
             return AccessibilityTreeUpdate {
                 nodes,
                 tree: Some(AccessibilityTree::new(ACCESSIBILITY_ROOT_NODE_ID)),
@@ -1447,7 +1596,11 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
                 focus: self.focus,
             };
         };
-        root.set_children(vec![modal]);
+        let mut root_children = vec![modal];
+        if let Some((ann_id, _)) = &announcement {
+            root_children.push(*ann_id);
+        }
+        root.set_children(root_children);
         let mut reachable = BTreeSet::new();
         let mut pending = vec![modal];
         while let Some(id) = pending.pop() {
@@ -1457,7 +1610,8 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
                 pending.extend_from_slice(node.children());
             }
         }
-        let mut nodes = Vec::with_capacity(reachable.len() + 1);
+        let mut nodes =
+            Vec::with_capacity(reachable.len() + 1 + usize::from(announcement.is_some()));
         nodes.push((ACCESSIBILITY_ROOT_NODE_ID, root));
         nodes.extend(
             self.nodes
@@ -1465,6 +1619,9 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
                 .filter(|(id, _)| reachable.contains(id))
                 .cloned(),
         );
+        if let Some(ann) = announcement {
+            nodes.push(ann);
+        }
         let focus = if reachable.contains(&self.focus) {
             self.focus
         } else {
@@ -1672,6 +1829,7 @@ pub fn strip_control_accessibility_env(env: &Environment) -> Environment {
     child_env.remove::<AccessibilityHint>();
     child_env.remove::<AccessibilityCustomActions>();
     child_env.remove::<AccessibilityAdjustable>();
+    child_env.remove::<AccessibilityLiveRegion>();
     child_env.remove::<AccessibilityRole>();
     child_env.remove::<AccessibilityHidden>();
     child_env.remove::<AccessibilityChildren>();
@@ -1705,6 +1863,7 @@ pub fn accessibility_container_child_environment(env: &Environment) -> Option<En
         && env.get::<AccessibilityHint>().is_none()
         && env.get::<AccessibilityCustomActions>().is_none()
         && env.get::<AccessibilityAdjustable>().is_none()
+        && env.get::<AccessibilityLiveRegion>().is_none()
     {
         return None;
     }
@@ -1749,9 +1908,28 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    pub(crate) fn set_accessibility_announcement_channel(
+        &mut self,
+        channel: AccessibilityAnnouncementChannel,
+    ) {
+        self.accessibility.announcement_channel = Some(channel);
+    }
+
+    #[cfg(feature = "accessibility")]
     #[must_use]
-    pub const fn take_accessibility_tree_update(&mut self) -> Option<AccessibilityTreeUpdate> {
-        self.accessibility.pending_tree_update.take()
+    pub fn take_accessibility_tree_update(&mut self) -> Option<AccessibilityTreeUpdate> {
+        let dirty = self
+            .accessibility
+            .announcement_channel
+            .as_ref()
+            .is_some_and(AccessibilityAnnouncementChannel::take_dirty);
+        if let Some(update) = self.accessibility.pending_tree_update.take() {
+            return Some(update);
+        }
+        if dirty && self.accessibility.has_emitted {
+            return Some(self.accessibility.assembled_tree_update());
+        }
+        None
     }
 
     /// Publishes an accessibility focus move as a focus-only tree update:
@@ -3001,6 +3179,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         semantic_key: Option<i64>,
     ) -> Option<AccessibilityNodeId> {
         self.watch_accessibility_state(env);
+        if let Some(live_region) = env.get::<AccessibilityLiveRegion>() {
+            let live = self.read_signal(live_region.region());
+            if live != LiveRegion::Off {
+                node.set_live(live_region_to_accesskit_live(live));
+            }
+        }
         if let Some(hint) = env.get::<AccessibilityHint>() {
             let signal = hint.resolve(env);
             let text = self.read_signal(&signal);
@@ -3377,12 +3561,23 @@ pub fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> Accessib
         AccessibilityRole::Option => AccessibilityNodeRole::ListBoxOption,
         AccessibilityRole::Group => AccessibilityNodeRole::Group,
         AccessibilityRole::Dialog => AccessibilityNodeRole::Dialog,
+        AccessibilityRole::Status => AccessibilityNodeRole::Status,
+        AccessibilityRole::Alert => AccessibilityNodeRole::Alert,
         other => {
             contract_violation!(
                 "hydrolysis accessibility role variant {other:?} is not implemented; the node reports an unknown role"
             );
             AccessibilityNodeRole::Unknown
         }
+    }
+}
+
+#[cfg(feature = "accessibility")]
+pub const fn live_region_to_accesskit_live(region: LiveRegion) -> AccessibilityLive {
+    match region {
+        LiveRegion::Off => AccessibilityLive::Off,
+        LiveRegion::Polite => AccessibilityLive::Polite,
+        LiveRegion::Assertive => AccessibilityLive::Assertive,
     }
 }
 
