@@ -793,7 +793,10 @@ a reactive collection, next to or instead
 of static rows — `Section::new("Today").content(ForEach::new(today, |item| text(item.title)))`.
 Its rows are inserted and removed in place as the collection changes, the header sits on
 whichever row currently opens the section, and a section with no rows draws neither header
-nor footer until rows come back. A grouped, filtered list is therefore one `List::content`
+nor footer until rows come back. Binding `.expanded(&Binding<bool>)` on a `Section` makes
+that section collapsible: the section header shows a native disclosure affordance that
+toggles the binding, hides or reveals its rows and footer without losing row tags or list
+selection, and reacts to external writes to the binding. A grouped, filtered list is therefore one `List::content`
 with a `Section` per group, each over its own `SignalCollection`; sections do not nest.
 
 Row modifiers: `.list_row_deletable(signal)`, `.list_row_insets(insets)`; `.list_min_row_height(h)` on

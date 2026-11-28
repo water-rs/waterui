@@ -838,14 +838,25 @@ pub struct ListSection {
     label: Option<Text>,
     /// Footer text shown below the section.
     footer: Option<Text>,
+    /// Reactive expanded state when the section is collapsible (`Section::expanded`).
+    expanded: Option<Binding<bool>>,
 }
 
 impl ListSection {
-    /// Creates a section descriptor from resolved/semantic optional header and
-    /// footer text. App code constructs sections through [`Section`].
+    /// Creates a section descriptor from resolved/semantic optional header,
+    /// footer text, and optional collapsible expanded binding. App code
+    /// constructs sections through [`Section`].
     #[must_use]
-    pub(crate) const fn new(label: Option<Text>, footer: Option<Text>) -> Self {
-        Self { label, footer }
+    pub(crate) const fn new(
+        label: Option<Text>,
+        footer: Option<Text>,
+        expanded: Option<Binding<bool>>,
+    ) -> Self {
+        Self {
+            label,
+            footer,
+            expanded,
+        }
     }
 
     /// Title shown above the section.
@@ -860,10 +871,17 @@ impl ListSection {
         self.footer.as_ref()
     }
 
+    /// Reactive expanded state for a collapsible section, or `None` when the
+    /// section is always expanded.
+    #[must_use]
+    pub const fn expanded(&self) -> Option<&Binding<bool>> {
+        self.expanded.as_ref()
+    }
+
     /// Takes the value apart into its fields, in declaration order.
     #[must_use]
-    pub fn into_parts(self) -> (Option<Text>, Option<Text>) {
-        (self.label, self.footer)
+    pub fn into_parts(self) -> (Option<Text>, Option<Text>, Option<Binding<bool>>) {
+        (self.label, self.footer, self.expanded)
     }
 
     /// Resolves the semantic header and footer against `env`, turning
@@ -878,6 +896,7 @@ impl ListSection {
         Self {
             label: self.label.map(|label| Text::from(label.resolve(env))),
             footer: self.footer.map(|footer| Text::from(footer.resolve(env))),
+            expanded: self.expanded,
         }
     }
 }
@@ -1221,5 +1240,54 @@ mod tests {
             peel_metadata::<Environment>(AnyView::new(row), &env).is_none(),
             "sidebar list rows must not wrap content in SelectionForeground metadata"
         );
+    }
+
+    #[test]
+    fn collapsible_section_threads_expanded_binding_and_preserves_tags() {
+        let env = Environment::new();
+        let expanded = Binding::new(false);
+        let selection = Binding::new(Some(1_i32));
+        let config = render_config(
+            List::content((
+                Section::new("Pinned").expanded(&expanded).content((
+                    TaggedView::new(1_i32, || text!("Alpha")),
+                    TaggedView::new(2_i32, || text!("Beta")),
+                )),
+                Section::new("Regular").content((TaggedView::new(3_i32, || text!("Gamma")),)),
+            ))
+            .selection(&selection)
+            .config(),
+            &env,
+        );
+        let snapshot = config.contents().snapshot();
+        assert_eq!(
+            snapshot.len(),
+            3,
+            "collapsed rows stay in the semantic collection"
+        );
+        let spans = config.sections().spans(&snapshot);
+        assert_eq!(spans.len(), 2);
+        let pinned_binding = spans[0]
+            .section
+            .as_ref()
+            .and_then(ListSection::expanded)
+            .expect("collapsible section must expose its expanded binding");
+        assert!(!pinned_binding.snapshot());
+        pinned_binding.set(true);
+        assert!(expanded.snapshot(), "binding must stay live and two-way");
+        assert!(
+            spans[1]
+                .section
+                .as_ref()
+                .and_then(ListSection::expanded)
+                .is_none(),
+            "non-collapsible section must not have an expanded binding"
+        );
+        // Every row's tag remains addressable regardless of collapsed state.
+        let id0 = snapshot.get_id(0).expect("row 0 id");
+        let id1 = snapshot.get_id(1).expect("row 1 id");
+        assert!(config.row_tags().tag(id0).is_some());
+        assert!(config.row_tags().tag(id1).is_some());
+        assert_eq!(selection.snapshot(), Some(1_i32));
     }
 }

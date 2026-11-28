@@ -15,7 +15,7 @@ publish = false
 workspace = true
 
 [dependencies]
-waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "navigation", "picker", "slider", "stepper", "toggle", "text-field"] }
+waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "list", "locale-datetime", "locale-list", "navigation", "picker", "slider", "stepper", "toggle", "text-field"] }
 waterui-icons-material-icon.workspace = true
 
 [dev-dependencies]
