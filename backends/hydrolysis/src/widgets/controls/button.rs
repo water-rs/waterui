@@ -340,7 +340,7 @@ fn retained_label_color(
 /// frame. The `config` is kept for the value/style/action and for
 /// accessibility resolution.
 pub struct ButtonRenderState<E: crate::text::TextEngine> {
-    config: ButtonConfig<HeldChild<E>>,
+    pub(crate) config: ButtonConfig<HeldChild<E>>,
     /// `Some` for a non-title (general) label held as a retained sub-view; `None`
     /// for a `TitleOnly` label rendered as styled text from `config.label`.
     label_view: Option<RetainedSubview<E>>,
@@ -1359,7 +1359,7 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     let key = crate::renderer::InteractionKey::for_rc(state, 0);
-    let active_target = {
+    let (active_target, shortcut_registration) = {
         let mut state_mut = state.borrow_mut();
         let state_mut = &mut *state_mut;
         let presentation = ControlPresentation {
@@ -1368,7 +1368,25 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
             role: state_mut.config.role(),
         };
         let pending = state_mut.config.pending().cloned();
-        render_control_parts(
+        let shortcut_registration = state_mut.config.shortcut().map(|shortcut| {
+            let env_disabled = widget_disabled(env);
+            let disabled = match pending.clone() {
+                Some(pending) => nami::zip::zip(env_disabled, pending)
+                    .map(|(disabled, is_pending)| disabled || is_pending)
+                    .computed(),
+                None => env_disabled,
+            };
+            let label = state_mut
+                .config
+                .label()
+                .semantic_text()
+                .resolve(env)
+                .content()
+                .snapshot()
+                .to_plain();
+            (shortcut, disabled, label)
+        });
+        let active_target = render_control_parts(
             ctx,
             &mut state_mut.chrome,
             &mut state_mut.label_view,
@@ -1377,8 +1395,18 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
             key,
             pending.as_ref(),
             env,
-        )
+        );
+        (active_target, shortcut_registration)
     };
+    if let Some((shortcut, disabled, label)) = shortcut_registration {
+        ctx.renderer_mut().register_button_shortcut(
+            Rc::downgrade(state),
+            shortcut,
+            disabled,
+            label,
+            env.clone(),
+        );
+    }
     let Some((target, press_slot, keyboard_focusable)) = active_target else {
         return;
     };

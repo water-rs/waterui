@@ -368,7 +368,12 @@ fn apply_node(element: &HtmlElement, node: &Node, origin: Point) {
     );
     set_optional_attribute(element, "data-waterui-id", node.author_id());
     element.set_tab_index(
-        if node.supports_action(Action::Focus) || node.supports_action(Action::Click) {
+        if node.supports_action(Action::Focus)
+            || node.supports_action(Action::Click)
+            || node.supports_action(Action::Increment)
+            || node.supports_action(Action::Decrement)
+            || node.supports_action(Action::CustomAction)
+        {
             0
         } else {
             -1

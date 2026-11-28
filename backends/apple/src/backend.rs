@@ -854,6 +854,20 @@ impl NativeBackend for AppleBackend {
         )
     }
 
+    fn accessibility_adjustable<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui_accessibility::AccessibilityAdjustable, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("accessibility_adjustable");
+        let metadata = metadata.map_content(C::into_child);
+        crate::components::accessibility_metadata::realize_accessibility_adjustable_metadata(
+            metadata,
+            &self.entry(env),
+        )
+    }
+
     fn accessibility_children<C: ChildView<Self>>(
         &mut self,
         metadata: Metadata<waterui_accessibility::AccessibilityChildren, C>,
@@ -863,6 +877,20 @@ impl NativeBackend for AppleBackend {
         mark_reached!("accessibility_children");
         let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_children_metadata(
+            metadata,
+            &self.entry(env),
+        )
+    }
+
+    fn accessibility_custom_actions<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui_accessibility::AccessibilityCustomActions, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("accessibility_custom_actions");
+        let metadata = metadata.map_content(C::into_child);
+        crate::components::accessibility_metadata::realize_accessibility_custom_actions_metadata(
             metadata,
             &self.entry(env),
         )
@@ -891,6 +919,20 @@ impl NativeBackend for AppleBackend {
         mark_reached!("accessibility_hidden");
         let metadata = metadata.map_content(C::into_child);
         crate::components::accessibility_metadata::realize_accessibility_hidden_metadata(
+            metadata,
+            &self.entry(env),
+        )
+    }
+
+    fn accessibility_hint<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui_accessibility::AccessibilityHint, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("accessibility_hint");
+        let metadata = metadata.map_content(C::into_child);
+        crate::components::accessibility_metadata::realize_accessibility_hint_metadata(
             metadata,
             &self.entry(env),
         )
@@ -1224,6 +1266,18 @@ impl NativeBackend for AppleBackend {
         mark_reached!("frame_rate");
         let metadata = metadata.map_content(C::into_child);
         realize_frame_rate_metadata(metadata, &self.entry(env))
+    }
+
+    fn mask<S: ChildView<Self>, C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui_shape::Mask<S>, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("mask");
+        let Metadata { content, value } = metadata;
+        let metadata = Metadata::new(content.into_child(), value.map_slots(S::into_child));
+        crate::components::mask::realize_mask_metadata(metadata, &self.entry(env))
     }
 
     fn anchored_overlay<S: ChildView<Self>, C: ChildView<Self>>(

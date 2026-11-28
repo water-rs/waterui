@@ -16,8 +16,6 @@ use waterui_core::{Environment, Metadata, OneOf2, View};
 
 use waterui_color::WorkingColor;
 
-#[cfg(feature = "list")]
-use crate::list::SidebarContent;
 use crate::theme::{color, install_color_signal};
 
 /// A row's or cell's content re-themed to `SelectionForeground` while it is
@@ -28,34 +26,16 @@ use crate::theme::{color, install_color_signal};
 /// `SelectionForeground` reactively without rebuilding the subtree.
 pub struct SelectionThemed<C> {
     content: C,
-    /// Whether the row is selected; `None` when not selectable.
+    /// Whether the row is selected; `None` when not selectable or when the list
+    /// style draws an unemphasised selection fill that keeps row colours intact.
     selected: Option<Computed<bool>>,
-    #[cfg(feature = "list")]
-    respects_sidebar: bool,
 }
 
 impl<C> SelectionThemed<C> {
     /// Wraps `content` so its foreground tokens flip when `selected` is true.
-    #[cfg(feature = "table")]
+    #[cfg(any(feature = "list", feature = "table"))]
     pub(crate) const fn new(content: C, selected: Option<Computed<bool>>) -> Self {
-        Self {
-            content,
-            selected,
-            #[cfg(feature = "list")]
-            respects_sidebar: false,
-        }
-    }
-
-    /// Wraps list row `content` so its foreground tokens flip when `selected`
-    /// is true, except inside a sidebar column where the unemphasised pill
-    /// preserves the row's own colours (`water-rs/waterui#1495`).
-    #[cfg(feature = "list")]
-    pub(crate) const fn for_list(content: C, selected: Option<Computed<bool>>) -> Self {
-        Self {
-            content,
-            selected,
-            respects_sidebar: true,
-        }
+        Self { content, selected }
     }
 }
 
@@ -72,10 +52,6 @@ impl<C: View> View for SelectionThemed<C> {
         let Some(selected) = self.selected else {
             return OneOf2::A(self.content);
         };
-        #[cfg(feature = "list")]
-        if self.respects_sidebar && env.get::<SidebarContent>().is_some() {
-            return OneOf2::A(self.content);
-        }
         let mut env = env.clone();
         let on_selection = color::SelectionForeground.resolve(&env).computed();
         let flip = |normal: Computed<WorkingColor>| {

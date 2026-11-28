@@ -129,6 +129,14 @@ pub struct NativeLeaf {
     /// `view` is a layout host wrapping a control (such as a `TextField`,
     /// `Slider`, or `Stepper`). `None` targets `view` itself.
     accessibility_target: Option<Retained<PlatformView>>,
+    /// Whether an accessibility-hint or state scope already owns this leaf's
+    /// hint/help channel (`accessibilityHelp` / `accessibilityHint`), so
+    /// hint, busy, and invalid state compose once without overwriting one
+    /// another.
+    accessibility_hint_applied: bool,
+    /// Whether an accessibility-custom-actions scope already applied the
+    /// merged action list to this leaf's view.
+    accessibility_custom_actions_applied: bool,
     /// The clip shape carried by this leaf when wrapped in `.clip(...)` (and
     /// preserved across bounds-preserving wrappers), so an enclosing `.shadow(...)`
     /// follows the caster's clipped silhouette when no explicit override is set.
@@ -169,6 +177,8 @@ impl NativeLeaf {
             handler_env: None,
             accessibility_state_applied: false,
             accessibility_target: None,
+            accessibility_hint_applied: false,
+            accessibility_custom_actions_applied: false,
             clip_shape: None,
             #[cfg(target_os = "ios")]
             attached_controllers: Vec::new(),
@@ -237,6 +247,19 @@ impl NativeLeaf {
     #[must_use]
     pub(crate) fn accessibility_target(&self) -> &PlatformView {
         self.accessibility_target.as_deref().unwrap_or(&self.view)
+    }
+
+    /// Claims this leaf's hint/help channel so `AccessibilityHint`,
+    /// `AccessibilityState::invalid`, and `AccessibilityState::busy` compose
+    /// through a single reactive binding.
+    pub(crate) const fn claim_accessibility_hint(&mut self) -> bool {
+        !core::mem::replace(&mut self.accessibility_hint_applied, true)
+    }
+
+    /// Claims this leaf's custom-actions channel so chained
+    /// `AccessibilityCustomActions` apply once in declaration order.
+    pub(crate) const fn claim_accessibility_custom_actions(&mut self) -> bool {
+        !core::mem::replace(&mut self.accessibility_custom_actions_applied, true)
     }
 
     /// The clip shape carried by this leaf, if wrapped in `.clip(...)` or a

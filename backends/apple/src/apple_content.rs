@@ -675,9 +675,12 @@ mod tests {
             on_key_press: waterui_interaction::key::OnKeyPress,
             gesture_observer: waterui_interaction::gesture::GestureObserver,
             selected: waterui_interaction::interaction::Selected,
+            accessibility_adjustable: waterui_accessibility::AccessibilityAdjustable,
             accessibility_children: waterui_accessibility::AccessibilityChildren,
+            accessibility_custom_actions: waterui_accessibility::AccessibilityCustomActions,
             accessibility_geometry: waterui_accessibility::AccessibilityGeometry,
             accessibility_hidden: waterui_accessibility::AccessibilityHidden,
+            accessibility_hint: waterui_accessibility::AccessibilityHint,
             accessibility_identifier: waterui_accessibility::AccessibilityIdentifier,
             accessibility_label: waterui_accessibility::AccessibilityLabel,
             accessibility_role: waterui_accessibility::AccessibilityRole,
@@ -713,6 +716,14 @@ mod tests {
             navigation_transition_source: waterui_backend_core::navigation::NavigationTransitionSource,
             #[cfg(waterui_feature = "navigation")]
             navigation_transition_destination: waterui_backend_core::navigation::NavigationTransitionDestination,
+        }
+
+        fn mask<S: ChildView<Self>, C: ChildView<Self>>(
+            &mut self,
+            _: Metadata<waterui_shape::Mask<S>, C>,
+            _: &Environment,
+            (): (),
+        ) {
         }
 
         fn anchored_overlay<S: ChildView<Self>, C: ChildView<Self>>(

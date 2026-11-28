@@ -49,6 +49,84 @@ impl NotificationName {
     pub fn framework(name: &'static NSString) -> Self {
         Self(name.retain())
     }
+
+    /// Posted when the macOS application becomes active.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn application_did_become_active() -> Self {
+        // SAFETY: reads a string constant AppKit owns for the process's lifetime.
+        let name: &'static NSString =
+            unsafe { objc2_app_kit::NSApplicationDidBecomeActiveNotification };
+        Self(name.retain())
+    }
+
+    /// Posted when the macOS application is about to resign active status.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn application_will_resign_active() -> Self {
+        // SAFETY: reads a string constant AppKit owns for the process's lifetime.
+        let name: &'static NSString =
+            unsafe { objc2_app_kit::NSApplicationWillResignActiveNotification };
+        Self(name.retain())
+    }
+
+    /// Posted when the macOS application is hidden.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn application_did_hide() -> Self {
+        // SAFETY: reads a string constant AppKit owns for the process's lifetime.
+        let name: &'static NSString = unsafe { objc2_app_kit::NSApplicationDidHideNotification };
+        Self(name.retain())
+    }
+
+    /// Posted when the macOS application is about to be unhidden.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn application_will_unhide() -> Self {
+        // SAFETY: reads a string constant AppKit owns for the process's lifetime.
+        let name: &'static NSString = unsafe { objc2_app_kit::NSApplicationWillUnhideNotification };
+        Self(name.retain())
+    }
+
+    /// Posted when the iOS application becomes active.
+    #[cfg(target_os = "ios")]
+    #[must_use]
+    pub fn application_did_become_active() -> Self {
+        // SAFETY: reads a string constant UIKit owns for the process's lifetime.
+        let name: &'static NSString =
+            unsafe { objc2_ui_kit::UIApplicationDidBecomeActiveNotification };
+        Self(name.retain())
+    }
+
+    /// Posted when the iOS application is about to resign active status.
+    #[cfg(target_os = "ios")]
+    #[must_use]
+    pub fn application_will_resign_active() -> Self {
+        // SAFETY: reads a string constant UIKit owns for the process's lifetime.
+        let name: &'static NSString =
+            unsafe { objc2_ui_kit::UIApplicationWillResignActiveNotification };
+        Self(name.retain())
+    }
+
+    /// Posted when the iOS application enters the background.
+    #[cfg(target_os = "ios")]
+    #[must_use]
+    pub fn application_did_enter_background() -> Self {
+        // SAFETY: reads a string constant UIKit owns for the process's lifetime.
+        let name: &'static NSString =
+            unsafe { objc2_ui_kit::UIApplicationDidEnterBackgroundNotification };
+        Self(name.retain())
+    }
+
+    /// Posted when the iOS application is about to enter the foreground.
+    #[cfg(target_os = "ios")]
+    #[must_use]
+    pub fn application_will_enter_foreground() -> Self {
+        // SAFETY: reads a string constant UIKit owns for the process's lifetime.
+        let name: &'static NSString =
+            unsafe { objc2_ui_kit::UIApplicationWillEnterForegroundNotification };
+        Self(name.retain())
+    }
 }
 
 /// Keeps a notification observer registered; dropping it removes the

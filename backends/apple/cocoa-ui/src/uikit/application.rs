@@ -18,6 +18,8 @@ use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use block2::RcBlock;
 
@@ -29,16 +31,16 @@ use objc2::{
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSDictionary, NSObjectProtocol, NSSet, NSString};
 use objc2_ui_kit::{
-    UIApplication, UIApplicationDelegate, UIApplicationLaunchOptionsKey, UICommand,
-    UIMainMenuSystem, UIMainMenuSystemConfiguration, UIMenu, UIMenuBuilder, UIMenuRoot,
-    UIResponder, UIScene, UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIWindow,
-    UIWindowScene, UIWindowSceneDelegate,
+    UIApplication, UIApplicationDelegate, UIApplicationLaunchOptionsKey, UIApplicationState,
+    UIBackgroundTaskInvalid, UICommand, UIMainMenuSystem, UIMainMenuSystemConfiguration, UIMenu,
+    UIMenuBuilder, UIMenuRoot, UIResponder, UIScene, UISceneConnectionOptions, UISceneDelegate,
+    UISceneSession, UIWindow, UIWindowScene, UIWindowSceneDelegate,
 };
 
 #[cfg(target_abi = "macabi")]
 use super::catalyst_tracking::MenuTracking;
 use super::key_commands::{KeyCommandRegistry, KeyCommands};
-use super::window::Window;
+use super::window::{Window, shared_application};
 use crate::callback::guarded;
 use crate::geometry::Size;
 
@@ -222,6 +224,91 @@ impl fmt::Debug for ApplicationHandlers {
             .field("did_finish_launching", &self.did_finish_launching.is_some())
             .finish_non_exhaustive()
     }
+}
+
+/// The running state reported by `UIApplication.shared.applicationState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ApplicationState {
+    /// `UIApplicationState.active`.
+    Active,
+    /// `UIApplicationState.inactive`.
+    Inactive,
+    /// `UIApplicationState.background`.
+    Background,
+}
+
+/// Reads the current `UIApplication.shared.applicationState`.
+///
+/// A process that never ran `UIApplicationMain` has no `UIApplication` and
+/// reports [`ApplicationState::Inactive`].
+#[must_use]
+pub fn application_state(mtm: MainThreadMarker) -> ApplicationState {
+    shared_application(mtm).map_or(ApplicationState::Inactive, |application| {
+        let state = application.applicationState();
+        if state == UIApplicationState::Active {
+            ApplicationState::Active
+        } else if state == UIApplicationState::Background {
+            ApplicationState::Background
+        } else {
+            ApplicationState::Inactive
+        }
+    })
+}
+
+/// Keeps a `UIApplication` background task assertion alive until dropped or
+/// expired by the system.
+///
+/// Created with [`begin_background_task`]. Dropping the guard ends the
+/// background task cleanly if the expiration handler has not already ended it.
+#[derive(Debug)]
+#[must_use = "dropping the background task ends the OS background execution assertion immediately"]
+pub struct BackgroundTask {
+    id: Arc<AtomicUsize>,
+    invalid: usize,
+}
+
+impl Drop for BackgroundTask {
+    fn drop(&mut self) {
+        let prev = self.id.swap(self.invalid, Ordering::AcqRel);
+        if prev != self.invalid
+            && let Some(mtm) = MainThreadMarker::new()
+            && let Some(application) = shared_application(mtm)
+        {
+            application.endBackgroundTask(prev);
+        }
+    }
+}
+
+/// Begins a named `UIApplication` background execution assertion
+/// (`beginBackgroundTaskWithName:expirationHandler:`) so async work running
+/// when the app enters the background can finish before suspension.
+///
+/// If the system expires the assertion before the returned [`BackgroundTask`]
+/// is dropped, the expiration handler ends the task automatically.
+pub fn begin_background_task(mtm: MainThreadMarker, name: &str) -> BackgroundTask {
+    // SAFETY: reads the constant `UIBackgroundTaskInvalid` owned by UIKit.
+    let invalid = unsafe { UIBackgroundTaskInvalid };
+    let id = Arc::new(AtomicUsize::new(invalid));
+    let Some(application) = shared_application(mtm) else {
+        return BackgroundTask { id, invalid };
+    };
+    let expiration_id = Arc::clone(&id);
+    let expiration = RcBlock::new(move || {
+        guarded("UIBackgroundTask expiration handler", || {
+            let prev = expiration_id.swap(invalid, Ordering::AcqRel);
+            if prev != invalid
+                && let Some(mtm) = MainThreadMarker::new()
+                && let Some(application) = shared_application(mtm)
+            {
+                application.endBackgroundTask(prev);
+            }
+        });
+    });
+    let task_name = NSString::from_str(name);
+    let task_id = application
+        .beginBackgroundTaskWithName_expirationHandler(Some(&task_name), Some(&expiration));
+    id.store(task_id, Ordering::Release);
+    BackgroundTask { id, invalid }
 }
 
 /// Starts the application and runs its event loop for the rest of the

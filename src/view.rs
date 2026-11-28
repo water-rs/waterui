@@ -54,14 +54,14 @@ use waterui_layout::{
 use waterui_navigation::NavigationView;
 
 #[cfg(feature = "list")]
-use crate::component::list::{ListMinRowHeight, ListRowDeletable, ListRowInsets};
+use crate::component::list::{ListMinRowHeight, ListRowDeletable, ListRowInsets, ListStyle};
 #[cfg(feature = "haptics")]
 use crate::haptic::Feedback;
 use crate::{
     accessibility::{
-        self, AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden,
-        AccessibilityIdentifier, AccessibilityLabel, AccessibilityRole, AccessibilityState,
-        AccessibilityValue,
+        self, AccessibilityAdjustable, AccessibilityChildren, AccessibilityCustomActions,
+        AccessibilityGeometry, AccessibilityHidden, AccessibilityHint, AccessibilityIdentifier,
+        AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityValue,
     },
     background::IntoBackground,
     border::Border,
@@ -79,7 +79,7 @@ use crate::{
     },
     floating::Floating,
     prelude::Shadow,
-    shape::{ClipShape, Shape},
+    shape::{ClipShape, Mask, MaskView, Shape},
     style::{Anchor, Offset, Rotation, Scale},
 };
 use waterui_controls::button::{ButtonStyleHook, IntoButtonStyle};
@@ -964,6 +964,75 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, accessibility::AccessibilityStateSignal::new(state))
     }
 
+    /// Sets the accessibility hint for this view.
+    ///
+    /// A hint supplements the label and role with the outcome of acting on the
+    /// view (for example, `"Opens the thread"`). Accepts any [`IntoText`]
+    /// value: string literals resolve through the active translation catalog in
+    /// the surrounding [`Environment`], and reactive signals stay current
+    /// without rebuilding the subtree.
+    fn a11y_hint(self, hint: impl IntoText) -> Metadata<AccessibilityHint, Self> {
+        let hint = hint.into_text();
+        Metadata::new(
+            self,
+            accessibility::AccessibilityHint::resolved(move |env| {
+                hint.resolve(env)
+                    .content()
+                    .map(|styled| styled.to_plain())
+                    .computed()
+            }),
+        )
+    }
+
+    /// Attaches a named custom accessibility action to this view.
+    ///
+    /// Use custom actions to make interactions backed by gestures such as
+    /// swipe, drag, or long press reachable from `VoiceOver`'s actions rotor and
+    /// `TalkBack`'s local context menu. Chaining multiple `.a11y_action(...)`
+    /// modifiers appends actions in declaration order rather than replacing
+    /// earlier ones.
+    fn a11y_action<H, Args>(
+        self,
+        name: impl IntoText,
+        action: H,
+    ) -> Metadata<AccessibilityCustomActions, Self>
+    where
+        H: Handler<Args, ()>,
+    {
+        let name = name.into_text();
+        let action = accessibility::AccessibilityCustomAction::resolved(
+            move |env| {
+                name.resolve(env)
+                    .content()
+                    .map(|styled| styled.to_plain())
+                    .computed()
+            },
+            action,
+        );
+        Metadata::new(
+            self,
+            accessibility::AccessibilityCustomActions::single(action),
+        )
+    }
+
+    /// Makes this view adjustable by assistive technologies through increment
+    /// and decrement actions (for example, `VoiceOver` swipe up/down or `TalkBack`
+    /// scroll forward/backward on a custom rating control).
+    fn a11y_adjustable<Inc, IncArgs, Dec, DecArgs>(
+        self,
+        increment: Inc,
+        decrement: Dec,
+    ) -> Metadata<AccessibilityAdjustable, Self>
+    where
+        Inc: Handler<IncArgs, ()>,
+        Dec: Handler<DecArgs, ()>,
+    {
+        Metadata::new(
+            self,
+            accessibility::AccessibilityAdjustable::new(increment, decrement),
+        )
+    }
+
     /// Observes a gesture and executes an action whose handler consumes
     /// `G::Event` as its first argument, followed by environment extractors.
     ///
@@ -1307,6 +1376,28 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, ClipShape::new(shape))
     }
 
+    /// Masks this view with the alpha channel of `mask`.
+    ///
+    /// This view determines layout size, stretch axis, and priority; `mask` is
+    /// measured against this view's bounds and centered within them. Opaque
+    /// regions of `mask` reveal this view and transparent regions hide it.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// let gradient_title = Gradient::linear(
+    ///     [Color::srgb_hex("#38BDF8"), Color::srgb_hex("#A855F7")],
+    ///     UnitPoint::LEADING,
+    ///     UnitPoint::TRAILING,
+    /// )
+    /// .mask(text("Title").title());
+    /// ```
+    fn mask<M: View>(self, mask: M) -> MaskView<Self, M> {
+        MaskView::new(self, Mask::new(mask))
+    }
+
     /// Attaches a context menu to this view.
     ///
     /// The context menu appears when the user:
@@ -1454,6 +1545,25 @@ pub trait ViewExt: View + Sized {
     #[cfg(feature = "snackbar")]
     fn snackbar_host_with_icons<I: View + 'static>(self) -> SnackbarHost<Self, I> {
         SnackbarHost::new(self)
+    }
+
+    /// Sets the visual presentation style of every [`List`](crate::component::list::List)
+    /// inside this subtree that does not specify an explicit `.style(...)`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// let grouped = vstack((
+    ///     List::content((|| text!("First"),)),
+    ///     List::content((|| text!("Second"),)),
+    /// ))
+    /// .list_style(ListStyle::InsetGrouped);
+    /// ```
+    #[cfg(feature = "list")]
+    fn list_style(self, style: ListStyle) -> With<Self, ListStyle> {
+        self.with(style)
     }
 
     /// Sets the minimum row height of every list inside this view, in points.
@@ -1875,6 +1985,59 @@ mod tests {
         locale.set(locales::FR);
         assert_eq!(label_signal.snapshot().as_str(), "Fermer la fenêtre");
         assert_eq!(value_signal.snapshot().as_str(), "Prêt");
+    }
+
+    #[test]
+    fn a11y_hint_action_and_adjustable_resolve_and_invoke() {
+        use nami::{Binding, Signal as _};
+        use waterui_core::{Environment, Metadata};
+        use waterui_locale::{TranslationCatalog, locales};
+
+        let locale = Binding::new(locales::EN);
+        let mut env = Environment::new();
+        env.insert(locale.clone());
+        env.insert(
+            TranslationCatalog::new()
+                .add_toml(
+                    locales::FR,
+                    "\"Opens the thread\" = \"Ouvre la discussion\"\n\"Archive\" = \"Archiver\"",
+                )
+                .expect("test catalog must parse"),
+        );
+
+        let Metadata { value: hint, .. } = ().a11y_hint("Opens the thread");
+        let hint_signal = hint.resolve(&env);
+        assert_eq!(hint_signal.snapshot().as_str(), "Opens the thread");
+        locale.set(locales::FR);
+        assert_eq!(hint_signal.snapshot().as_str(), "Ouvre la discussion");
+
+        let ran = Binding::new(0_i32);
+        let ran_action = ran.clone();
+        let Metadata { value: actions, .. } =
+            ().a11y_action("Archive", move || ran_action.set(ran_action.snapshot() + 1));
+        assert_eq!(actions.actions().len(), 1);
+        assert_eq!(
+            actions.actions()[0].resolve_name(&env).snapshot().as_str(),
+            "Archiver"
+        );
+        actions.actions()[0]
+            .invoke(&env)
+            .expect("custom action runs");
+        assert_eq!(ran.snapshot(), 1);
+
+        let rating = Binding::new(3_i32);
+        let inc_rating = rating.clone();
+        let dec_rating = rating.clone();
+        let Metadata {
+            value: adjustable, ..
+        } = ().a11y_adjustable(
+            move || inc_rating.set(inc_rating.snapshot() + 1),
+            move || dec_rating.set(dec_rating.snapshot() - 1),
+        );
+        adjustable.increment(&env).expect("increment runs");
+        assert_eq!(rating.snapshot(), 4);
+        adjustable.decrement(&env).expect("decrement runs");
+        assert_eq!(rating.snapshot(), 3);
     }
 
     #[cfg(feature = "navigation")]

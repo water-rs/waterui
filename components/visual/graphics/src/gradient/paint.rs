@@ -570,6 +570,8 @@ impl View for Gradient {
     }
 }
 
+nami::impl_constant!(Gradient);
+
 #[cfg(test)]
 mod tests {
     use super::*;

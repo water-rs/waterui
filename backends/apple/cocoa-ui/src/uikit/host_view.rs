@@ -65,6 +65,8 @@ type KeyHandler = Rc<dyn Fn(&HostView, &KeyEvent) -> bool>;
 /// The handler `accessibilityActivate` calls; its answer is whether the
 /// activation was handled.
 type AccessibilityActivateHandler = Rc<dyn Fn(&HostView) -> bool>;
+/// The handler `accessibilityIncrement` / `accessibilityDecrement` calls.
+type AccessibilityAdjustHandler = Rc<dyn Fn(&HostView)>;
 
 /// The handlers a [`HostView`] calls, and the state it keeps for them.
 #[derive(Default)]
@@ -118,6 +120,13 @@ pub struct HostViewIvars {
     /// `accessibilityActivate` — installed when the mounted content is
     /// operable through an assistive client's activate action.
     accessibility_activate: RefCell<Option<AccessibilityActivateHandler>>,
+    /// `accessibilityIncrement` — installed by `.a11y_adjustable(...)`.
+    accessibility_increment: RefCell<Option<AccessibilityAdjustHandler>>,
+    /// `accessibilityDecrement` — installed by `.a11y_adjustable(...)`.
+    accessibility_decrement: RefCell<Option<AccessibilityAdjustHandler>>,
+    /// When set, unset `accessibilityValue` and `accessibilityHint` fall back
+    /// to `primary_content`.
+    delegates_accessibility_to_primary: Cell<bool>,
     /// The instance-owned visibility event: fires when this view's hidden,
     /// alpha, frame, bounds, window or superview state changes so
     /// subscribed descendants re-check presentation visibility.
@@ -173,6 +182,18 @@ impl fmt::Debug for HostViewIvars {
             .field(
                 "accessibility_activate",
                 &self.accessibility_activate.borrow().is_some(),
+            )
+            .field(
+                "accessibility_increment",
+                &self.accessibility_increment.borrow().is_some(),
+            )
+            .field(
+                "accessibility_decrement",
+                &self.accessibility_decrement.borrow().is_some(),
+            )
+            .field(
+                "delegates_accessibility_to_primary",
+                &self.delegates_accessibility_to_primary.get(),
             )
             .field("backing_changed", &self.backing_changed.borrow().is_some())
             .field("geometry", &self.geometry)
@@ -531,6 +552,70 @@ define_class!(
             })
         }
 
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityIncrement))]
+        fn accessibility_increment_override(&self) {
+            guarded("HostView accessibilityIncrement", || {
+                let handler = self.ivars().accessibility_increment.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(self);
+                    return;
+                }
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), accessibilityIncrement] };
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityDecrement))]
+        fn accessibility_decrement_override(&self) {
+            guarded("HostView accessibilityDecrement", || {
+                let handler = self.ivars().accessibility_decrement.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(self);
+                    return;
+                }
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), accessibilityDecrement] };
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(accessibilityValue))]
+        fn accessibility_value_override(&self) -> Option<Retained<NSString>> {
+            guarded("HostView accessibilityValue", || {
+                // SAFETY: see the module safety note.
+                let inherited: Option<Retained<NSString>> =
+                    unsafe { msg_send![super(self), accessibilityValue] };
+                if !self.ivars().delegates_accessibility_to_primary.get()
+                    || inherited.as_ref().is_some_and(|value| !value.is_empty())
+                {
+                    return inherited;
+                }
+                self.primary_accessibility_target()
+                    .and_then(|child| child.accessibilityValue(self.mtm()))
+                    .or(inherited)
+            })
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(accessibilityHint))]
+        fn accessibility_hint_override(&self) -> Option<Retained<NSString>> {
+            guarded("HostView accessibilityHint", || {
+                // SAFETY: see the module safety note.
+                let inherited: Option<Retained<NSString>> =
+                    unsafe { msg_send![super(self), accessibilityHint] };
+                if !self.ivars().delegates_accessibility_to_primary.get()
+                    || inherited.as_ref().is_some_and(|hint| !hint.is_empty())
+                {
+                    return inherited;
+                }
+                self.primary_accessibility_target()
+                    .and_then(|child| child.accessibilityHint(self.mtm()))
+                    .or(inherited)
+            })
+        }
+
         // SAFETY: see the module safety note. A label written onto the
         // host — `accessibility_metadata`'s `a11y_label` stores it here —
         // wins; a combining host otherwise announces its descendants'
@@ -841,6 +926,42 @@ impl HostView {
             .replace(Some(Rc::new(handler)));
     }
 
+    /// Installs `accessibilityIncrement` and `accessibilityDecrement` handlers
+    /// for `.a11y_adjustable(...)`.
+    pub fn set_accessibility_adjustable_handlers(
+        &self,
+        increment: impl Fn(&Self) + 'static,
+        decrement: impl Fn(&Self) + 'static,
+    ) {
+        let ivars = self.ivars();
+        ivars
+            .accessibility_increment
+            .replace(Some(Rc::new(increment)));
+        ivars
+            .accessibility_decrement
+            .replace(Some(Rc::new(decrement)));
+    }
+
+    /// Whether adjustable increment/decrement handlers are installed on this host.
+    #[must_use]
+    pub(crate) fn is_accessibility_adjustable(&self) -> bool {
+        self.ivars().accessibility_increment.borrow().is_some()
+            || self.ivars().accessibility_decrement.borrow().is_some()
+    }
+
+    /// Forwards unset `accessibilityValue` and `accessibilityHint` queries to
+    /// the installed primary content view.
+    pub fn set_delegates_accessibility_to_primary(&self, delegates: bool) {
+        self.ivars()
+            .delegates_accessibility_to_primary
+            .set(delegates);
+    }
+
+    fn primary_accessibility_target(&self) -> Option<Retained<UIView>> {
+        let handler = self.ivars().primary_content.borrow().clone();
+        handler.and_then(|handler| handler(self))
+    }
+
     /// The visibility event this view fires — see
     /// [`VisibilityEmitter`](crate::visibility::VisibilityEmitter).
     pub fn visibility_emitter(&self) -> &VisibilityEmitter {
@@ -888,6 +1009,8 @@ impl HostView {
         }
         ivars.key.replace(None);
         ivars.accessibility_activate.replace(None);
+        ivars.accessibility_increment.replace(None);
+        ivars.accessibility_decrement.replace(None);
         ivars.menu_commands.borrow_mut().clear();
         ivars.backing_changed.replace(None);
         ivars.geometry.clear();

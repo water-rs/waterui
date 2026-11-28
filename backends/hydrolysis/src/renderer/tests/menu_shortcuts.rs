@@ -547,6 +547,7 @@ fn a_declared_quit_arms_no_chord_where_nothing_can_quit() {
             crate::renderer::WindowId::Orphan,
             &keyboard_types::Key::Character("q".to_owned()),
             command(),
+            false,
             &env,
         ),
         "no menu claims the quit chord where nothing can quit"
@@ -602,6 +603,7 @@ fn a_declared_close_window_chord_closes_the_dispatching_window() {
         crate::renderer::WindowId::Runner(42),
         &keyboard_types::Key::Character("w".to_owned()),
         command(),
+        false,
         &env,
     ));
     assert_eq!(
@@ -724,6 +726,7 @@ fn a_declared_close_window_is_omitted_where_windows_cannot_close() {
             crate::renderer::WindowId::Orphan,
             &keyboard_types::Key::Character("w".to_owned()),
             command(),
+            false,
             &env,
         ),
         "no menu claims the close chord where no window can be closed"
@@ -1214,5 +1217,128 @@ fn a_bare_character_chord_fires_only_without_a_focused_field() {
         draft.snapshot().to_string(),
         "j",
         "the chord's J types nothing"
+    );
+}
+
+/// `Button::keyboard_shortcut` arms while the button is mounted and enabled,
+/// respects `.disabled(..)`, and disarms when the button unmounts.
+#[test]
+fn button_keyboard_shortcut_respects_enabled_and_mount_lifecycle() {
+    let mounted = Binding::new(true);
+    let disabled = Binding::new(false);
+    let hits = Binding::new(0_i32);
+
+    let view = {
+        let mounted = mounted.clone();
+        let disabled = disabled.clone();
+        let hits = hits.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            let disabled = disabled.clone();
+            let hits = hits.clone();
+            AnyView::new(when(mounted.clone(), move || {
+                let hits = hits.clone();
+                button("Send")
+                    .keyboard_shortcut(Shortcut::new(ShortcutNamedKey::Enter).command())
+                    .action(move || hits.set(hits.snapshot() + 1))
+                    .disabled(disabled.clone())
+            }))
+        })
+    };
+
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        view,
+        WINDOW.0,
+        WINDOW.1,
+        MinimalTestTheme::default(),
+    );
+    let _ = pump_until_settled(&mut runtime);
+
+    named_key_press(&mut runtime, NamedKey::Enter, command());
+    assert_eq!(hits.snapshot(), 1, "mounted enabled button shortcut fires");
+
+    disabled.set(true);
+    let _ = pump_until_settled(&mut runtime);
+    named_key_press(&mut runtime, NamedKey::Enter, command());
+    assert_eq!(hits.snapshot(), 1, "disabled button shortcut does not fire");
+
+    disabled.set(false);
+    let _ = pump_until_settled(&mut runtime);
+    named_key_press(&mut runtime, NamedKey::Enter, command());
+    assert_eq!(hits.snapshot(), 2, "re-enabled button shortcut fires again");
+
+    mounted.set(false);
+    let _ = pump_until_settled(&mut runtime);
+    named_key_press(&mut runtime, NamedKey::Enter, command());
+    assert_eq!(
+        hits.snapshot(),
+        2,
+        "unmounted button shortcut no longer fires"
+    );
+}
+
+/// While a modal sheet is presented, shortcuts on buttons behind the modal are
+/// occluded and do not fire, while shortcuts on buttons inside the modal fire.
+#[test]
+fn button_keyboard_shortcut_respects_modal_occlusion() {
+    let sheet_open = Binding::new(false);
+    let bg_hits = Binding::new(0_i32);
+    let modal_hits = Binding::new(0_i32);
+
+    let view = {
+        let sheet_open = sheet_open.clone();
+        let bg_hits = bg_hits.clone();
+        let modal_hits = modal_hits.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            let bg_hits = bg_hits.clone();
+            let modal_hits = modal_hits.clone();
+            AnyView::new(
+                button("Save Background")
+                    .keyboard_shortcut(Shortcut::new('s').command())
+                    .action(move || bg_hits.set(bg_hits.snapshot() + 1))
+                    .sheet(waterui::prelude::Sheet::new(&sheet_open, move || {
+                        let modal_hits = modal_hits.clone();
+                        button("Save Modal")
+                            .keyboard_shortcut(Shortcut::new('s').command())
+                            .action(move || modal_hits.set(modal_hits.snapshot() + 1))
+                    })),
+            )
+        })
+    };
+
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        view,
+        WINDOW.0,
+        WINDOW.1,
+        MinimalTestTheme::default(),
+    );
+    let _ = pump_until_settled(&mut runtime);
+
+    key_chord(&mut runtime, "s", command());
+    assert_eq!(
+        (bg_hits.snapshot(), modal_hits.snapshot()),
+        (1, 0),
+        "background button fires when no modal is open"
+    );
+
+    sheet_open.set(true);
+    let _ = pump_until_settled(&mut runtime);
+
+    key_chord(&mut runtime, "s", command());
+    assert_eq!(
+        (bg_hits.snapshot(), modal_hits.snapshot()),
+        (1, 1),
+        "modal button fires and background button is occluded while sheet is open"
+    );
+
+    sheet_open.set(false);
+    let _ = pump_until_settled(&mut runtime);
+
+    key_chord(&mut runtime, "s", command());
+    assert_eq!(
+        (bg_hits.snapshot(), modal_hits.snapshot()),
+        (2, 1),
+        "background button resumes after modal closes"
     );
 }

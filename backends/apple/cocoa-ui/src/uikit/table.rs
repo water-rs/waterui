@@ -46,9 +46,10 @@ use objc2_ui_kit::{
     UIContextualActionStyle, UIEdgeInsets, UIListContentConfiguration, UIScrollView,
     UIScrollViewDelegate, UISwipeActionsConfiguration, UITableView, UITableViewAutomaticDimension,
     UITableViewCell, UITableViewCellAccessoryType, UITableViewCellEditingStyle,
-    UITableViewCellSelectionStyle, UITableViewCellStyle, UITableViewDataSource,
-    UITableViewDelegate, UITableViewHeaderFooterView, UITableViewRowAnimation,
-    UITableViewScrollPosition, UITableViewSeparatorInsetReference, UITableViewStyle, UIView,
+    UITableViewCellSelectionStyle, UITableViewCellSeparatorStyle, UITableViewCellStyle,
+    UITableViewDataSource, UITableViewDelegate, UITableViewHeaderFooterView,
+    UITableViewRowAnimation, UITableViewScrollPosition, UITableViewSeparatorInsetReference,
+    UITableViewStyle, UIView,
 };
 
 use crate::EdgeInsets;
@@ -57,6 +58,40 @@ use crate::geometry::{IndexPath, Point};
 use crate::response::{ReportsResponse, ResponseGeometry};
 use crate::scroll_flight::{FlightPlan, ScrollFlight};
 use crate::uikit::keyboard::KeyboardTracking;
+
+/// Visual presentation style for a `UIKit` [`TableView`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TableStyle {
+    /// Edge-to-edge rows (`UITableViewStyle::Plain`).
+    Plain,
+    /// Horizontally inset rows (`UITableViewStyle::Plain` with inset margins).
+    Inset,
+    /// Rounded inset cards per section (`UITableViewStyle::InsetGrouped`).
+    #[default]
+    InsetGrouped,
+    /// Full-width grouped bands (`UITableViewStyle::Grouped`).
+    Grouped,
+    /// Sidebar presentation (`UITableViewStyle::InsetGrouped` with clear
+    /// background, sidebar headers, no separators, and rounded pill selection).
+    Sidebar,
+}
+
+impl TableStyle {
+    const fn uikit_style(self) -> UITableViewStyle {
+        match self {
+            Self::Plain | Self::Inset => UITableViewStyle::Plain,
+            Self::InsetGrouped | Self::Sidebar => UITableViewStyle::InsetGrouped,
+            Self::Grouped => UITableViewStyle::Grouped,
+        }
+    }
+
+    /// Whether this style uses grouped section layout (`InsetGrouped`,
+    /// `Grouped`, or `Sidebar`).
+    #[must_use]
+    pub const fn is_grouped(self) -> bool {
+        !matches!(self, Self::Plain | Self::Inset)
+    }
+}
 
 /// Whether a header-footer view presents a section's header or footer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,6 +208,8 @@ type TableHandler = RefCell<Option<Rc<dyn Fn(&TableView)>>>;
 /// The per-instance state [`TableView`] stores.
 pub struct TableViewIvars {
     source: RefCell<Option<Rc<dyn TableSource>>>,
+    /// The presentation style the table was initialized with.
+    style: TableStyle,
     /// The scroll animation state: at most one flight per surface.
     flight: Rc<ScrollFlight>,
     /// The keyboard tracking (§7.1 scroll surfaces): the covered band's
@@ -193,9 +230,10 @@ pub struct TableViewIvars {
 impl TableViewIvars {
     /// The state for one instance; `mtm` binds the frame clock to the
     /// main thread.
-    fn new(mtm: MainThreadMarker) -> Self {
+    fn new(mtm: MainThreadMarker, style: TableStyle) -> Self {
         Self {
             source: RefCell::new(None),
+            style,
             flight: ScrollFlight::new(mtm),
             keyboard: Rc::new(KeyboardTracking::new()),
             scroll: RefCell::new(None),
@@ -650,16 +688,48 @@ impl TableView {
     /// Creates a table styled `.insetGrouped` with fixed 16-point horizontal
     /// directional margins, `fromCellEdges` separator references, and the
     /// estimated heights a plain grouped row takes.
+    #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(TableViewIvars::new(mtm));
+        Self::with_style(mtm, TableStyle::InsetGrouped)
+    }
+
+    /// Creates a table with the given presentation [`TableStyle`].
+    #[must_use]
+    pub fn with_style(mtm: MainThreadMarker, style: TableStyle) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(TableViewIvars::new(mtm, style));
         // SAFETY: `initWithFrame:style:` is the designated initializer.
         let this: Retained<Self> = unsafe {
-            msg_send![super(this), initWithFrame: CGRect::ZERO, style: UITableViewStyle::InsetGrouped]
+            msg_send![super(this), initWithFrame: CGRect::ZERO, style: style.uikit_style()]
         };
         this.setCellLayoutMarginsFollowReadableWidth(false);
         let mut margins = this.directionalLayoutMargins();
-        margins.leading = 16.0;
-        margins.trailing = 16.0;
+        match style {
+            TableStyle::Plain => {
+                margins.leading = 16.0;
+                margins.trailing = 16.0;
+                this.setBackgroundColor(Some(&UIColor::systemBackgroundColor()));
+                this.setSeparatorStyle(UITableViewCellSeparatorStyle::SingleLine);
+                this.setSectionHeaderTopPadding(0.0);
+            }
+            TableStyle::Inset => {
+                margins.leading = 20.0;
+                margins.trailing = 20.0;
+                this.setBackgroundColor(Some(&UIColor::systemBackgroundColor()));
+                this.setSeparatorStyle(UITableViewCellSeparatorStyle::SingleLine);
+                this.setSectionHeaderTopPadding(0.0);
+            }
+            TableStyle::InsetGrouped | TableStyle::Grouped => {
+                margins.leading = 16.0;
+                margins.trailing = 16.0;
+                this.setSeparatorStyle(UITableViewCellSeparatorStyle::SingleLine);
+            }
+            TableStyle::Sidebar => {
+                margins.leading = 12.0;
+                margins.trailing = 12.0;
+                this.setBackgroundColor(Some(&UIColor::clearColor()));
+                this.setSeparatorStyle(UITableViewCellSeparatorStyle::None);
+            }
+        }
         this.setDirectionalLayoutMargins(margins);
         this.setSeparatorInsetReference(UITableViewSeparatorInsetReference::FromCellEdges);
         // SAFETY: `TableCell` and `TableHeaderFooterView` are the classes the
@@ -685,6 +755,12 @@ impl TableView {
         // SAFETY: `TableView` implements `UITableViewDelegate`.
         unsafe { this.setDelegate(Some(ProtocolObject::from_ref(&*this))) };
         this
+    }
+
+    /// The presentation style this table was created with.
+    #[must_use]
+    pub fn table_style(&self) -> TableStyle {
+        self.ivars().style
     }
 
     /// Installs the data source and delegate handler.
@@ -983,8 +1059,11 @@ impl TableView {
             &NSString::from_str(CELL_REUSE_IDENTIFIER),
             index_path,
         );
-        cell.downcast::<TableCell>()
-            .expect("registered cell class is TableCell")
+        let cell = cell
+            .downcast::<TableCell>()
+            .expect("registered cell class is TableCell");
+        cell.set_table_style(self.ivars().style);
+        cell
     }
 
     fn header_footer(
@@ -1072,6 +1151,7 @@ pub struct TableCellIvars {
     on_layout: RefCell<Option<TableCellHandler>>,
     on_activate: RefCell<Option<TableCellHandler>>,
     payload: RefCell<Option<Box<dyn Any>>>,
+    table_style: std::cell::Cell<TableStyle>,
 }
 
 impl fmt::Debug for TableCellIvars {
@@ -1244,11 +1324,37 @@ impl TableCell {
         self.layoutIfNeeded();
     }
 
-    fn apply_selected(&self, selected: bool) {
-        let background = if selected {
-            UIColor::systemGray4Color()
+    /// Sets the enclosing table's presentation style and refreshes the cell's
+    /// chrome accordingly.
+    pub fn set_table_style(&self, style: TableStyle) {
+        self.cell_ivars().table_style.set(style);
+        let layer = self.layer();
+        if style == TableStyle::Sidebar {
+            layer.setCornerRadius(10.0);
+            layer.setMasksToBounds(true);
         } else {
-            UIColor::secondarySystemGroupedBackgroundColor()
+            layer.setCornerRadius(0.0);
+            layer.setMasksToBounds(false);
+        }
+        self.apply_selected(self.isSelected());
+    }
+
+    fn apply_selected(&self, selected: bool) {
+        let style = self.cell_ivars().table_style.get();
+        let background = match (style, selected) {
+            (TableStyle::Sidebar, true) => UIColor::secondarySystemFillColor(),
+            (TableStyle::Sidebar, false) => UIColor::clearColor(),
+            (
+                TableStyle::Plain
+                | TableStyle::Inset
+                | TableStyle::InsetGrouped
+                | TableStyle::Grouped,
+                true,
+            ) => UIColor::systemGray4Color(),
+            (TableStyle::Plain | TableStyle::Inset, false) => UIColor::systemBackgroundColor(),
+            (TableStyle::InsetGrouped | TableStyle::Grouped, false) => {
+                UIColor::secondarySystemGroupedBackgroundColor()
+            }
         };
         self.setBackgroundColor(Some(&background));
         // SAFETY: the extern statics hold Apple's fixed trait bitmasks.
@@ -1319,8 +1425,7 @@ impl TableHeaderFooterView {
         unsafe { msg_send![super(this), initWithReuseIdentifier: Option::<&NSString>::None] }
     }
 
-    /// Applies `text` as the header- or footer-styled content
-    /// configuration.
+    /// Applies `text` as the header- or footer-styled content configuration.
     pub fn set_text(&self, text: &NSString, kind: SectionKind) {
         let mtm = self.mtm();
         let configuration = match kind {

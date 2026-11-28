@@ -4,6 +4,7 @@
 
 use core::fmt;
 
+use nami::signal::IntoComputed;
 use nami::{Binding, Computed, Signal as _, SignalExt as _};
 use waterui_accessibility::{
     AccessibilityRole, AccessibilityState, AccessibilityStateSignal, default_role,
@@ -116,6 +117,7 @@ impl<L: View> View for ToggleLabel<L> {
 pub struct ToggleStyleConfiguration<L> {
     label: L,
     is_on: Binding<bool>,
+    mixed: Computed<bool>,
     size: ControlSize,
     interaction: Computed<InteractionState>,
 }
@@ -147,10 +149,32 @@ impl<L> ToggleStyleConfiguration<L> {
         &self.is_on
     }
 
-    /// Takes the configuration apart into `(label, is_on, size, interaction_state)`.
+    /// Borrows the reactive signal indicating whether the toggle is in a
+    /// mixed (indeterminate) state.
     #[must_use]
-    pub fn into_parts(self) -> (L, Binding<bool>, ControlSize, Computed<InteractionState>) {
-        (self.label, self.is_on, self.size, self.interaction)
+    pub const fn mixed(&self) -> &Computed<bool> {
+        &self.mixed
+    }
+
+    /// Takes the configuration apart into
+    /// `(label, is_on, mixed, size, interaction_state)`.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        L,
+        Binding<bool>,
+        Computed<bool>,
+        ControlSize,
+        Computed<InteractionState>,
+    ) {
+        (
+            self.label,
+            self.is_on,
+            self.mixed,
+            self.size,
+            self.interaction,
+        )
     }
 
     /// The control size requested for this toggle.
@@ -283,6 +307,7 @@ fn compose_custom_toggle<L: View, S: CustomToggleStyle>(
     label: L,
     accessibility_label: &Computed<StyledStr>,
     toggle: &Binding<bool>,
+    mixed: &Computed<bool>,
     size: ControlSize,
     env: &Environment,
 ) -> impl View + use<L, S> {
@@ -290,20 +315,33 @@ fn compose_custom_toggle<L: View, S: CustomToggleStyle>(
     let body = style.make_body(ToggleStyleConfiguration {
         label,
         is_on: toggle.clone(),
+        mixed: mixed.clone(),
         size,
         interaction,
     });
     let tap_toggle = toggle.clone();
+    let tap_mixed = mixed.clone();
     let gesture =
         GestureObserver::without_event(TapGesture::new(), move |action_env: Environment| {
             if !Disabled::resolve(&action_env, false).snapshot() {
-                tap_toggle.set(!tap_toggle.snapshot());
+                let next = if tap_mixed.snapshot() {
+                    true
+                } else {
+                    !tap_toggle.snapshot()
+                };
+                tap_toggle.set(next);
             }
         });
     let with_gesture = Metadata::new(body, gesture);
     let checked_state = AccessibilityStateSignal::resolve(
         env,
-        toggle.map(|on| AccessibilityState::new().checked(on)),
+        toggle.zip(mixed).map(|(on, is_mixed)| {
+            if is_mixed {
+                AccessibilityState::new().mixed()
+            } else {
+                AccessibilityState::new().checked(on)
+            }
+        }),
     );
     let with_state = Metadata::new(with_gesture, checked_state);
     let with_label =
@@ -339,6 +377,7 @@ impl SealedToggleStyle for ToggleStyle {
             style: *self,
             explicit_style: true,
             size: data.size,
+            mixed: data.mixed,
         })
     }
 }
@@ -352,6 +391,7 @@ impl<S: CustomToggleStyle> SealedToggleStyle for CustomToggle<S> {
             label,
             &a11y_label,
             &toggle.toggle,
+            &toggle.mixed,
             toggle.size,
             env,
         )
@@ -370,6 +410,7 @@ impl<S: CustomToggleStyle> SealedToggleStyle for CustomToggle<S> {
             label,
             &a11y_label,
             &toggle.toggle,
+            &toggle.mixed,
             toggle.size,
             env,
         )
@@ -389,6 +430,7 @@ impl<S: CustomToggleStyle> SealedToggleStyle for CustomToggle<S> {
             label,
             &a11y_label,
             &data.toggle,
+            &data.mixed,
             data.size,
             env,
         ))
@@ -399,6 +441,7 @@ struct ToggleStyleTargetData {
     label: ControlLabel<HookSlot>,
     toggle: Binding<bool>,
     size: ControlSize,
+    mixed: Computed<bool>,
 }
 
 /// Internal hook target representing a [`Toggle`] eligible for subtree
@@ -453,6 +496,7 @@ pub struct ToggleStylePending<S> {
     style: ToggleStyle,
     explicit_style: bool,
     size: ControlSize,
+    mixed: Computed<bool>,
 }
 
 impl<S> fmt::Debug for ToggleStylePending<S> {
@@ -475,6 +519,7 @@ impl<S: 'static> ToggleStylePending<S> {
             style: self.style,
             explicit_style: self.explicit_style,
             size: self.size,
+            mixed: self.mixed,
         }
     }
 }
@@ -502,6 +547,8 @@ pub struct ToggleConfig<S> {
     explicit_style: bool,
     /// How large the toggle is drawn.
     size: ControlSize,
+    /// Whether a checkbox toggle displays the mixed (indeterminate) state.
+    mixed: Computed<bool>,
 }
 
 impl<S> ToggleConfig<S> {
@@ -543,10 +590,24 @@ impl<S> ToggleConfig<S> {
         self.size
     }
 
+    /// Whether a checkbox toggle displays the mixed (indeterminate) state.
+    #[must_use]
+    pub const fn mixed(&self) -> &Computed<bool> {
+        &self.mixed
+    }
+
     /// Takes the value apart into its fields, in declaration order.
     #[must_use]
-    pub fn into_parts(self) -> (ControlLabel<S>, Binding<bool>, ToggleStyle, ControlSize) {
-        (self.label, self.toggle, self.style, self.size)
+    pub fn into_parts(
+        self,
+    ) -> (
+        ControlLabel<S>,
+        Binding<bool>,
+        ToggleStyle,
+        ControlSize,
+        Computed<bool>,
+    ) {
+        (self.label, self.toggle, self.style, self.size, self.mixed)
     }
 
     /// Whether the toggle chose its style explicitly.
@@ -596,6 +657,7 @@ impl<S: 'static> HookableParent<S> for ToggleConfig<S> {
             label: style_label,
             toggle: self.toggle.clone(),
             size: self.size,
+            mixed: self.mixed.clone(),
         }));
         let pending = ToggleStylePending {
             label: self.label,
@@ -603,6 +665,7 @@ impl<S: 'static> HookableParent<S> for ToggleConfig<S> {
             style: self.style,
             explicit_style: self.explicit_style,
             size: self.size,
+            mixed: self.mixed,
         };
         (target, pending)
     }
@@ -628,6 +691,7 @@ impl<S: 'static> MapSlots<S> for ToggleConfig<S> {
             style: self.style,
             explicit_style: self.explicit_style,
             size: self.size,
+            mixed: self.mixed,
         }
     }
 
@@ -696,6 +760,7 @@ pub struct Toggle<L, Style = ToggleStyle> {
     style: Style,
     explicit_style: bool,
     size: ControlSize,
+    mixed: Computed<bool>,
 }
 
 impl<L> Toggle<L, ToggleStyle> {
@@ -711,6 +776,7 @@ impl<L> Toggle<L, ToggleStyle> {
             style: ToggleStyle::default(),
             explicit_style: false,
             size: ControlSize::Small,
+            mixed: Computed::constant(false),
         }
     }
 
@@ -750,6 +816,7 @@ impl<L, Style> Toggle<L, Style> {
             style: style.into_toggle_style(),
             explicit_style: true,
             size: self.size,
+            mixed: self.mixed,
         }
     }
 
@@ -758,6 +825,18 @@ impl<L, Style> Toggle<L, Style> {
     /// none is chosen; a theme decides what each size changes.
     pub const fn size(mut self, size: ControlSize) -> Self {
         self.size = size;
+        self
+    }
+
+    /// Marks the toggle as showing a mixed (indeterminate) state while `mixed`
+    /// is `true`, such as a "select all" checkbox when only some items are
+    /// selected.
+    ///
+    /// While mixed, a checkbox draws its indeterminate dash and announces a
+    /// mixed state to assistive technology; activating it sets the binding to
+    /// `true`.
+    pub fn mixed(mut self, mixed: impl IntoComputed<bool>) -> Self {
+        self.mixed = mixed.into_computed();
         self
     }
 }
@@ -770,6 +849,7 @@ impl<L: LabelKind> Toggle<L, ToggleStyle> {
             style: self.style.resolve(env),
             explicit_style: self.explicit_style,
             size: self.size,
+            mixed: self.mixed,
         }
     }
 }
@@ -784,6 +864,7 @@ impl<L: LabelKind> Toggle<L> {
             style: self.style,
             explicit_style: self.explicit_style,
             size: self.size,
+            mixed: self.mixed,
         }
     }
 }
@@ -797,6 +878,7 @@ impl<S: View> From<ToggleConfig<S>> for Toggle<ControlLabel<S>> {
             style: value.style,
             explicit_style: value.explicit_style,
             size: value.size,
+            mixed: value.mixed,
         }
     }
 }
@@ -949,6 +1031,7 @@ mod custom_style_tests {
 
     struct RecordedToggleConfig {
         is_on: Binding<bool>,
+        mixed: nami::Computed<bool>,
         size: ControlSize,
         disabled: nami::Computed<bool>,
         interaction: nami::Computed<InteractionState>,
@@ -965,12 +1048,101 @@ mod custom_style_tests {
         ) -> impl View + use<L> {
             *self.recorded.borrow_mut() = Some(RecordedToggleConfig {
                 is_on: configuration.is_on().clone(),
+                mixed: configuration.mixed().clone(),
                 size: configuration.size(),
                 disabled: configuration.is_disabled(),
                 interaction: configuration.interaction_state().clone(),
             });
             configuration.into_label()
         }
+    }
+
+    #[test]
+    fn custom_toggle_style_exposes_mixed_and_tap_resolves_to_on() {
+        let on = Binding::new(false);
+        let mixed = Binding::new(true);
+        let recorded = Rc::new(RefCell::new(None));
+        let env = Environment::new();
+
+        let view =
+            Toggle::new("Select all", &on)
+                .mixed(mixed.clone())
+                .style(RecordingToggleStyle {
+                    recorded: Rc::clone(&recorded),
+                });
+
+        let body = View::body(view, &env);
+        let recorded_cfg = recorded.borrow_mut().take().expect("toggle style must run");
+        assert!(recorded_cfg.mixed.snapshot());
+
+        let env_view = peel_metadata::<Environment>(AnyView::new(body), &env)
+            .expect("custom-styled toggle installs InteractionReport");
+        let role_view = peel_metadata::<AccessibilityRole>(env_view.content, &env_view.value)
+            .expect("custom-styled toggle attaches AccessibilityRole");
+        let a11y_label = peel_metadata::<AccessibilityLabel>(role_view.content, &env)
+            .expect("custom-styled toggle keeps label in accessibility tree");
+        let state_signal = peel_metadata::<AccessibilityStateSignal>(a11y_label.content, &env)
+            .expect("custom-styled toggle publishes AccessibilityStateSignal");
+
+        assert_eq!(
+            state_signal.value.state().snapshot().checked_state(),
+            Some(AccessibilityChecked::Mixed)
+        );
+
+        let observer = peel_metadata::<GestureObserver>(state_signal.content, &env)
+            .expect("custom-styled toggle attaches TapGesture observer");
+        let (_, mut action) = observer.value.into_parts();
+
+        // Activating while mixed sets the binding to `true` even when it was already `false`.
+        action(&env).expect("toggle tap succeeds");
+        assert!(on.snapshot());
+
+        // Clearing mixed updates accessibility state to Checked(true), and next tap flips to false.
+        mixed.set(false);
+        assert_eq!(
+            state_signal.value.state().snapshot().checked_state(),
+            Some(AccessibilityChecked::True)
+        );
+        action(&env).expect("second toggle tap succeeds");
+        assert!(!on.snapshot());
+        assert_eq!(
+            state_signal.value.state().snapshot().checked_state(),
+            Some(AccessibilityChecked::False)
+        );
+    }
+
+    #[test]
+    fn toggle_style_hook_preserves_mixed_signal() {
+        use super::{ToggleStyle, ToggleStyleHook};
+        use waterui_core::backend::HookableParent as _;
+        use waterui_core::view::hook::Hook as _;
+
+        let on = Binding::new(false);
+        let mixed = Binding::new(true);
+        let env = Environment::new();
+        let config = Toggle::new("Select all", &on)
+            .mixed(mixed.clone())
+            .into_config::<AnyView>(&env);
+        assert!(config.mixed().snapshot());
+
+        let (target, pending) = config.into_style_pending(waterui_core::backend::HookSlot::new);
+        let restored = pending.restore();
+        assert!(restored.mixed().snapshot());
+
+        let hook = ToggleStyleHook::new(ToggleStyle::Checkbox);
+        let styled = hook
+            .apply(target, &env)
+            .expect("builtin toggle style hook accepts target");
+        let body = View::body(styled, &env);
+        let native = AnyView::new(body)
+            .downcast::<waterui_core::Native<super::ToggleConfig<AnyView>>>()
+            .expect("hooked checkbox yields Native<ToggleConfig>");
+        let cfg = native.into_inner();
+        assert_eq!(cfg.style(), ToggleStyle::Checkbox);
+        assert!(cfg.mixed().snapshot());
+
+        mixed.set(false);
+        assert!(!cfg.mixed().snapshot());
     }
 
     #[test]

@@ -14,9 +14,10 @@ use crate::renderer::{
     accessibility_container_child_environment,
 };
 use crate::renderer::{
-    HydroState, HydrolysisRenderer, RenderContext, ScopeOperands, VisibleSubviewCache,
-    WidgetRenderContext, list_intrinsic_for_first_row, list_row_height_for_content,
-    list_row_horizontal_insets, list_spec, materialize_list_item,
+    HydroState, HydrolysisRenderer, ListSeparatorMode, ListStyleGeometry, ListSurfaceKind,
+    RenderContext, ScopeOperands, VisibleSubviewCache, WidgetRenderContext,
+    list_intrinsic_for_first_row, list_row_height_for_content, list_row_horizontal_insets,
+    list_spec, list_style_geometry, materialize_list_item,
 };
 use crate::scroll::{ScrollHandle, ScrollRun, ScrollRunOutcome};
 use crate::theme::{Chrome, ListGestures, ListLook, ListMetrics, ListSpec, WidgetTheme};
@@ -420,9 +421,20 @@ struct RowControlChrome {
 struct RowSectionChrome {
     header: Option<Text>,
     footer: Option<Text>,
+    is_section_first: bool,
+    is_section_last: bool,
+    starts_later_section: bool,
 }
 
 impl RowSectionChrome {
+    const fn top_gap(&self, style_geom: ListStyleGeometry) -> f64 {
+        if self.starts_later_section {
+            style_geom.inter_section_gap
+        } else {
+            0.0
+        }
+    }
+
     const fn header_height(&self, metrics: &crate::theme::ListMetrics) -> f64 {
         if self.header.is_some() {
             metrics.section_header_height as f64
@@ -439,8 +451,18 @@ impl RowSectionChrome {
         }
     }
 
-    fn total_height(&self, metrics: &crate::theme::ListMetrics) -> f64 {
-        self.header_height(metrics) + self.footer_height(metrics)
+    fn total_height(
+        &self,
+        metrics: &crate::theme::ListMetrics,
+        style_geom: ListStyleGeometry,
+    ) -> f64 {
+        self.top_gap(style_geom) + self.header_height(metrics) + self.footer_height(metrics)
+    }
+
+    const fn card_radii(&self, radius: f64) -> kurbo::RoundedRectRadii {
+        let top = if self.is_section_first { radius } else { 0.0 };
+        let bottom = if self.is_section_last { radius } else { 0.0 };
+        kurbo::RoundedRectRadii::new(top, top, bottom, bottom)
     }
 }
 
@@ -475,7 +497,8 @@ fn adopt_content_naming<E: crate::text::TextEngine>(
 ) {
     use crate::renderer::accessibility::ScopedAccessibilityIdentifier;
     use waterui_accessibility::{
-        AccessibilityChildren, AccessibilityGeometry, AccessibilityLabel, AccessibilityRole,
+        AccessibilityAdjustable, AccessibilityChildren, AccessibilityCustomActions,
+        AccessibilityGeometry, AccessibilityHint, AccessibilityLabel, AccessibilityRole,
         AccessibilityValue,
     };
 
@@ -493,6 +516,9 @@ fn adopt_content_naming<E: crate::text::TextEngine>(
     adopt!(
         AccessibilityLabel,
         AccessibilityValue,
+        AccessibilityHint,
+        AccessibilityCustomActions,
+        AccessibilityAdjustable,
         AccessibilityRole,
         ScopedAccessibilityIdentifier,
         AccessibilityHidden,
@@ -594,7 +620,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
     /// The list's look for its spec in `env`: the one already held when the
     /// spec is unchanged, otherwise requested again.
     fn look(&self, theme: &Rc<dyn crate::theme::WidgetTheme>, env: &Environment) -> ListLook {
-        let spec = list_spec(env);
+        let spec = list_spec(env, self.config.style());
         let mut held = self.look.borrow_mut();
         match &*held {
             Some((held_spec, look)) if *held_spec == spec => look.clone(),
@@ -604,6 +630,19 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
                 look
             }
         }
+    }
+
+    /// The resolved style geometry for this list.
+    const fn style_geometry(&self) -> ListStyleGeometry {
+        list_style_geometry(self.config.style())
+    }
+
+    /// Effective minimum row height combining explicit `ListMinRowHeight` with
+    /// the list style's default floor.
+    fn effective_min_row_height(&self) -> Option<f32> {
+        self.config
+            .min_row_height()
+            .or_else(|| self.style_geometry().default_min_row_height)
     }
 
     /// How a row's drags are recognized and settle, as the held look says.
@@ -687,26 +726,40 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
     }
 
     /// The chrome row `index` owns: its section's header when it opens the
-    /// section, its footer when it closes it.
+    /// section, its footer when it closes it, and section boundary flags used
+    /// by grouped / inset-grouped / sidebar styles.
     fn section_chrome(&self, index: usize) -> RowSectionChrome {
         let sections = self.sections.borrow();
-        let span = sections
+        let position = sections
             .partition_point(|span| span.rows.start <= index)
-            .checked_sub(1)
-            .and_then(|position| sections.get(position))
-            .filter(|span| span.rows.contains(&index));
-        let Some((span, section)) =
-            span.and_then(|span| span.section.as_ref().map(|section| (span, section)))
+            .checked_sub(1);
+        let Some(position) = position else {
+            return RowSectionChrome::default();
+        };
+        let Some(span) = sections
+            .get(position)
+            .filter(|span| span.rows.contains(&index))
         else {
             return RowSectionChrome::default();
         };
+        let is_section_first = index == span.rows.start;
+        let is_section_last = index + 1 == span.rows.end;
+        let starts_later_section = is_section_first && position > 0;
+        let (header, footer) = span.section.as_ref().map_or_else(
+            || (None, None),
+            |section| {
+                (
+                    is_section_first.then(|| section.label().cloned()).flatten(),
+                    is_section_last.then(|| section.footer().cloned()).flatten(),
+                )
+            },
+        );
         RowSectionChrome {
-            header: (index == span.rows.start)
-                .then(|| section.label().cloned())
-                .flatten(),
-            footer: (index + 1 == span.rows.end)
-                .then(|| section.footer().cloned())
-                .flatten(),
+            header,
+            footer,
+            is_section_first,
+            is_section_last,
+            starts_later_section,
         }
     }
 
@@ -826,18 +879,23 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         row_width: Option<f64>,
         insets: Option<&EdgeInsets>,
         metrics: ListMetrics,
+        style_geom: ListStyleGeometry,
         row_env: &Environment,
     ) -> ProposalSize {
         row_width.map_or(ProposalSize::UNSPECIFIED, |row_width| {
             let (left, right) = list_row_horizontal_insets(insets, metrics, row_env);
-            ProposalSize::new(Some(f64_as_f32((row_width - left - right).max(0.0))), None)
+            let outer = style_geom.outer_horizontal_inset * 2.0;
+            ProposalSize::new(
+                Some(f64_as_f32((row_width - outer - left - right).max(0.0))),
+                None,
+            )
         })
     }
 
     /// Measures realized row `row_id`'s content at the width the row lays it
-    /// out at: `row_width` less the row's horizontal insets, the height open.
-    /// A row's height comes from this answer, so content that wraps is held
-    /// at the lines it wraps to there.
+    /// out at: `row_width` less the list style's outer inset and the row's
+    /// horizontal insets, the height open. A row's height comes from this
+    /// answer, so content that wraps is held at the lines it wraps to there.
     fn measure_row_content(
         &self,
         row_id: ListItemId,
@@ -854,8 +912,13 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             );
             return LayoutSize::zero();
         };
-        let proposal =
-            Self::row_content_proposal(row_width, row.insets.as_ref(), metrics, &row.env);
+        let proposal = Self::row_content_proposal(
+            row_width,
+            row.insets.as_ref(),
+            metrics,
+            self.style_geometry(),
+            &row.env,
+        );
         subview.measure_built_with_proposal(state, &row.subtree_env, theme, proposal)
     }
 
@@ -870,6 +933,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         renderer: &mut HydrolysisRenderer<E>,
         metrics: ListMetrics,
     ) -> LayoutSize {
+        let style_geom = self.style_geometry();
         let (proposal, subtree_env) = {
             let rows = self.realized_rows.borrow();
             let Some(row) = rows.get(&row_id) else {
@@ -878,8 +942,13 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
                 );
                 return LayoutSize::zero();
             };
-            let proposal =
-                Self::row_content_proposal(row_width, row.insets.as_ref(), metrics, &row.env);
+            let proposal = Self::row_content_proposal(
+                row_width,
+                row.insets.as_ref(),
+                metrics,
+                style_geom,
+                &row.env,
+            );
             (proposal, row.subtree_env.clone())
         };
         let mut cache = self.item_cache.borrow_mut();
@@ -1496,13 +1565,13 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
     let rows_snapshot = state.rows_snapshot.borrow().clone();
     let row_count = rows_snapshot.len();
     let list_metrics = theme.map(|theme| state.look(theme, env).metrics());
+    let style_geom = state.style_geometry();
+    let effective_min_height = state.effective_min_row_height();
     if let Some(list_metrics) = list_metrics {
         // `min_row_height` is the floor every row is estimated and measured
-        // against; unset, the theme's one-line height keeps the same values.
-        let row_floor = f64::from(
-            list.min_row_height()
-                .unwrap_or(list_metrics.one_line_row_height),
-        );
+        // against; unset, the style's or theme's one-line height applies.
+        let row_floor = f64::from(effective_min_height.unwrap_or(list_metrics.one_line_row_height))
+            + style_geom.row_gap;
         // A 0 floor still needs a positive seed estimate — measured extents
         // replace it row by row anyway.
         let row_estimate = row_floor.max(1.0);
@@ -1649,9 +1718,10 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                     let extent = list_row_height_for_content(
                         f64::from(content_size.height),
                         row_insets.as_ref(),
-                        list.min_row_height(),
+                        effective_min_height,
                         list_metrics,
-                    ) + chrome.total_height(&list_metrics);
+                    ) + style_geom.row_gap
+                        + chrome.total_height(&list_metrics, style_geom);
                     state
                         .extent_index
                         .borrow_mut()
@@ -1673,25 +1743,29 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
             {
                 continue;
             }
+            let top_gap = chrome.top_gap(style_geom);
             let header_height = list_metrics.map_or(0.0, |m| chrome.header_height(&m));
             let footer_height = list_metrics.map_or(0.0, |m| chrome.footer_height(&m));
             // The chrome a row owns is not part of the row: a section title is
             // its own node, and the row's bounds are the band left between the
             // header and the footer — the same split the draw pass makes.
+            let outer_inset = style_geom.outer_horizontal_inset;
             let row_rect = kurbo::Rect::new(
-                slot_rect.x0,
-                slot_rect.y0 + header_height,
-                slot_rect.x1,
-                slot_rect.y1 - footer_height,
+                slot_rect.x0 + outer_inset,
+                slot_rect.y0 + top_gap + header_height,
+                (slot_rect.x1 - outer_inset).max(slot_rect.x0 + outer_inset),
+                (slot_rect.y1 - footer_height - style_geom.row_gap)
+                    .max(slot_rect.y0 + top_gap + header_height),
             );
             let key_base = row_a11y_key_base(row_id);
             if let Some(header) = chrome.header.clone() {
-                let inset = list_metrics.map_or(0.0, |m| f64::from(m.horizontal_inset));
+                let inset =
+                    list_metrics.map_or(0.0, |m| f64::from(m.horizontal_inset)) + outer_inset;
                 let header_rect = kurbo::Rect::new(
                     slot_rect.x0 + inset,
-                    slot_rect.y0,
-                    slot_rect.x1 - inset,
-                    slot_rect.y0 + header_height,
+                    slot_rect.y0 + top_gap,
+                    (slot_rect.x1 - inset).max(slot_rect.x0 + inset),
+                    slot_rect.y0 + top_gap + header_height,
                 );
                 if let Some(node_id) = register_section_chrome_node(
                     renderer,
@@ -2144,15 +2218,12 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
     let row_count = contents.len();
     let look = state.borrow().look(&ctx.theme(), env);
     let list_metrics = look.metrics();
+    let style_geom = state.borrow().style_geometry();
+    let min_row_height = state.borrow().effective_min_row_height();
     // `min_row_height` is the floor every row is estimated and measured
-    // against; unset, the theme's one-line height keeps the same values.
-    let row_floor = f64::from(
-        state
-            .borrow()
-            .config
-            .min_row_height()
-            .unwrap_or(list_metrics.one_line_row_height),
-    );
+    // against; unset, the style's or theme's one-line height applies.
+    let row_floor =
+        f64::from(min_row_height.unwrap_or(list_metrics.one_line_row_height)) + style_geom.row_gap;
     // A 0 floor still needs a positive seed estimate — measured extents
     // replace it row by row anyway.
     let row_estimate = row_floor.max(1.0);
@@ -2291,7 +2362,6 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
     // `set_measured` writes the identical extent back for unchanged rows and
     // rows outside the window are never touched (water-rs/hydrolysis#199).
     let mut extents_changed = false;
-    let min_row_height = state.borrow().config.min_row_height();
     // Removal ghosts in the window, with the content-space top of each slot.
     let mut ghosts = Vec::new();
     let mut position = window.start;
@@ -2338,7 +2408,8 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
                 row_insets.as_ref(),
                 min_row_height,
                 list_metrics,
-            ) + chrome.total_height(&list_metrics);
+            ) + style_geom.row_gap
+                + chrome.total_height(&list_metrics, style_geom);
             {
                 let state_ref = state.borrow();
                 let mut extent_index = state_ref.extent_index.borrow_mut();
@@ -2402,6 +2473,18 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         .borrow_mut()
         .retain(|id, _| visible_ids.contains(id));
 
+    if matches!(
+        style_geom.surface,
+        ListSurfaceKind::Grouped | ListSurfaceKind::InsetGrouped
+    ) {
+        let backdrop = ctx
+            .renderer_mut()
+            .read_signal(&color::Background.resolve(env).computed());
+        ctx.draw_context(|draw| {
+            draw.fill(surface_viewport, backdrop);
+        });
+    }
+
     // Ghosts paint first, beneath the live rows.
     for (ghost, resting_y) in ghosts {
         draw_list_ghost(ctx, state, env, ghost, resting_y);
@@ -2451,6 +2534,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         if slot_rect.y1 <= span.start + viewport.y0 || slot_rect.y0 >= span.end + viewport.y0 {
             continue;
         }
+        let top_gap = chrome.top_gap(style_geom);
         let header_height = chrome.header_height(&list_metrics);
         let footer_height = chrome.footer_height(&list_metrics);
         // The slot covers the section chrome this row owns; the row itself is
@@ -2458,9 +2542,16 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         // swipes — a section title is not part of the row that carries it.
         let row_slot = kurbo::Rect::new(
             slot_rect.x0,
-            slot_rect.y0 + header_height,
+            slot_rect.y0 + top_gap + header_height,
             slot_rect.x1,
             slot_rect.y1 - footer_height,
+        );
+        let outer_inset = style_geom.outer_horizontal_inset;
+        let row_rect = kurbo::Rect::new(
+            row_slot.x0 + outer_inset,
+            row_slot.y0,
+            (row_slot.x1 - outer_inset).max(row_slot.x0 + outer_inset),
+            (row_slot.y1 - style_geom.row_gap).max(row_slot.y0),
         );
         let (row_can_delete, row_movable_span) = {
             let state_ref = state.borrow();
@@ -2480,7 +2571,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             row_id,
             RowBinding {
                 index,
-                width: slot_rect.width(),
+                width: row_rect.width(),
                 height: row_height,
                 movable_start,
                 movable_end,
@@ -2492,25 +2583,25 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         if motion.swiping()
             && let Some(part) = look.dismiss_part()
         {
-            let source = motion.dismiss_source(part, row_slot);
+            let source = motion.dismiss_source(part, row_rect);
             let render_ctx = ctx.render_context();
             ctx.renderer_mut().push_live(render_ctx, &source);
         }
-        let horizontal_inset = f64::from(list_metrics.horizontal_inset);
+        let horizontal_inset = f64::from(list_metrics.horizontal_inset) + outer_inset;
         if let Some(header) = chrome.header.clone() {
             let header_rect = kurbo::Rect::new(
                 slot_rect.x0 + horizontal_inset,
-                slot_rect.y0,
-                slot_rect.x1 - horizontal_inset,
-                slot_rect.y0 + header_height,
+                slot_rect.y0 + top_gap,
+                (slot_rect.x1 - horizontal_inset).max(slot_rect.x0 + horizontal_inset),
+                slot_rect.y0 + top_gap + header_height,
             );
             draw_section_label(ctx, header, header_rect, true, &row_env);
         }
-        if let Some(footer) = chrome.footer {
+        if let Some(footer) = chrome.footer.clone() {
             let footer_rect = kurbo::Rect::new(
                 slot_rect.x0 + horizontal_inset,
                 slot_rect.y1 - footer_height,
-                slot_rect.x1 - horizontal_inset,
+                (slot_rect.x1 - horizontal_inset).max(slot_rect.x0 + horizontal_inset),
                 slot_rect.y1,
             );
             draw_section_label(ctx, footer, footer_rect, false, &row_env);
@@ -2520,7 +2611,6 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         // section chrome above and the dismiss background stay in the slot.
         // The layer's clip reaches as far as the list's own height beyond the
         // slot, so a lifted row's shadow is not cut at the row's edge.
-        let row_rect = row_slot;
         ctx.open_live_scope(
             crate::renderer::mount::ScopeKey {
                 role: "list-row",
@@ -2545,18 +2635,84 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
                 ctx.renderer_mut()
                     .read_signal(&selection.is_selected(row_id))
             });
-        // The fill is the theme's own `SelectionContainer` token rather than a
-        // `WidgetTheme` entry: the row's content already flips to
-        // `SelectionForeground` against it (see `selection_themed` in the list
-        // component), so the pair has to come from the same place.
+        // Selection fill: sidebar lists paint `UnemphasizedSelection` so row
+        // text keeps its own foreground colours (`water-rs/waterui#1495`);
+        // other styles paint `SelectionContainer` paired with
+        // `SelectionForeground` from `selection_themed`.
         let selection_fill = selected.then(|| {
+            if style_geom.surface == ListSurfaceKind::Sidebar {
+                ctx.renderer_mut()
+                    .read_signal(&color::UnemphasizedSelection.resolve(&row_env).computed())
+            } else {
+                ctx.renderer_mut()
+                    .read_signal(&color::SelectionContainer.resolve(&row_env).computed())
+            }
+        });
+        let card_surface = (style_geom.surface == ListSurfaceKind::InsetGrouped).then(|| {
             ctx.renderer_mut()
-                .read_signal(&color::SelectionContainer.resolve(&row_env).computed())
+                .read_signal(&color::Surface.resolve(&row_env).computed())
+        });
+        let grouped_border = (style_geom.surface == ListSurfaceKind::Grouped).then(|| {
+            ctx.renderer_mut()
+                .read_signal(&color::Border.resolve(&row_env).computed())
         });
         ctx.draw_context(|draw| {
-            look.record_row(&mut *draw, row_rect, index);
-            if let Some(fill) = selection_fill {
-                draw.fill(row_rect, fill);
+            match style_geom.surface {
+                ListSurfaceKind::InsetGrouped => {
+                    let radii = chrome.card_radii(style_geom.corner_radius);
+                    let shape = kurbo::RoundedRect::from_rect(row_rect, radii);
+                    if let Some(surface) = card_surface {
+                        draw.fill(shape, surface);
+                    }
+                    if let Some(fill) = selection_fill {
+                        draw.fill(shape, fill);
+                    }
+                }
+                ListSurfaceKind::Sidebar => {
+                    if let Some(fill) = selection_fill {
+                        let pill =
+                            kurbo::RoundedRect::from_rect(row_rect, style_geom.corner_radius);
+                        draw.fill(pill, fill);
+                    }
+                }
+                ListSurfaceKind::Plain | ListSurfaceKind::Grouped => {
+                    look.record_row(&mut *draw, row_rect, index);
+                    if let Some(fill) = selection_fill {
+                        if style_geom.corner_radius > 0.0 {
+                            let rounded =
+                                kurbo::RoundedRect::from_rect(row_rect, style_geom.corner_radius);
+                            draw.fill(rounded, fill);
+                        } else {
+                            draw.fill(row_rect, fill);
+                        }
+                    }
+                    if style_geom.surface == ListSurfaceKind::Grouped
+                        && let Some(border) = grouped_border
+                    {
+                        if chrome.is_section_first {
+                            draw.fill(
+                                kurbo::Rect::new(
+                                    row_rect.x0,
+                                    row_rect.y0,
+                                    row_rect.x1,
+                                    row_rect.y0 + 1.0,
+                                ),
+                                border,
+                            );
+                        }
+                        if chrome.is_section_last {
+                            draw.fill(
+                                kurbo::Rect::new(
+                                    row_rect.x0,
+                                    row_rect.y1 - 1.0,
+                                    row_rect.x1,
+                                    row_rect.y1,
+                                ),
+                                border,
+                            );
+                        }
+                    }
+                }
             }
             if motion.lifted() {
                 look.record_lifted_row(&mut *draw, row_rect);
@@ -2874,15 +3030,22 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             }
         }
 
-        let separator = kurbo::Rect::new(
-            row_rect.x0 + f64::from(list_metrics.divider_leading_inset),
-            row_rect.y1 - 1.0,
-            row_rect.x1 - f64::from(list_metrics.divider_trailing_inset),
-            row_rect.y1,
-        );
-        ctx.draw_context(|draw| {
-            look.record_separator(&mut *draw, separator);
-        });
+        let draw_separator = match style_geom.separators {
+            ListSeparatorMode::All => true,
+            ListSeparatorMode::WithinSection => !chrome.is_section_last,
+            ListSeparatorMode::None => false,
+        };
+        if draw_separator {
+            let separator = kurbo::Rect::new(
+                row_rect.x0 + f64::from(list_metrics.divider_leading_inset),
+                row_rect.y1 - 1.0,
+                row_rect.x1 - f64::from(list_metrics.divider_trailing_inset),
+                row_rect.y1,
+            );
+            ctx.draw_context(|draw| {
+                look.record_separator(&mut *draw, separator);
+            });
+        }
         ctx.close_scope();
     }
     // Evict content sub-views for rows no longer in the visible window, with

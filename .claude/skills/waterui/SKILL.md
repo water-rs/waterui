@@ -144,7 +144,7 @@ struct Row { #[id] id: u64, title: Str }
 let rows = StateList::from(seed_rows);                 // bulk-seed; .push/.insert/.remove (&mut self) diff by id
 
 scroll(VStack::for_each(rows.clone(), |row| text(row.title))) // virtualized inside scroll
-List::for_each(rows.clone(), |row| text(row.title))           // platform list: lazy, editable
+List::for_each(rows.clone(), |row| text(row.title))           // platform list: lazy, editable; .style(ListStyle::...) or .list_style(...)
 ```
 
 Note the shape: **`ForEach` is a *collection of views*, not a view.** A container consumes
@@ -196,7 +196,7 @@ pub fn app(env: Environment) -> App<impl Windows> {
 ```
 
 `use waterui::prelude::*;` brings in views, layout, colors, text (`IntoText`), controls,
-navigation, menus, `Binding`, `Computed`, `binding` (the general constructor), `StateList`,
+navigation, menus, `App`, `AppPhase`, `Window`, `Binding`, `Computed`, `binding` (the general constructor), `StateList`,
 `SignalCollection`, `State`, `Str`, `AnyView`, `Identifiable` (derive and trait),
 `IntoComputed`, `IntoSignal`, `IntoSignalF32`, `SignalExt`, `Animation`, `AnimationExt`,
 built-in shapes (`Circle`, `Capsule`, `Rectangle`, `RoundedRectangle`, `ShapeExt`), keyboard
@@ -425,7 +425,8 @@ or capturing into closures; for reactive branching on a `Binding` or `Computed`,
 .border(color, width) / .shadow(shadow) / .clip(shape)
 .opacity(signal) / .visible(signal) / .disabled(signal)
 .blur(signal) / .brightness(..) / .contrast(..) / .saturation(..) / .grayscale(..) / .hue_rotation(..)
-.a11y_label(..) / .a11y_value(..) / .a11y_id("settings.wifi") / .a11y_role(..)
+.a11y_label(..) / .a11y_value(..) / .a11y_hint(..) / .a11y_id("settings.wifi") / .a11y_role(..)
+.a11y_action("Archive", handler) / .a11y_adjustable(increment, decrement)
 .on_appear(..) / .on_change(&signal, ..) / .on_tap(..) / .gesture(g, handler) / .context_menu(items)
 .cursor(style) / .ignore_safe_area(EdgeSet::ALL) / .floating() / .secure()   // .secure(): no screenshots
 .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM))   // regions × edges
@@ -494,7 +495,9 @@ optional decoration — it drives screen readers *and* it is what `waterui-testi
 queries. To hide a label visually while keeping it in the tree, use the display-mode API,
 never drop the label: `.hide_label()` on any labeled control, `.label_style(
 LabelDisplayMode::IconOnly)` for icon buttons, `.install(LabelDisplayMode::IconOnly)` for
-a whole toolbar. Beyond label, value, role and id, `.a11y_geometry(AccessibilityGeometry)`
+a whole toolbar. Beyond label, value, hint, role and id, `.a11y_action(name, handler)`
+(chainable in declaration order for swipe/drag/long-press actions), `.a11y_adjustable(
+increment, decrement)` (custom VoiceOver/TalkBack adjustable controls), `.a11y_geometry(AccessibilityGeometry)`
 (the rectangle the element reports: the view's own response rectangle by default,
 `Allocation` for the whole assigned frame, or `Region(rect)`), `.a11y_children(
 AccessibilityChildren)` (`Automatic`, `ExcludeDescendants`, or `Combine` to merge descendants'

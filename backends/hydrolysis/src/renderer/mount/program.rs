@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::num::NonZeroU64;
 use std::rc::Rc;
 
+use cherenkov_record::BlendMode;
 use cherenkov_record::BlendSpace;
 use cherenkov_record::ContentShader;
 use cherenkov_record::Live;
@@ -80,6 +81,9 @@ pub struct ScopeProps {
     pub transform: kurbo::Affine,
     pub clip: Option<ShapeData>,
     pub alpha: f32,
+    /// The Porter-Duff / separable blend mode this scope composites onto its
+    /// owning layer with.
+    pub blend: BlendMode,
     /// The space the scope's members composite in and its layer composites
     /// onto the owning layer in; `None` composites them in the owning
     /// layer's space.

@@ -6,7 +6,11 @@
 //! registered its content view through [`register_sink`] and re-renders its
 //! capture — `WuiRenderedContentInvalidationSink`.
 
-#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+#[cfg(any(
+    target_os = "macos",
+    feature = "applied_filter",
+    feature = "view_effect"
+))]
 use alloc::rc::Rc;
 use alloc::rc::Weak;
 use cocoa_ui::PlatformView;
@@ -40,7 +44,11 @@ fn key(view: &PlatformView) -> usize {
 ///
 /// The entry is weak: it clears itself when the owning leaf drops.
 #[allow(clippy::needless_pass_by_value)]
-#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+#[cfg(any(
+    target_os = "macos",
+    feature = "applied_filter",
+    feature = "view_effect"
+))]
 pub fn register_sink(view: &PlatformView, callback: Rc<dyn Fn()>) {
     SINKS
         .lock()
@@ -51,7 +59,11 @@ pub fn register_sink(view: &PlatformView, callback: Rc<dyn Fn()>) {
 
 /// Removes the sink for `view`, if any — a leaf tearing down before its
 /// callback would die on its own.
-#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
+#[cfg(any(
+    target_os = "macos",
+    feature = "applied_filter",
+    feature = "view_effect"
+))]
 pub fn unregister_sink(view: &PlatformView) {
     if let Some(sinks) = SINKS.lock().expect(REGISTRY_UNPOISONED).as_mut() {
         sinks.remove(&key(view));

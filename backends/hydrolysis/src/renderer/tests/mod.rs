@@ -103,6 +103,8 @@ mod navigation_text_input;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod nested_menu_dispatch;
 mod opacity_binding;
+#[cfg(hydrolysis_cherenkov)]
+mod paint_mask;
 mod painted;
 #[cfg(hydrolysis_gpu_painter)]
 mod perf_full_rebuild;
@@ -2121,6 +2123,174 @@ fn mixed_busy_state_is_preserved_and_node_identity_survives_refresh() {
     );
     assert_eq!(second_node.toggled(), Some(AccessibilityToggled::Mixed));
     assert!(second_node.is_busy());
+}
+
+#[cfg(feature = "accessibility")]
+#[test]
+fn a11y_hint_publishes_reactive_description() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let hint = Binding::new(Str::from_static("Opens the thread"));
+    let view = text("Inbox item")
+        .a11y_role(AccessibilityRole::Button)
+        .a11y_hint(hint.clone());
+    let bounds = Rect::new(0.0, 0.0, 200.0, 48.0);
+
+    capture_root_window(&mut renderer, view, &env, bounds);
+    let first = renderer
+        .take_accessibility_tree_update()
+        .expect("initial accessibility update must exist");
+    let (_, node) = first
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Inbox item"))
+        .expect("node must exist");
+    assert_eq!(node.description(), Some("Opens the thread"));
+
+    hint.set(Str::from_static("Opens the archived thread"));
+    assert!(renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY));
+    let second = renderer
+        .take_accessibility_tree_update()
+        .expect("refreshed accessibility update must exist");
+    let (_, node) = second
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Inbox item"))
+        .expect("refreshed node must exist");
+    assert_eq!(node.description(), Some("Opens the archived thread"));
+}
+
+#[cfg(feature = "accessibility")]
+#[test]
+fn a11y_action_chains_in_declaration_order_and_dispatches_custom_actions() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let log = Rc::new(RefCell::new(Vec::<&'static str>::new()));
+    let archive_log = Rc::clone(&log);
+    let pin_log = Rc::clone(&log);
+    let pin_label = Binding::new(Str::from_static("Pin"));
+
+    let card = vstack((text("Thread title"), text("Preview snippet")))
+        .a11y_label("Thread card")
+        .a11y_action("Archive", move || archive_log.borrow_mut().push("archive"))
+        .a11y_action(pin_label.clone(), move || pin_log.borrow_mut().push("pin"));
+    let bounds = Rect::new(0.0, 0.0, 240.0, 80.0);
+
+    capture_root_window(&mut renderer, card, &env, bounds);
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("card render must publish an accessibility tree");
+    let (card_id, card_node) = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Thread card"))
+        .expect("card container node must exist");
+    assert!(card_node.supports_action(AccessibilityAction::CustomAction));
+    let descriptions: Vec<&str> = card_node
+        .custom_actions()
+        .iter()
+        .map(|action| action.description.as_str())
+        .collect();
+    assert_eq!(descriptions, ["Archive", "Pin"]);
+    assert_eq!(card_node.custom_actions()[0].id, 0);
+    assert_eq!(card_node.custom_actions()[1].id, 1);
+
+    // Child text nodes must not inherit the card's custom actions.
+    for (_, node) in &update.nodes {
+        if node.label() == Some("Thread title") || node.label() == Some("Preview snippet") {
+            assert_eq!(node.custom_actions(), []);
+        }
+    }
+
+    assert!(renderer.handle_accessibility_action(
+        AccessibilityActionRequest {
+            action: AccessibilityAction::CustomAction,
+            target_tree: AccessibilityTreeId::ROOT,
+            target_node: *card_id,
+            data: Some(accesskit::ActionData::CustomAction(1)),
+        },
+        &env,
+    ));
+    assert!(renderer.handle_accessibility_action(
+        AccessibilityActionRequest {
+            action: AccessibilityAction::CustomAction,
+            target_tree: AccessibilityTreeId::ROOT,
+            target_node: *card_id,
+            data: Some(accesskit::ActionData::CustomAction(0)),
+        },
+        &env,
+    ));
+    assert_eq!(*log.borrow(), ["pin", "archive"]);
+
+    // Reactive custom-action name updates on refresh.
+    pin_label.set(Str::from_static("Unpin"));
+    assert!(renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY));
+    let refreshed = renderer
+        .take_accessibility_tree_update()
+        .expect("refreshed update must exist");
+    let (_, refreshed_node) = refreshed
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Thread card"))
+        .expect("refreshed card node must exist");
+    let refreshed_names: Vec<&str> = refreshed_node
+        .custom_actions()
+        .iter()
+        .map(|action| action.description.as_str())
+        .collect();
+    assert_eq!(refreshed_names, ["Archive", "Unpin"]);
+}
+
+#[cfg(feature = "accessibility")]
+#[test]
+fn a11y_adjustable_advertises_and_dispatches_increment_and_decrement() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let rating = Binding::new(3_i32);
+    let inc = rating.clone();
+    let dec = rating.clone();
+    let view = text("Rating").a11y_label("Star rating").a11y_adjustable(
+        move || inc.set((inc.snapshot() + 1).min(5)),
+        move || dec.set((dec.snapshot() - 1).max(1)),
+    );
+    let bounds = Rect::new(0.0, 0.0, 160.0, 40.0);
+
+    capture_root_window(&mut renderer, view, &env, bounds);
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("adjustable view must publish an accessibility tree");
+    let (node_id, node) = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Star rating"))
+        .expect("adjustable node must exist");
+    assert!(node.supports_action(AccessibilityAction::Increment));
+    assert!(node.supports_action(AccessibilityAction::Decrement));
+
+    assert!(renderer.handle_accessibility_action(
+        AccessibilityActionRequest {
+            action: AccessibilityAction::Increment,
+            target_tree: AccessibilityTreeId::ROOT,
+            target_node: *node_id,
+            data: None,
+        },
+        &env,
+    ));
+    assert_eq!(rating.snapshot(), 4);
+
+    assert!(renderer.handle_accessibility_action(
+        AccessibilityActionRequest {
+            action: AccessibilityAction::Decrement,
+            target_tree: AccessibilityTreeId::ROOT,
+            target_node: *node_id,
+            data: None,
+        },
+        &env,
+    ));
+    assert_eq!(rating.snapshot(), 3);
 }
 
 #[cfg(feature = "accessibility")]

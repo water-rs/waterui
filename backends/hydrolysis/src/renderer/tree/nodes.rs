@@ -1091,6 +1091,9 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     #[cfg(feature = "navigation")]
     NavigationTransitionDestination(RawId),
     Clip(ClipShape),
+    /// An alpha mask view (`.mask(...)`): renders content into an isolated
+    /// layer, then composites the mask view onto it with `BlendMode::DestIn`.
+    Mask(Box<MaskEffect<E>>),
     Border(Border),
     Shadow(Shadow),
     Cursor(Cursor),
@@ -1216,6 +1219,13 @@ impl<E: crate::text::TextEngine> WrapperEffect<E> {
                 | Self::Task(_)
         )
     }
+}
+
+/// The node-owned state of a `.mask(...)` wrapper: the retained mask subtree
+/// and its centered placement frame inside the masked content's bounds.
+pub struct MaskEffect<E: crate::text::TextEngine> {
+    pub(super) mask: RenderNode<E>,
+    pub(super) mask_frame: Cell<kurbo::Rect>,
 }
 
 /// The node-owned state of an `.anchored_overlay(...)` wrapper. The content

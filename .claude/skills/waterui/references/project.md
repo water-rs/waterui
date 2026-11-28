@@ -125,8 +125,8 @@ pub fn app(env: Environment) -> App<impl Windows> {
 Cloning a value into the builder does not make it reachable from handlers. A handler
 extracts state — as `State<T>`, or as a bare parameter of a `#[state]`-marked type — only
 once it is installed with `.state(&value)`: on a view for that subtree's handlers, or with
-`App::state(&value)` for the menu-bar, quit-request and terminate handlers that run under
-the application's environment.
+`App::state(&value)` for the menu-bar, phase-change, quit-request and terminate handlers that
+run under the application's environment.
 
 Take `mut env` when the app installs things (a `Theme`, `MapGpu`, an `ApiClient`).
 

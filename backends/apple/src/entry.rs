@@ -102,6 +102,9 @@ mod imp {
         // renders as the standard Quit item, whose `terminate:` reaches the
         // machine through `applicationShouldTerminate:`.
         let session = Session::start(parts.termination, &mut app_env, parts.last_window, mtm);
+        // Observe `NSApplication` lifecycle notifications and keep the guards
+        // alive for the process.
+        core::mem::forget(crate::phase::start(parts.phase, &app_env, mtm));
         assert!(
             launch.termination.set(session).is_ok(),
             "`prepared` consumes the one-shot `Launch`, so the termination slot is still empty"
@@ -283,6 +286,9 @@ mod imp {
         // Same hand-off as macOS: content renders under the env `app`
         // returned — its installs are invisible to the host env.
         let app_env = parts.env;
+        // Observe `UIApplication` lifecycle notifications (holding a
+        // background task assertion around `Background` hooks) for the process.
+        core::mem::forget(crate::phase::start(parts.phase, &app_env, mtm));
         let initial = crate::windows::connect_windows(parts.windows, &app_env);
         if initial
             .iter()

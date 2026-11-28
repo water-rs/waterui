@@ -556,11 +556,19 @@ pub fn skill_block_15() {
         view.a11y_label("Delete") // [ellipsis filled]
     };
     let view = Divider;
+    let _ = {
+        view.a11y_hint("Opens the thread") // [ellipsis filled]
+    };
+    let view = Divider;
     let _ = { view.a11y_id("settings.wifi") };
     let view = Divider;
     let _ = {
         view.a11y_role(AccessibilityRole::Button) // [ellipsis filled]
     };
+    let view = Divider;
+    let _ = { view.a11y_action("Archive", || ()) };
+    let view = Divider;
+    let _ = { view.a11y_adjustable(|| (), || ()) };
 
     let signal = Binding::new(true);
     let view = Divider;
