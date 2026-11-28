@@ -134,10 +134,19 @@ pub struct HydroNavigationEntry<E: crate::text::TextEngine> {
     /// stack cannot name it once for all of them; the entry carries what its
     /// own destination declared, and the stack's style is the fallback.
     pub(crate) transition: Option<AnyNavigationTransition>,
+    /// Dismiss handle popping this pushed entry.
+    pub(crate) dismiss: Option<waterui_core::Dismiss>,
+    /// Cached `(base_env.identity(), reserve_bits, extended_env)` so per-frame
+    /// page builds/records keep a stable environment identity.
+    cached_env: Option<(usize, Option<u64>, Environment)>,
 }
 
 impl<E: crate::text::TextEngine> HydroNavigationEntry<E> {
-    fn new(identity: u64, mut view: ResolvedNavigationView<HeldChild<E>>) -> Self {
+    fn new(
+        identity: u64,
+        mut view: ResolvedNavigationView<HeldChild<E>>,
+        dismiss: Option<waterui_core::Dismiss>,
+    ) -> Self {
         let state = view.take_state();
         let transition = view.take_transition();
         Self {
@@ -145,7 +154,31 @@ impl<E: crate::text::TextEngine> HydroNavigationEntry<E> {
             content: StackPage::new(waterui_core::Native::new(view)),
             state,
             transition,
+            dismiss,
+            cached_env: None,
         }
+    }
+
+    pub(crate) fn page_env(&mut self, base: &Environment, reserve: Option<f64>) -> Environment {
+        let base_id = base.identity();
+        let reserve_bits = reserve.map(f64::to_bits);
+        if let Some((cached_id, cached_reserve, cached_env)) = &self.cached_env
+            && *cached_id == base_id
+            && *cached_reserve == reserve_bits
+        {
+            return cached_env.clone();
+        }
+        let mut env = base.clone();
+        if let Some(reserve) = reserve {
+            env.insert(crate::widgets::nav::navigation::NavigationLeadingReserve(
+                reserve,
+            ));
+        }
+        if let Some(dismiss) = &self.dismiss {
+            env = env.extending(waterui_core::extract::State(dismiss.clone()));
+        }
+        self.cached_env = Some((base_id, reserve_bits, env.clone()));
+        env
     }
 }
 
@@ -763,13 +796,14 @@ impl<E: crate::text::TextEngine> CustomNavigationController for HydroNavigationC
             .last()
             .map_or(ROOT_NAVIGATION_IDENTITY, |entry| entry.identity);
         let removed = entries.drain(retained_prefix..).collect();
-        entries.extend(inserted.into_iter().map(|builder| {
+        entries.extend(inserted.into_iter().map(|mut builder| {
             let identity = self.next_entry_identity;
             self.next_entry_identity = self
                 .next_entry_identity
                 .checked_add(1)
                 .expect("Hydrolysis navigation entry identity overflowed");
-            HydroNavigationEntry::new(identity, builder.build())
+            let dismiss = builder.take_dismiss();
+            HydroNavigationEntry::new(identity, builder.build(), dismiss)
         }));
         let current_identity = entries
             .last()

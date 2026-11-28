@@ -254,8 +254,9 @@ the top and bottom edges and top/bottom along the leading and trailing edges. Un
 `.context_menu`, the overlay takes a `move ||` builder producing arbitrary `impl View`
 content — every presentation calls it, so state shared between presentations lives in
 `Binding`s the caller owns and the builder captures. `placed_edge` lets the content grow
-out of, or point at, the anchor from the right side after a flip. This is the popover and
-tooltip primitive.
+out of, or point at, the anchor from the right side after a flip, and handlers inside
+the overlay can extract `Dismiss` (`|dismiss: Dismiss| dismiss.dismiss()`) to close it.
+This is the popover and tooltip primitive.
 
 ## Scrolling
 
@@ -1057,11 +1058,12 @@ assistive technology; focus enters the sheet on present and returns to the previ
 focused control on dismiss. Configure heights with `.detents(...)` (`SheetDetent::Medium`,
 `Large`, `Fraction(f32)`, `Height(f32)`, `FullScreen`), opt out of user dismissal with
 `.dismissible(false)`, and handle Escape / back / scrim / swipe dismissal with
-`.on_dismiss(...)`. Handlers inside the sheet extract `SheetDismiss` to close it
-programmatically.
+`.on_dismiss(...)`. Handlers inside the sheet extract `Dismiss` to close it
+programmatically (the same `Dismiss` extractor published by `AnchoredOverlay` and pushed
+`NavigationStack` pages, always closing the innermost presentation).
 
 ```rust
-use waterui::sheet::{Sheet, SheetDetent, SheetDismiss};
+use waterui::sheet::{Sheet, SheetDetent};
 
 let open = binding(false);
 button("Filters")
@@ -1070,7 +1072,7 @@ button("Filters")
         Sheet::new(&open, || {
             vstack((
                 text("Filter options"),
-                button("Done").action(|sheet: SheetDismiss| sheet.dismiss()),
+                button("Done").action(|dismiss: Dismiss| dismiss.dismiss()),
             ))
         })
         .detents([SheetDetent::Medium, SheetDetent::Large])

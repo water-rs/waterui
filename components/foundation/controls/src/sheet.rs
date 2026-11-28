@@ -5,7 +5,7 @@
 //!
 //! ```rust,no_run
 //! use waterui::prelude::*;
-//! use waterui::sheet::{Sheet, SheetDetent, SheetDismiss};
+//! use waterui::sheet::{Sheet, SheetDetent};
 //!
 //! fn view() -> impl View {
 //!     let open = binding(false);
@@ -18,7 +18,7 @@
 //!             Sheet::new(&open, || {
 //!                 vstack((
 //!                     text("Filter options"),
-//!                     button("Done").action(|sheet: SheetDismiss| sheet.dismiss()),
+//!                     button("Done").action(|dismiss: Dismiss| dismiss.dismiss()),
 //!                 ))
 //!             })
 //!             .detents([SheetDetent::Medium, SheetDetent::Large]),
@@ -50,7 +50,7 @@ use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::handler::{Handler, SharedAction, ViewBuilder, shared_action};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::plugin::Plugin;
-use waterui_core::{AnyView, Environment, Metadata, View};
+use waterui_core::{AnyView, Dismiss, Environment, Metadata, View};
 use waterui_text::text::{IntoText, Text};
 
 /// Medium detent proportion of available window height (matches iOS `mediumDetent` / M3 50% sheet).
@@ -98,36 +98,6 @@ impl SheetDetent {
             Self::Height(height) => height.clamp(0.0, available),
             Self::FullScreen => available,
         }
-    }
-}
-
-/// Environment handle installed inside a presented [`Sheet`] so handlers inside
-/// the sheet can dismiss it programmatically.
-///
-/// ```rust,no_run
-/// use waterui::prelude::*;
-/// use waterui::sheet::SheetDismiss;
-///
-/// fn sheet_body() -> impl View {
-///     button("Close").action(|sheet: SheetDismiss| sheet.dismiss())
-/// }
-/// ```
-#[waterui_macros::state]
-#[derive(Clone)]
-pub struct SheetDismiss {
-    is_presented: Binding<bool>,
-}
-
-impl fmt::Debug for SheetDismiss {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SheetDismiss").finish_non_exhaustive()
-    }
-}
-
-impl SheetDismiss {
-    /// Dismisses the sheet by writing `false` to its presentation binding.
-    pub fn dismiss(&self) {
-        self.is_presented.set(false);
     }
 }
 
@@ -233,7 +203,7 @@ impl<S> Sheet<S> {
     /// Escape, the platform back action, a scrim tap, or interactive swipe-down.
     ///
     /// Programmatically writing `is_presented.set(false)` or calling
-    /// [`SheetDismiss::dismiss`] closes the sheet directly without running this
+    /// [`Dismiss::dismiss`] closes the sheet directly without running this
     /// handler.
     #[must_use]
     pub fn on_dismiss<P>(mut self, handler: impl Handler<P, ()> + 'static) -> Self {
@@ -285,13 +255,12 @@ impl<S> Sheet<S> {
         self.content.build()
     }
 
-    /// Returns the [`SheetDismiss`] environment handle bound to this sheet.
+    /// Returns the [`Dismiss`] environment handle bound to this sheet.
     #[doc(hidden)]
     #[must_use]
-    pub fn dismiss_handle(&self) -> SheetDismiss {
-        SheetDismiss {
-            is_presented: self.is_presented.clone(),
-        }
+    pub fn dismiss_handle(&self) -> Dismiss {
+        let is_presented = self.is_presented.clone();
+        Dismiss::new(move || is_presented.set(false))
     }
 
     /// Runs the user-initiated dismissal path (Escape, platform back action,

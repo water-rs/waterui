@@ -1483,7 +1483,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// ```rust
     /// use waterui::prelude::*;
-    /// use waterui::sheet::{Sheet, SheetDetent, SheetDismiss};
+    /// use waterui::sheet::{Sheet, SheetDetent};
     ///
     /// let open = binding(false);
     /// button("Filter")
@@ -1493,7 +1493,7 @@ pub trait ViewExt: View + Sized {
     ///     })
     ///     .sheet(
     ///         Sheet::new(&open, || {
-    ///             button("Done").action(|sheet: SheetDismiss| sheet.dismiss())
+    ///             button("Done").action(|dismiss: Dismiss| dismiss.dismiss())
     ///         })
     ///         .detents([SheetDetent::Medium, SheetDetent::Large]),
     ///     );

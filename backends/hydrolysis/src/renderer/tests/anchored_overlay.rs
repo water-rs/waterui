@@ -14,6 +14,7 @@ use accesskit::Role;
 use nami::Binding;
 use nami::Signal as _;
 use nami::SignalExt as _;
+use waterui::Dismiss;
 use waterui::ViewExt as _;
 use waterui::animation::Animation;
 use waterui::component::text;
@@ -31,6 +32,7 @@ use waterui_layout::stack::vstack;
 use super::popup_windows::find_by_label;
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
+use crate::num_cast::f64_as_f32;
 use crate::platform::{InputEvent, PointerButton, PointerKind};
 
 const WINDOW: (u32, u32) = (320, 240);
@@ -1619,4 +1621,204 @@ mod menu_presentation_motion_tests {
             "clicking the trailing shortcut region of Archive must fire its command"
         );
     }
+}
+
+#[test]
+fn anchored_overlay_dismiss_extractor_closes_overlay() {
+    let shown = Binding::new(false);
+    let shown_for_view = shown.clone();
+    let mut runtime = runtime(AnyViewBuilder::new(move || {
+        let shown = shown_for_view.clone();
+        let toggle = shown.clone();
+        AnyView::new(vstack((
+            spacer(),
+            button("Open Overlay")
+                .action(move || toggle.set(true))
+                .anchored_overlay(
+                    AnchoredOverlay::new(&shown, || {
+                        Frame::new(
+                            button("Close Overlay").action(|dismiss: Dismiss| dismiss.dismiss()),
+                        )
+                        .width(140.0)
+                        .height(36.0)
+                    })
+                    .edge(AnchorEdge::Top)
+                    .dismissal(Dismissal::Manual),
+                ),
+            spacer(),
+        )))
+    }));
+
+    let open_bounds = bounds_of(&mut runtime, "Open Overlay");
+    for event in primary_click(
+        f64_as_f32(f64::midpoint(open_bounds.x0, open_bounds.x1)),
+        f64_as_f32(f64::midpoint(open_bounds.y0, open_bounds.y1)),
+    ) {
+        runtime.push_input_event(event);
+    }
+    pump_until_settled(&mut runtime);
+    assert!(
+        shown.snapshot(),
+        "clicking Open Overlay must open the overlay"
+    );
+
+    let close_bounds = bounds_of(&mut runtime, "Close Overlay");
+    for event in primary_click(
+        f64_as_f32(f64::midpoint(close_bounds.x0, close_bounds.x1)),
+        f64_as_f32(f64::midpoint(close_bounds.y0, close_bounds.y1)),
+    ) {
+        runtime.push_input_event(event);
+    }
+    pump_until_settled(&mut runtime);
+    assert!(
+        !shown.snapshot(),
+        "Dismiss inside Manual AnchoredOverlay must close it"
+    );
+    assert!(
+        runtime.anchored_overlay_frames().is_empty(),
+        "closed AnchoredOverlay must clear its frame"
+    );
+}
+
+#[test]
+fn sheet_inside_anchored_overlay_dismisses_sheet_before_overlay() {
+    use waterui::sheet::Sheet;
+
+    let overlay_open = Binding::new(true);
+    let sheet_open = Binding::new(false);
+    let overlay_for_view = overlay_open.clone();
+    let sheet_for_view = sheet_open.clone();
+
+    let mut runtime = runtime(AnyViewBuilder::new(move || {
+        let overlay_open = overlay_for_view.clone();
+        let sheet_open = sheet_for_view.clone();
+        AnyView::new(vstack((
+            spacer(),
+            text("Anchor").anchored_overlay(
+                AnchoredOverlay::new(&overlay_open, move || {
+                    let sheet_open = sheet_open.clone();
+                    let open_sheet = sheet_open.clone();
+                    Frame::new(
+                        vstack((
+                            button("Open Sheet").action(move || open_sheet.set(true)),
+                            button("Close Overlay").action(|dismiss: Dismiss| dismiss.dismiss()),
+                        ))
+                        .sheet(Sheet::new(&sheet_open, || {
+                            button("Close Sheet").action(|dismiss: Dismiss| dismiss.dismiss())
+                        })),
+                    )
+                    .width(160.0)
+                    .height(80.0)
+                })
+                .edge(AnchorEdge::Top)
+                .dismissal(Dismissal::Manual),
+            ),
+            spacer(),
+        )))
+    }));
+
+    let open_sheet = bounds_of(&mut runtime, "Open Sheet");
+    for event in primary_click(
+        f64_as_f32(f64::midpoint(open_sheet.x0, open_sheet.x1)),
+        f64_as_f32(f64::midpoint(open_sheet.y0, open_sheet.y1)),
+    ) {
+        runtime.push_input_event(event);
+    }
+    pump_until_settled(&mut runtime);
+    assert!(sheet_open.snapshot(), "clicking Open Sheet must open Sheet");
+
+    let close_sheet = bounds_of(&mut runtime, "Close Sheet");
+    for event in primary_click(
+        f64_as_f32(f64::midpoint(close_sheet.x0, close_sheet.x1)),
+        f64_as_f32(f64::midpoint(close_sheet.y0, close_sheet.y1)),
+    ) {
+        runtime.push_input_event(event);
+    }
+    pump_until_settled(&mut runtime);
+    assert!(
+        !sheet_open.snapshot(),
+        "Dismiss in Sheet must close the sheet"
+    );
+    assert!(
+        overlay_open.snapshot(),
+        "closing an inner Sheet must leave its enclosing AnchoredOverlay open"
+    );
+
+    let close_overlay = bounds_of(&mut runtime, "Close Overlay");
+    for event in primary_click(
+        f64_as_f32(f64::midpoint(close_overlay.x0, close_overlay.x1)),
+        f64_as_f32(f64::midpoint(close_overlay.y0, close_overlay.y1)),
+    ) {
+        runtime.push_input_event(event);
+    }
+    pump_until_settled(&mut runtime);
+    assert!(
+        !overlay_open.snapshot(),
+        "Dismiss in AnchoredOverlay must close the overlay"
+    );
+}
+
+#[test]
+fn anchored_overlay_inside_pushed_navigation_page_dismisses_overlay_before_popping() {
+    use waterui_navigation::{NavigationPath, NavigationStack, NavigationView};
+
+    let path = NavigationPath::from(vec![1_usize]);
+    let overlay_open = Binding::new(true);
+    let path_for_view = path.clone();
+    let overlay_for_view = overlay_open.clone();
+
+    let mut runtime = runtime(AnyViewBuilder::new(move || {
+        let path = path_for_view.clone();
+        let overlay_open = overlay_for_view.clone();
+        AnyView::new(
+            NavigationStack::with_path(path, NavigationView::new("Root", text("Root Page")))
+                .destination(move |_| {
+                    let overlay_open = overlay_open.clone();
+                    NavigationView::new(
+                        "Detail",
+                        vstack((
+                            button("Pop Page").action(|dismiss: Dismiss| dismiss.dismiss()),
+                            spacer(),
+                            text("Anchor").anchored_overlay(
+                                AnchoredOverlay::new(&overlay_open, || {
+                                    Frame::new(
+                                        button("Close Overlay")
+                                            .action(|dismiss: Dismiss| dismiss.dismiss()),
+                                    )
+                                    .width(140.0)
+                                    .height(36.0)
+                                })
+                                .edge(AnchorEdge::Top)
+                                .dismissal(Dismissal::Manual),
+                            ),
+                        )),
+                    )
+                }),
+        )
+    }));
+
+    let close_overlay = bounds_of(&mut runtime, "Close Overlay");
+    for event in primary_click(
+        f64_as_f32(f64::midpoint(close_overlay.x0, close_overlay.x1)),
+        f64_as_f32(f64::midpoint(close_overlay.y0, close_overlay.y1)),
+    ) {
+        runtime.push_input_event(event);
+    }
+    pump_until_settled(&mut runtime);
+    assert!(!overlay_open.snapshot(), "Dismiss must close the overlay");
+    assert_eq!(
+        path.len(),
+        1,
+        "closing an inner AnchoredOverlay must leave the pushed navigation page on the stack"
+    );
+
+    let pop_bounds = bounds_of(&mut runtime, "Pop Page");
+    for event in primary_click(
+        f64_as_f32(f64::midpoint(pop_bounds.x0, pop_bounds.x1)),
+        f64_as_f32(f64::midpoint(pop_bounds.y0, pop_bounds.y1)),
+    ) {
+        runtime.push_input_event(event);
+    }
+    pump_until_settled(&mut runtime);
+    assert!(path.is_empty(), "Dismiss on pushed page must pop the stack");
 }
