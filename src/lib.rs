@@ -57,7 +57,7 @@ pub mod prelude {
     // Re-export core modules from super, excluding `background` to avoid conflict with layout::background
     #[cfg(feature = "effects")]
     pub use super::FilterViewExt;
-    pub use super::app::{App, AppMenuBar, Windows};
+    pub use super::app::{App, AppMenuBar, AppPhase, Windows};
     pub use super::env::Environment;
     #[cfg(feature = "form")]
     pub use super::form;
@@ -543,5 +543,6 @@ mod prelude_tests {
         );
         assert_eq!(*press.key(), Key::Named(NamedKey::Escape));
         assert_eq!(KeyHandling::Handled, KeyHandling::Handled);
+        assert_eq!(AppPhase::default(), AppPhase::Active);
     }
 }

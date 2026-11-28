@@ -517,6 +517,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
         env,
         last_window: _,
         termination: _,
+        phase: _,
     } = app.into_parts();
     let mut env = env;
     install_application_resources(&mut env);

@@ -7,7 +7,9 @@ use executor_core::async_task::AsyncTask;
 use ndk::native_window::NativeWindow;
 
 use super::gpu::{AndroidGpuContext, DisplayRefresh, GpuError};
-use super::host::{AndroidSession, HostAppearance, HostBridge, MetricsSnapshot, UiThreadServices};
+use super::host::{
+    AndroidSession, HostAppearance, HostBridge, MetricsSnapshot, SessionInit, UiThreadServices,
+};
 use super::jni::JniError;
 use crate::platform::InputEvent;
 
@@ -72,19 +74,22 @@ impl Startup {
         env: &mut jni::Env,
         gpu: AndroidGpuContext,
     ) -> Result<AndroidSession, JniError> {
+        let initial_phase = super::host::android_phase(self.visible, self.resumed);
         let mut session = AndroidSession::create(
             env,
             self.bridge,
             gpu,
             &jni::objects::JObject::null(),
-            self.metrics,
-            self.appearance,
+            SessionInit {
+                metrics: self.metrics,
+                appearance: self.appearance,
+                initial_phase,
+            },
             self.services,
         )?
         .ok_or_else(|| JniError("hydrolysis android: application mounting failed".to_owned()))?;
         session.set_host_attached(self.attached);
-        session.set_visible(env, self.visible);
-        session.set_resumed(env, self.resumed);
+        session.apply_initial_lifecycle(env, self.visible, self.resumed);
         if let Some(surface) = self.surface {
             session
                 .surface_attached_with_generation(

@@ -2006,3 +2006,79 @@ fn hidden_runtime_window_drops_effective_frame_rate_vote() {
     runtime.set_hidden_for_tests(false);
     assert_eq!(runtime.effective_frame_rate_vote(), Some(FrameRate::FAST));
 }
+
+#[test]
+fn app_phase_updates_environment_signal_and_runs_background_hook_in_headless_runtime() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use crate::HeadlessRuntime;
+    use crate::testing::TestStyle;
+    use nami::SignalExt as _;
+    use waterui::app::{App, AppPhase};
+    use waterui::env::use_env;
+    use waterui::prelude::text;
+    use waterui_core::handler::AnyViewBuilder;
+
+    #[waterui::state]
+    #[derive(Clone)]
+    struct Store {
+        saves: Rc<Cell<u32>>,
+    }
+
+    impl Store {
+        fn record_save(&self) {
+            self.saves.set(self.saves.get() + 1);
+        }
+    }
+
+    let saves = Rc::new(Cell::new(0_u32));
+    let store = Store {
+        saves: Rc::clone(&saves),
+    };
+    let parts = App::new(Environment::new())
+        .state(&store)
+        .on_phase_change(|phase: AppPhase, store: Store| async move {
+            if phase == AppPhase::Background {
+                core::future::ready(()).await;
+                store.record_save();
+            }
+        })
+        .into_parts();
+
+    let phase_signal = parts
+        .env
+        .get::<nami::Computed<AppPhase>>()
+        .expect("App::new installs Computed<AppPhase> in env")
+        .clone();
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        parts.env.clone(),
+        AnyViewBuilder::new(|| {
+            AnyView::new(use_env(
+                |waterui::State(phase): waterui::State<nami::Computed<AppPhase>>| {
+                    text(phase.map(|p| format!("phase:{p:?}")).computed())
+                },
+            ))
+        }),
+        120,
+        40,
+        TestStyle::new(),
+    );
+
+    let phase_handle = parts.phase.start(&parts.env);
+    let _ = runtime.pump(false);
+    assert_eq!(phase_signal.snapshot(), AppPhase::Active);
+    assert_eq!(saves.get(), 0);
+
+    phase_handle.set_phase(AppPhase::Inactive);
+    let _ = runtime.pump(false);
+    assert_eq!(phase_signal.snapshot(), AppPhase::Inactive);
+    assert_eq!(saves.get(), 0);
+
+    // Transition to Background fires the async hook once; a duplicate Background is ignored.
+    phase_handle.set_phase(AppPhase::Background);
+    phase_handle.set_phase(AppPhase::Background);
+    let _ = runtime.pump(false);
+    assert_eq!(phase_signal.snapshot(), AppPhase::Background);
+    assert_eq!(saves.get(), 1);
+}
