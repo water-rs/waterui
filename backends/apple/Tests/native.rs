@@ -504,6 +504,13 @@ fn base_trials() -> Vec<Trial> {
             resolve::toggle_rows_place_the_control_by_kind();
             Ok(())
         }),
+        Trial::test(
+            "resolve::mixed_checkbox_renders_mixed_and_activates_to_on",
+            || {
+                resolve::mixed_checkbox_renders_mixed_and_activates_to_on();
+                Ok(())
+            },
+        ),
         Trial::test("resolve::a_label_leaves_8pt_between_icon_and_title", || {
             resolve::a_label_leaves_8pt_between_icon_and_title();
             Ok(())
@@ -1516,6 +1523,121 @@ mod resolve {
                     name,
                 );
             }
+        }
+    }
+
+    /// water-rs/waterui#4336: a mixed checkbox renders its mixed state
+    /// (`NSControlStateValueMixed` on `AppKit`, `"Mixed"` accessibility value on
+    /// `UIKit`), follows reactive changes to `mixed`, resolves activation while
+    /// mixed to `true`, and never cycles `Off -> Mixed -> On` once unmixed.
+    pub fn mixed_checkbox_renders_mixed_and_activates_to_on() {
+        use nami::{Binding, Signal as _, SignalExt as _};
+
+        let items = Binding::new([true, false, false]);
+        let all = Binding::mapping(
+            &items,
+            |list| list.iter().all(|&done| done),
+            |source, on| source.set([on, on, on]),
+        );
+        let some_but_not_all = items
+            .map(|list| list.iter().any(|&done| done) && !list.iter().all(|&done| done))
+            .computed();
+
+        let leaf = render(
+            Toggle::new("Select all", &all)
+                .checkbox()
+                .mixed(some_but_not_all.clone()),
+        );
+        let subviews = cocoa_ui::view::subviews(leaf.view());
+        assert_eq!(subviews.len(), 2, "checkbox row holds label and control");
+        let control = &subviews[1];
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2_app_kit::{
+                NSButton, NSControlStateValueMixed, NSControlStateValueOff, NSControlStateValueOn,
+            };
+
+            let button = control
+                .downcast_ref::<NSButton>()
+                .expect("AppKit checkbox control is an NSButton");
+            assert!(
+                button.allowsMixedState(),
+                "mixed checkbox enables allowsMixedState"
+            );
+            assert_eq!(
+                button.state(),
+                NSControlStateValueMixed,
+                "mixed checkbox starts in NSControlStateValueMixed (-1)"
+            );
+
+            // Clicking while mixed resolves the binding to `true` (all selected),
+            // leaving mixed state and disabling `allowsMixedState`.
+            // SAFETY: `performClick:` is a main-thread `NSControl` action trigger with nil sender.
+            unsafe { button.performClick(None) };
+            assert!(
+                all.snapshot(),
+                "clicking a mixed checkbox must resolve binding to true"
+            );
+            assert!(!some_but_not_all.snapshot());
+            assert_eq!(items.snapshot(), [true, true, true]);
+            assert_eq!(button.state(), NSControlStateValueOn);
+            assert!(!button.allowsMixedState());
+
+            // Clicking again turns all items off.
+            // SAFETY: `performClick:` is a main-thread `NSControl` action trigger with nil sender.
+            unsafe { button.performClick(None) };
+            assert!(!all.snapshot());
+            assert_eq!(items.snapshot(), [false, false, false]);
+            assert_eq!(button.state(), NSControlStateValueOff);
+            assert!(!button.allowsMixedState());
+
+            // Clicking while off and unmixed goes straight Off -> On (never Mixed).
+            // SAFETY: `performClick:` is a main-thread `NSControl` action trigger with nil sender.
+            unsafe { button.performClick(None) };
+            assert!(all.snapshot());
+            assert_eq!(button.state(), NSControlStateValueOn);
+            assert!(!button.allowsMixedState());
+
+            // Partial selection reactively restores NSControlStateValueMixed.
+            items.set([false, true, false]);
+            assert!(button.allowsMixedState());
+            assert_eq!(button.state(), NSControlStateValueMixed);
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2_ui_kit::{NSObjectUIAccessibility, UIButton, UIControlEvents};
+
+            let mtm = mtm();
+            let button = control
+                .downcast_ref::<UIButton>()
+                .expect("UIKit checkbox control is a UIButton");
+            assert!(!button.isSelected(), "mixed checkbox is not selected");
+            assert_eq!(
+                button.accessibilityValue(mtm).map(|v| v.to_string()),
+                Some("Mixed".to_owned()),
+                "mixed checkbox announces accessibilityValue Mixed"
+            );
+
+            // Tapping while mixed resolves the binding to `true` (all selected)
+            // and clears the `"Mixed"` accessibility value.
+            button.sendActionsForControlEvents(UIControlEvents::PrimaryActionTriggered);
+            assert!(
+                all.snapshot(),
+                "tapping a mixed checkbox must resolve binding to true"
+            );
+            assert!(!some_but_not_all.snapshot());
+            assert!(button.isSelected());
+            assert_eq!(button.accessibilityValue(mtm), None);
+
+            // Partial selection reactively restores mixed accessibility state.
+            items.set([false, true, false]);
+            assert!(!button.isSelected());
+            assert_eq!(
+                button.accessibilityValue(mtm).map(|v| v.to_string()),
+                Some("Mixed".to_owned())
+            );
         }
     }
 

@@ -257,6 +257,7 @@ fn disclosure_accessibility<E: TextEngine>(
         node.add_action(AccessibilityAction::Collapse);
         Some(AccessibilityActionTarget::Toggle {
             binding: config.expanded().clone(),
+            mixed: None,
         })
     };
     if let Some(node_id) = renderer.register_accessibility_leaf(ctx, node, env, action_target) {
