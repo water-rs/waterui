@@ -48,7 +48,7 @@ use waterui_structural_transition::ReduceMotion;
 
 use super::session::AppleExecutor;
 use crate::platform::EngineGpuContext;
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
+#[cfg(feature = "menu")]
 use crate::renderer::HydrolysisTextContextMenuMode;
 use crate::renderer::WindowIdentities;
 #[cfg(not(hydrolysis_inspector))]
@@ -196,7 +196,7 @@ impl UiKitApplication {
         if let Some(ref menu_bar) = menu_bar {
             menu_bar::register_menu_bar::<ParleyEngine>(menu_bar, &env);
         }
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        #[cfg(feature = "menu")]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         let mtm = MainThreadMarker::new().expect("launch runs on the main thread");
         let reduce_motion_binding = Binding::new(system_reduce_motion());

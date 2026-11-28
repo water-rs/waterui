@@ -20,9 +20,7 @@
 //!   [`render`]: interaction, lifecycle, navigation, a11y, and measurement
 //!   subsystems
 
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::platform::TextInputPurpose;
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::theme::TextCaretMotion;
 
 #[cfg(feature = "accessibility")]
@@ -291,7 +289,6 @@ pub use accessibility::{
     AccessibilityActionTarget, AccessibilityActivation, NodePlacement,
     ScopedAccessibilitySemantics, accessibility_container_child_environment,
 };
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub use input::{
     TextInputModel, TextInputTargetRegistration, TextSelectionSlot, clamp_to_char_boundary,
     text_editing,
@@ -475,8 +472,7 @@ impl ProducerWake {
 /// entries), and its placement slot keeps all presentation content ranked
 /// above the window's own.
 pub struct PresentationHosts<E: crate::text::TextEngine> {
-    /// The overlay-mode text context menu's host.
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
+    /// The text selection highlight and overlay-mode text context menu's host.
     pub(crate) text_overlay: NodeCore<E>,
     /// The `.context_menu` presentation's host.
     #[cfg(feature = "menu")]
@@ -497,7 +493,6 @@ impl<E: crate::text::TextEngine> PresentationHosts<E> {
     /// tree.
     #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn unmount(&self) {
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         self.text_overlay.cell.unmount_subtree();
         #[cfg(feature = "menu")]
         self.context_menu.cell.unmount_subtree();
@@ -581,7 +576,6 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// Input targets, selection slots and pre-edit live here — `pub(crate)`
     /// because the runner's editing session and headless tests read them
     /// from outside the renderer module tree.
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) text_editing: TextEditingState<E>,
     popup_menu: PopupMenuState<E>,
     /// The identity the runner gave the window this core renders — menu-chord
@@ -899,7 +893,6 @@ pub const HIT_TEST_ALPHA_THRESHOLD: f32 = 0.01;
 
 /// The click count at which text selection stops growing: a double click
 /// selects a word, a triple click a line.
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
 const MAX_TEXT_SELECTION_CLICKS: u32 = 3;
 #[cfg(feature = "menu")]
 const TEXT_CONTEXT_MENU_WINDOW_TITLE: &str = "";
@@ -1002,7 +995,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             core
         };
         PresentationHosts {
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             text_overlay: host(),
             #[cfg(feature = "menu")]
             context_menu: host(),
@@ -1050,7 +1042,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             gesture_engine: GestureEngine::default(),
             gesture_group_ids: BTreeMap::new(),
             next_gesture_group_id: 0,
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             text_editing: TextEditingState::default(),
             popup_menu: PopupMenuState::default(),
             window_id: WindowId::Orphan,
@@ -1986,18 +1977,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             .owner_of(key)
             .filter(|owner| live(owner))
             .or_else(|| {
-                #[cfg(any(feature = "text-field", feature = "secure-field"))]
-                {
-                    self.text_editing
-                        .text_input_targets
-                        .iter()
-                        .find(|target| &target.interaction_key == key)
-                        .map(|target| target.owner.clone())
-                }
-                #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
-                {
-                    None
-                }
+                self.text_editing
+                    .text_input_targets
+                    .iter()
+                    .find(|target| &target.interaction_key == key)
+                    .map(|target| target.owner.clone())
             })
             .or_else(|| {
                 self.hit_test
@@ -2303,16 +2287,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn mount_roots(
         &self,
     ) -> [Rc<NodeCell<E>>;
-        3 + cfg!(feature = "menu") as usize
-            + cfg!(any(feature = "text-field", feature = "secure-field")) as usize
-            + cfg!(waterui_feature = "dialog") as usize] {
+        4 + cfg!(feature = "menu") as usize + cfg!(waterui_feature = "dialog") as usize] {
         let hosts = &self.core.presentation_hosts;
         [
             Rc::clone(&self.core.root_core.cell),
             #[cfg(feature = "menu")]
             Rc::clone(&hosts.context_menu.cell),
             Rc::clone(&hosts.anchored.cell),
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             Rc::clone(&hosts.text_overlay.cell),
             Rc::clone(&hosts.sheet.cell),
             #[cfg(waterui_feature = "dialog")]
@@ -2433,7 +2414,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 }
 
 pub use render::HydroState;
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
+#[cfg(feature = "menu")]
 pub use render::HydrolysisTextContextMenuMode;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 pub use render::HydrolysisWindowOrigin;

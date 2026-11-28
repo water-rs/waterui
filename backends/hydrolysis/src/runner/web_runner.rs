@@ -34,7 +34,7 @@ use crate::text::fonts::WebFonts;
 use crate::platform::web_appearance::SystemAppearance;
 use crate::platform::web_locale::SystemLocale;
 use crate::platform::{BrowserWindow, PlatformWindow};
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
+#[cfg(feature = "menu")]
 use crate::renderer::HydrolysisTextContextMenuMode;
 use crate::renderer::MenuShortcutRegistry;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, Next};
@@ -716,7 +716,7 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
         {
             super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env);
         }
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        #[cfg(feature = "menu")]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // The page's `prefers-color-scheme` media query is the host's
         // appearance: `matches` seeds the scheme so the first frame already

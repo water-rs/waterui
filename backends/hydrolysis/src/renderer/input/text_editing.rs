@@ -2,11 +2,25 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::text::{TextLayout as _, TextPosition, TextSelection};
+#[cfg(feature = "menu")]
 use crate::theme::MenuLayout;
+#[cfg(hydrolysis_cherenkov)]
 use cherenkov_record::Draw as _;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use unicode_segmentation::UnicodeSegmentation;
 use waterui_controls::input::{Capitalization, ContentType, KeyboardType, SubmitLabel};
 use waterui_core::contract_violation;
+
+/// Where text copy/cut operations write text to the clipboard. Defaults to the
+/// system clipboard through [`write_clipboard_text`]; a test replaces it via
+/// [`SemanticCore::set_clipboard_write`] so clipboard verification stays
+/// isolated from the host OS pasteboard.
+pub type ClipboardWrite = Rc<dyn Fn(&str) -> bool>;
+
+/// The system clipboard writer every window starts with.
+pub fn system_clipboard_write() -> ClipboardWrite {
+    Rc::new(write_clipboard_text)
+}
 
 /// Resolved software-keyboard and input-method options carried from a text
 /// field into platform editing sessions (`UIKit` `UITextInputTraits`, Android
@@ -22,17 +36,19 @@ pub struct TextInputOptions {
 
 impl Default for TextInputOptions {
     fn default() -> Self {
-        Self {
-            keyboard: KeyboardType::Text,
-            content_type: None,
-            autocapitalization: Capitalization::Sentences,
-            autocorrect: true,
-            submit_label: SubmitLabel::Return,
-        }
+        Self::DEFAULT
     }
 }
 
 impl TextInputOptions {
+    const DEFAULT: Self = Self {
+        keyboard: KeyboardType::Text,
+        content_type: None,
+        autocapitalization: Capitalization::Sentences,
+        autocorrect: true,
+        submit_label: SubmitLabel::Return,
+    };
+
     /// Resolved input options for a password secure field in unit tests.
     #[cfg(all(feature = "secure-field", test))]
     pub(crate) const fn password_default() -> Self {
@@ -50,20 +66,35 @@ impl TextInputOptions {
 /// each frame the overlay draws so a token they follow shows in place.
 #[derive(Clone)]
 pub struct CaretPaints {
-    caret: crate::theme::Driven<cherenkov_record::Paint>,
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
+    caret: Option<crate::theme::Driven<cherenkov_record::Paint>>,
+    #[cfg(hydrolysis_cherenkov)]
     selection: crate::theme::Driven<cherenkov_record::Paint>,
 }
 
 impl CaretPaints {
     /// The caret and selection paints of `look`.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub fn of(look: &crate::theme::TextFieldLook) -> Self {
         Self {
-            caret: look.caret().paint().clone(),
+            caret: Some(look.caret().paint().clone()),
+            #[cfg(hydrolysis_cherenkov)]
             selection: look.selection().clone(),
         }
     }
 
+    /// Selection-only paint for read-only selectable text (no blinking caret).
+    #[cfg(hydrolysis_cherenkov)]
+    pub fn selection_only(selection: cherenkov_record::Paint) -> Self {
+        Self {
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            caret: None,
+            selection: crate::theme::Driven::from(selection),
+        }
+    }
+
     /// The paint `paint` gives a focused field over `frame`.
+    #[cfg(any(hydrolysis_cherenkov, feature = "text-field", feature = "secure-field"))]
     fn resolve(
         paint: &crate::theme::Driven<cherenkov_record::Paint>,
         frame: kurbo::Rect,
@@ -95,6 +126,8 @@ pub enum TextInputModel {
         on_submit: Option<SharedAction>,
         input: TextInputOptions,
     },
+    /// Read-only selectable static text (`Text::selectable(true)` / `.text_selectable(true)`).
+    SelectableText { value: Str },
 }
 
 /// Text editing state that outlives a frame.
@@ -110,6 +143,7 @@ pub enum TextInputModel {
 /// changes (a row inserted above a focused field, a `when(...)` revealing an
 /// earlier one).
 /// A scroll surface registered for the post-record focus clearance.
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub struct ClearanceSurface<E: crate::text::TextEngine> {
     pub(crate) cell: std::rc::Weak<crate::renderer::mount::cell::NodeCell<E>>,
     pub(crate) area: std::rc::Weak<crate::renderer::ScrollSurfaceArea>,
@@ -118,9 +152,11 @@ pub struct ClearanceSurface<E: crate::text::TextEngine> {
 
 pub struct TextEditingState<E: crate::text::TextEngine> {
     /// The scroll surfaces the post-record focus clearance runs over.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) clearance_surfaces: RefCell<Vec<ClearanceSurface<E>>>,
     pub(crate) text_input_targets: Vec<TextInputTarget<E>>,
     pub(crate) active_text_selection_drag: Option<ActiveTextSelectionDrag>,
+    #[cfg(feature = "menu")]
     pub(crate) active_text_context_menu: Option<ActiveTextContextMenu<E>>,
     focused_text_input: RefCell<Option<InteractionKey>>,
     /// The `.focused()` binding of the field holding text focus, captured
@@ -136,6 +172,8 @@ pub struct TextEditingState<E: crate::text::TextEngine> {
     pub(crate) text_caret_fade_started_at: Option<Instant>,
     pub(crate) text_caret_next_frame_at: Option<Instant>,
     pub(crate) text_caret_motion: Option<TextCaretMotion>,
+    /// Clipboard sink for copy/cut commands; defaults to the system clipboard.
+    pub(crate) clipboard_write: ClipboardWrite,
 }
 
 impl<E: crate::text::TextEngine> TextEditingState<E> {
@@ -271,9 +309,10 @@ pub struct TextInputTarget<E: crate::text::TextEngine> {
     /// The environment of the view the target was registered from — the
     /// context menu it opens runs inside it (water-rs/hydrolysis#140).
     pub(crate) env: Environment,
-    /// Context-menu opener attached by the registering text/secure field,
-    /// keeping `show_text_context_menu` / `popup_menu_window` unreachable
-    /// unless a text input widget is actually constructed.
+    /// Context-menu opener attached by the registering text/secure field or
+    /// selectable text, keeping `show_text_context_menu` / `popup_menu_window`
+    /// unreachable when `menu` is disabled.
+    #[cfg(feature = "menu")]
     pub(crate) show_context_menu: TextContextMenuOpener<E>,
     /// The `OnKeyPress` scopes enclosing the view this target was registered
     /// from — the chain a key the field did not consume bubbles through,
@@ -366,13 +405,16 @@ pub struct TextInputTargetRegistration<E: crate::text::TextEngine> {
     /// The environment of the registering view; the context menu opens inside
     /// it (water-rs/hydrolysis#140).
     pub(crate) env: Environment,
-    /// Context-menu opener attached by the registering text/secure field.
+    /// Context-menu opener attached by the registering text/secure field or selectable text.
+    #[cfg(feature = "menu")]
     pub(crate) show_context_menu: TextContextMenuOpener<E>,
 }
 
+#[cfg(feature = "menu")]
 pub type TextContextMenuOpener<E> =
     fn(&mut HydrolysisRenderer<E>, usize, kurbo::Point, &Environment) -> bool;
 
+#[cfg(feature = "menu")]
 pub type TextContextMenuSubmenuOpener<E> =
     fn(&mut SemanticCore<E>, &TextContextMenuOverlay<E>, kurbo::Rect, Vec<PopupMenuNode>);
 
@@ -396,21 +438,30 @@ pub enum TextContextMenuAction {
 /// `action` against `model`/`selection` in the row's dispatch environment —
 /// the environment the menu opened in, which `popup_menu_window` and the
 /// drawn overlay both hand the press.
+#[cfg(feature = "menu")]
 fn text_context_menu_builtin_node(
     label: String,
     action: TextContextMenuAction,
     model: &TextInputModel,
     selection: &Rc<RefCell<TextSelectionSlot>>,
+    clipboard_write: &ClipboardWrite,
 ) -> PopupMenuNode {
     let model = model.clone();
     let selection = Rc::clone(selection);
+    let clipboard_write = Rc::clone(clipboard_write);
     let styled_label = StyledStr::plain(label.clone());
     PopupMenuNode::Command {
         semantic_text: Text::new(styled_label.clone()),
         styled_label,
         plain_label: label,
         action: SharedAction::new(move |env: Environment| {
-            let _ = execute_text_context_menu_action(action, &model, &selection, &env);
+            let _ = execute_text_context_menu_action_with_clipboard(
+                action,
+                &model,
+                &selection,
+                &env,
+                &clipboard_write,
+            );
         }),
         disabled: nami::Computed::constant(false),
         shortcut: None,
@@ -418,12 +469,14 @@ fn text_context_menu_builtin_node(
     }
 }
 
+#[cfg(feature = "menu")]
 #[derive(Clone)]
 pub struct TextContextMenuOverlayRow {
     pub(crate) bounds: kurbo::Rect,
     pub node: PopupMenuNode,
 }
 
+#[cfg(feature = "menu")]
 pub struct TextContextMenuOverlay<E: crate::text::TextEngine> {
     pub(crate) bounds: kurbo::Rect,
     pub rows: Vec<TextContextMenuOverlayRow>,
@@ -446,6 +499,7 @@ pub struct TextContextMenuOverlay<E: crate::text::TextEngine> {
     pub(crate) open_submenu: TextContextMenuSubmenuOpener<E>,
 }
 
+#[cfg(feature = "menu")]
 impl<E: crate::text::TextEngine> Clone for TextContextMenuOverlay<E> {
     fn clone(&self) -> Self {
         Self {
@@ -460,6 +514,7 @@ impl<E: crate::text::TextEngine> Clone for TextContextMenuOverlay<E> {
     }
 }
 
+#[cfg(feature = "menu")]
 pub enum ActiveTextContextMenu<E: crate::text::TextEngine> {
     Overlay {
         target: InteractionKey,
@@ -471,6 +526,7 @@ pub enum ActiveTextContextMenu<E: crate::text::TextEngine> {
     },
 }
 
+#[cfg(feature = "menu")]
 impl<E: crate::text::TextEngine> Clone for ActiveTextContextMenu<E> {
     fn clone(&self) -> Self {
         match self {
@@ -487,12 +543,23 @@ impl<E: crate::text::TextEngine> Clone for ActiveTextContextMenu<E> {
 }
 
 impl TextInputModel {
+    pub(crate) const fn is_editable(&self) -> bool {
+        match self {
+            #[cfg(feature = "text-field")]
+            Self::TextField { .. } => true,
+            #[cfg(feature = "secure-field")]
+            Self::SecureField { .. } => true,
+            Self::SelectableText { .. } => false,
+        }
+    }
+
     const fn submit_action(&self) -> Option<&SharedAction> {
         match self {
             #[cfg(feature = "text-field")]
             Self::TextField { on_submit, .. } => on_submit.as_ref(),
             #[cfg(feature = "secure-field")]
             Self::SecureField { on_submit, .. } => on_submit.as_ref(),
+            Self::SelectableText { .. } => None,
         }
     }
 
@@ -502,6 +569,7 @@ impl TextInputModel {
             Self::TextField { value, .. } => value.snapshot().to_plain().to_string(),
             #[cfg(feature = "secure-field")]
             Self::SecureField { value, .. } => value.snapshot().expose().to_owned(),
+            Self::SelectableText { value } => value.to_string(),
         }
     }
 
@@ -515,22 +583,19 @@ impl TextInputModel {
                 next.set(text);
                 value.set(next);
             }
+            Self::SelectableText { .. } => {
+                let _ = text;
+            }
         }
     }
 
-    #[cfg_attr(
-        not(feature = "text-field"),
-        expect(
-            clippy::unnecessary_wraps,
-            reason = "the shared editing model also supports unlimited text fields"
-        )
-    )]
     pub(crate) const fn line_limit(&self) -> Option<usize> {
         match self {
             #[cfg(feature = "text-field")]
             Self::TextField { line_limit, .. } => *line_limit,
             #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => Some(1),
+            Self::SelectableText { .. } => None,
         }
     }
 
@@ -540,6 +605,7 @@ impl TextInputModel {
             Self::TextField { .. } => false,
             #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => true,
+            Self::SelectableText { .. } => false,
         }
     }
 
@@ -549,9 +615,11 @@ impl TextInputModel {
             Self::TextField { input, .. } => *input,
             #[cfg(feature = "secure-field")]
             Self::SecureField { input, .. } => *input,
+            Self::SelectableText { .. } => TextInputOptions::DEFAULT,
         }
     }
 
+    #[cfg(feature = "menu")]
     #[cfg_attr(
         not(feature = "text-field"),
         expect(
@@ -565,6 +633,7 @@ impl TextInputModel {
             Self::TextField { selection_menu, .. } => selection_menu.snapshot(),
             #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => Vec::new(),
+            Self::SelectableText { .. } => Vec::new(),
         }
     }
 
@@ -580,6 +649,7 @@ impl TextInputModel {
                 let text = self.plain_text();
                 byte_index_to_char_offset(text.as_str(), plain_index)
             }
+            Self::SelectableText { value } => clamp_to_char_boundary(value.as_str(), plain_index),
         }
     }
 
@@ -595,6 +665,7 @@ impl TextInputModel {
                 let text = self.plain_text();
                 char_offset_to_byte_index(text.as_str(), layout_index)
             }
+            Self::SelectableText { value } => clamp_to_char_boundary(value.as_str(), layout_index),
         }
     }
 
@@ -611,6 +682,7 @@ impl TextInputModel {
             Self::TextField { .. } => text.len(),
             #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => text.chars().count(),
+            Self::SelectableText { .. } => text.len(),
         }
     }
 }
@@ -661,6 +733,7 @@ pub const fn clamp_to_char_boundary(text: &str, mut index: usize) -> usize {
     index
 }
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub fn previous_grapheme_boundary(text: &str, index: usize) -> usize {
     let clamped = clamp_to_char_boundary(text, index);
     if clamped == 0 {
@@ -672,6 +745,7 @@ pub fn previous_grapheme_boundary(text: &str, index: usize) -> usize {
         .map_or(0, |(value, _)| value)
 }
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub fn next_grapheme_boundary(text: &str, index: usize) -> usize {
     let clamped = clamp_to_char_boundary(text, index);
     if clamped >= text.len() {
@@ -735,6 +809,7 @@ pub fn replace_text_selection(
     true
 }
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub fn delete_backward_in_selection(
     text: &mut String,
     anchor: &mut usize,
@@ -758,6 +833,7 @@ pub fn delete_backward_in_selection(
     true
 }
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub fn delete_forward_in_selection(
     text: &mut String,
     anchor: &mut usize,
@@ -804,6 +880,9 @@ pub fn replace_model_selection(
     slot: &mut TextSelectionSlot,
     inserted: &str,
 ) -> bool {
+    if !model.is_editable() {
+        return false;
+    }
     let mut text = model.plain_text();
     let mut anchor = clamp_to_char_boundary(text.as_str(), slot.anchor);
     let mut focus = clamp_to_char_boundary(text.as_str(), slot.focus);
@@ -827,6 +906,9 @@ pub fn replace_model_selection(
 }
 
 pub fn delete_model_selection(model: &TextInputModel, slot: &mut TextSelectionSlot) -> bool {
+    if !model.is_editable() {
+        return false;
+    }
     let mut text = model.plain_text();
     let anchor = clamp_to_char_boundary(text.as_str(), slot.anchor);
     let focus = clamp_to_char_boundary(text.as_str(), slot.focus);
@@ -842,7 +924,11 @@ pub fn delete_model_selection(model: &TextInputModel, slot: &mut TextSelectionSl
     true
 }
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub fn delete_model_backward(model: &TextInputModel, slot: &mut TextSelectionSlot) -> bool {
+    if !model.is_editable() {
+        return false;
+    }
     let mut text = model.plain_text();
     let mut anchor = clamp_to_char_boundary(text.as_str(), slot.anchor);
     let mut focus = clamp_to_char_boundary(text.as_str(), slot.focus);
@@ -856,7 +942,11 @@ pub fn delete_model_backward(model: &TextInputModel, slot: &mut TextSelectionSlo
     true
 }
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub fn delete_model_forward(model: &TextInputModel, slot: &mut TextSelectionSlot) -> bool {
+    if !model.is_editable() {
+        return false;
+    }
     let mut text = model.plain_text();
     let mut anchor = clamp_to_char_boundary(text.as_str(), slot.anchor);
     let mut focus = clamp_to_char_boundary(text.as_str(), slot.focus);
@@ -950,6 +1040,7 @@ pub fn selection_range_contains_index(
     !range.is_empty() && range.contains(&index)
 }
 
+#[cfg(feature = "menu")]
 pub fn text_context_menu_size(nodes: &[PopupMenuNode], metrics: MenuLayout) -> (f64, f64) {
     let max_label_chars = crate::num_cast::usize_as_f64(
         nodes
@@ -973,6 +1064,7 @@ pub fn text_context_menu_size(nodes: &[PopupMenuNode], metrics: MenuLayout) -> (
     (width, height)
 }
 
+#[cfg(feature = "menu")]
 pub fn text_context_menu_overlay_bounds(
     anchor: kurbo::Point,
     nodes: &[PopupMenuNode],
@@ -1011,28 +1103,38 @@ pub fn text_context_menu_overlay_bounds(
     kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
-pub fn execute_text_context_menu_action(
+pub fn execute_text_context_menu_action_with_clipboard(
     action: TextContextMenuAction,
     model: &TextInputModel,
     selection: &Rc<RefCell<TextSelectionSlot>>,
     _env: &Environment,
+    clipboard_write: &ClipboardWrite,
 ) -> bool {
     match action {
         TextContextMenuAction::Copy => {
+            if model.is_secure() {
+                return false;
+            }
             let slot = selection.borrow();
             let Some(value) = selected_text_for_model(model, &slot) else {
                 return false;
             };
-            write_clipboard_text(value.as_str())
+            clipboard_write(value.as_str())
         }
         TextContextMenuAction::Cut => {
+            if !model.is_editable() || model.is_secure() {
+                return false;
+            }
             let mut slot = selection.borrow_mut();
             let Some(value) = selected_text_for_model(model, &slot) else {
                 return false;
             };
-            write_clipboard_text(value.as_str()) && delete_model_selection(model, &mut slot)
+            clipboard_write(value.as_str()) && delete_model_selection(model, &mut slot)
         }
         TextContextMenuAction::Paste => {
+            if !model.is_editable() {
+                return false;
+            }
             spawn_clipboard_paste_task(model.clone(), Rc::clone(selection));
             true
         }
@@ -1076,6 +1178,13 @@ fn refreshed_target_selection<E: crate::text::TextEngine>(
 }
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {
+    /// Replaces where text copy/cut operations write clipboard text, so tests
+    /// verify clipboard output without mutating the host pasteboard.
+    #[cfg(test)]
+    pub(crate) fn set_clipboard_write(&mut self, clipboard: ClipboardWrite) {
+        self.text_editing.clipboard_write = clipboard;
+    }
+
     pub(crate) const fn set_text_caret_motion(&mut self, motion: TextCaretMotion) {
         self.text_editing.text_caret_motion = Some(motion);
     }
@@ -1088,11 +1197,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
     pub(crate) fn reset_text_caret_animation(&mut self, now: Instant) {
         // A semantic core never installs a caret motion — the blink is
-        // presentation — so focusing a text field there clears the animation
-        // state instead of scheduling frames. `advance_text_caret_animation`
-        // and `text_caret_opacity` keep their strict contract: they only run
-        // on the rendered pump.
-        let Some(motion) = self.text_editing.text_caret_motion else {
+        // presentation — and read-only selectable text draws no caret, so
+        // focusing either clears the animation state instead of scheduling frames.
+        let editable = self
+            .text_editing
+            .focused_target()
+            .is_none_or(|target| target.model.is_editable());
+        let Some(motion) = self.text_editing.text_caret_motion.filter(|_| editable) else {
             self.clear_text_caret_animation();
             return;
         };
@@ -1116,7 +1227,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         transform: kurbo::Affine,
     ) {
         let focused = self.text_editing.focused_index();
+        #[cfg(feature = "menu")]
         let menu_target = self.active_text_context_menu_target();
+        #[cfg(not(feature = "menu"))]
+        let menu_target: Option<usize> = None;
         for index in 0..self.text_editing.text_input_targets.len() {
             let target = &self.text_editing.text_input_targets[index];
             if target.content_alpha <= 0.0 || (focused != Some(index) && menu_target != Some(index))
@@ -1130,49 +1244,60 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             };
             let selection = refreshed_target_selection(target);
             if selection.is_collapsed() {
-                if focused != Some(index) {
-                    continue;
-                }
-                let opacity = self.text_caret_opacity(self.frame_instant());
-                let paint = CaretPaints::resolve(&paints.caret, target.bounds);
-                // The look's paint blinks as a group: the blink's opacity
-                // over the text's own, so zero hides the caret.
-                let alpha = target.content_alpha * opacity;
-                let rect = target.cursor_area;
-                let clip = target.text_clip_bounds;
-                let caret = self.live_caret.get_or_insert_with(|| {
-                    Rc::new(crate::renderer::chrome::LiveCaret::new(
-                        rect,
-                        clip,
-                        paint.clone(),
-                        alpha,
-                    ))
-                });
-                caret.update(rect, clip, paint, alpha);
-                let source: Rc<dyn crate::renderer::chrome::LiveSource> = caret.clone();
-                self.program().push_live(source, transform);
-            } else {
-                let selection_paint = CaretPaints::resolve(&paints.selection, target.bounds);
-                let mut scene = Recording::new();
-                scene.record_picture(transform, |draw| {
-                    draw.clip(target.text_clip_bounds, |draw| {
-                        draw.group(
-                            cherenkov_record::Group::new().opacity(target.content_alpha),
-                            |draw| {
-                                target.layout.selection_rects(selection, |rect| {
-                                    let highlight = kurbo::Rect::new(
-                                        target.text_bounds.x0 + rect.x0,
-                                        target.text_bounds.y0 + rect.y0,
-                                        target.text_bounds.x0 + rect.x1,
-                                        target.text_bounds.y0 + rect.y1,
-                                    );
-                                    draw.fill(highlight, selection_paint.clone());
-                                });
-                            },
-                        );
+                #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                {
+                    if focused != Some(index) {
+                        continue;
+                    }
+                    let Some(caret_paint) = &paints.caret else {
+                        continue;
+                    };
+                    let opacity = self.text_caret_opacity(self.frame_instant());
+                    let paint = CaretPaints::resolve(caret_paint, target.bounds);
+                    // The look's paint blinks as a group: the blink's opacity
+                    // over the text's own, so zero hides the caret.
+                    let alpha = target.content_alpha * opacity;
+                    let rect = target.cursor_area;
+                    let clip = target.text_clip_bounds;
+                    let caret = self.live_caret.get_or_insert_with(|| {
+                        Rc::new(crate::renderer::chrome::LiveCaret::new(
+                            rect,
+                            clip,
+                            paint.clone(),
+                            alpha,
+                        ))
                     });
-                });
-                self.scene_mut().append(&scene, kurbo::Affine::IDENTITY);
+                    caret.update(rect, clip, paint, alpha);
+                    let source: Rc<dyn crate::renderer::chrome::LiveSource> = caret.clone();
+                    self.program().push_live(source, transform);
+                }
+            } else {
+                #[cfg(hydrolysis_cherenkov)]
+                {
+                    let selection_paint = CaretPaints::resolve(&paints.selection, target.bounds);
+                    let mut scene = Recording::new();
+                    scene.record_picture(transform, |draw| {
+                        draw.clip(target.text_clip_bounds, |draw| {
+                            draw.group(
+                                cherenkov_record::Group::new().opacity(target.content_alpha),
+                                |draw| {
+                                    target.layout.selection_rects(selection, |rect| {
+                                        let highlight = kurbo::Rect::new(
+                                            target.text_bounds.x0 + rect.x0,
+                                            target.text_bounds.y0 + rect.y0,
+                                            target.text_bounds.x0 + rect.x1,
+                                            target.text_bounds.y0 + rect.y1,
+                                        );
+                                        draw.fill(highlight, selection_paint.clone());
+                                    });
+                                },
+                            );
+                        });
+                    });
+                    self.scene_mut().append(&scene, kurbo::Affine::IDENTITY);
+                }
+                #[cfg(not(hydrolysis_cherenkov))]
+                let _ = (paints, transform);
             }
         }
     }
@@ -1180,10 +1305,17 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn advance_text_caret_animation(&mut self, now: Instant) -> bool {
-        if !self.text_editing.has_focus() {
+        if !self.text_editing.has_focus()
+            || self
+                .text_editing
+                .focused_target()
+                .is_some_and(|target| !target.model.is_editable())
+        {
             return false;
         }
-        let motion = self.text_caret_motion();
+        let Some(motion) = self.text_editing.text_caret_motion else {
+            return false;
+        };
         let mut next = self
             .text_editing
             .text_caret_next_frame_at
@@ -1342,8 +1474,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             self.reset_text_caret_animation(self.frame_instant());
         } else {
             self.clear_text_caret_animation();
-            self.dismiss_active_text_context_menu();
-            self.dismiss_active_popup_menu();
+            #[cfg(feature = "menu")]
+            {
+                self.dismiss_active_text_context_menu();
+                self.dismiss_active_popup_menu();
+            }
         }
         if let Some(key) = self.text_editing.focused_key() {
             self.mark_key_owner(&key, crate::renderer::mount::Dirty::LAYOUT);
@@ -1356,6 +1491,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         true
     }
 
+    #[cfg(feature = "menu")]
     pub(crate) fn dismiss_active_text_context_menu(&mut self) {
         if let Some(menu) = self.text_editing.active_text_context_menu.take() {
             match menu {
@@ -1388,6 +1524,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
     /// This frame's position of the input whose context menu is open, if that
     /// input is still emitted.
+    #[cfg(feature = "menu")]
     pub(crate) fn active_text_context_menu_target(&self) -> Option<usize> {
         let key = match self.text_editing.active_text_context_menu.as_ref()? {
             ActiveTextContextMenu::Overlay { target, .. }
@@ -1397,6 +1534,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 }
 
+#[cfg(feature = "menu")]
 impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn render_active_text_context_menu_overlay(
         &mut self,
@@ -1476,6 +1614,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 }
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {
+    #[cfg(feature = "menu")]
     pub(crate) fn handle_text_context_menu_overlay_pointer_down(
         &mut self,
         point: kurbo::Point,
@@ -1526,6 +1665,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// [`popup_menu_window`] path a `.context_menu` submenu takes. The window
     /// joins the overlay's menu group at depth 1: the overlay's dismiss
     /// sentinel holds depth 0, standing in for the root window.
+    #[cfg(feature = "menu")]
     fn open_text_context_menu_submenu(
         &mut self,
         overlay: &TextContextMenuOverlay<E>,
@@ -1593,6 +1733,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn focused_editor_snapshot(&self) -> Option<FocusedEditorSnapshot<E>> {
         let index = self.text_editing.focused_index()?;
         let target = &self.text_editing.text_input_targets[index];
+        if !target.model.is_editable() {
+            return None;
+        }
         let text = target.model.plain_text();
         let slot = target.selection.borrow();
         Some(FocusedEditorSnapshot {
@@ -1641,6 +1784,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let Some((_index, model, selection)) = self.focused_text_target_data() else {
             return false;
         };
+        if !model.is_editable() {
+            return false;
+        }
         // The projection goes through the same normalization the text-insert
         // path applies — carriage returns never reach a model, and a
         // single-line field never grows a newline — and the same line-limit
@@ -1727,7 +1873,14 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             return false;
         }
         let env = self.text_editing.text_input_targets[index].env.clone();
-        execute_text_context_menu_action(action, &model, &selection, &env)
+        let clipboard_write = Rc::clone(&self.text_editing.clipboard_write);
+        execute_text_context_menu_action_with_clipboard(
+            action,
+            &model,
+            &selection,
+            &env,
+            &clipboard_write,
+        )
     }
 
     pub(crate) fn text_selection_index_from_point(
@@ -1889,6 +2042,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let Some((_index, model, selection)) = self.focused_text_target_data() else {
             return false;
         };
+        if !model.is_editable() {
+            return false;
+        }
         let mut slot = selection.borrow_mut();
         replace_model_selection(&model, &mut slot, text)
     }
@@ -1897,16 +2053,38 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let Some((_index, model, selection)) = self.focused_text_target_data() else {
             return false;
         };
-        let mut slot = selection.borrow_mut();
-        delete_model_backward(&model, &mut slot)
+        if !model.is_editable() {
+            return false;
+        }
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            let mut slot = selection.borrow_mut();
+            delete_model_backward(&model, &mut slot)
+        }
+        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+        {
+            let _ = selection;
+            false
+        }
     }
 
     pub(crate) fn delete_forward_in_focused_target(&mut self) -> bool {
         let Some((_index, model, selection)) = self.focused_text_target_data() else {
             return false;
         };
-        let mut slot = selection.borrow_mut();
-        delete_model_forward(&model, &mut slot)
+        if !model.is_editable() {
+            return false;
+        }
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            let mut slot = selection.borrow_mut();
+            delete_model_forward(&model, &mut slot)
+        }
+        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+        {
+            let _ = selection;
+            false
+        }
     }
 
     pub(crate) fn select_all_in_focused_target(&mut self) -> bool {
@@ -1928,21 +2106,21 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let Some(selected) = selected_text_for_model(&model, &slot) else {
             return false;
         };
-        write_clipboard_text(selected.as_str())
+        (self.text_editing.clipboard_write)(selected.as_str())
     }
 
     pub(crate) fn cut_selection_in_focused_target(&mut self) -> bool {
         let Some((_index, model, selection)) = self.focused_text_target_data() else {
             return false;
         };
-        if model.is_secure() {
+        if !model.is_editable() || model.is_secure() {
             return false;
         }
         let mut slot = selection.borrow_mut();
         let Some(selected) = selected_text_for_model(&model, &slot) else {
             return false;
         };
-        if !write_clipboard_text(selected.as_str()) {
+        if !(self.text_editing.clipboard_write)(selected.as_str()) {
             return false;
         }
         delete_model_selection(&model, &mut slot)
@@ -1954,6 +2132,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let Some((_index, model, selection)) = self.focused_text_target_data() else {
             return false;
         };
+        if !model.is_editable() {
+            return false;
+        }
         if !text.is_empty() {
             let mut slot = selection.borrow_mut();
             let _ = replace_model_selection(&model, &mut slot, text);
@@ -1965,6 +2146,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let Some((_index, model, selection)) = self.focused_text_target_data() else {
             return false;
         };
+        if !model.is_editable() {
+            return false;
+        }
         spawn_clipboard_paste_task(model, selection);
         true
     }
@@ -2014,10 +2198,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// structure and opens as a submenu rather than flattening or panicking.
     /// `owner_closable` is the owning window's `closable`, the enabled state
     /// a Close Window row carries.
+    #[cfg(feature = "menu")]
     pub(crate) fn build_text_context_menu_nodes(
         target: &TextInputTarget<E>,
         env: &Environment,
         owner_closable: bool,
+        clipboard_write: &ClipboardWrite,
     ) -> Vec<PopupMenuNode> {
         let has_selection = {
             let slot = target.selection.borrow();
@@ -2031,13 +2217,18 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 action,
                 &target.model,
                 &target.selection,
+                clipboard_write,
             )
         };
         if has_selection && !target.model.is_secure() {
             nodes.push(builtin("copy", TextContextMenuAction::Copy));
-            nodes.push(builtin("cut", TextContextMenuAction::Cut));
+            if target.model.is_editable() {
+                nodes.push(builtin("cut", TextContextMenuAction::Cut));
+            }
         }
-        nodes.push(builtin("paste", TextContextMenuAction::Paste));
+        if target.model.is_editable() {
+            nodes.push(builtin("paste", TextContextMenuAction::Paste));
+        }
         if has_text {
             nodes.push(builtin("select_all", TextContextMenuAction::SelectAll));
         }
@@ -2105,6 +2296,7 @@ impl waterui_controls::CustomTextSelection for FieldSelectionDriver {
             TextInputModel::TextField { value, .. } => Some(value.clone()),
             #[cfg(feature = "secure-field")]
             TextInputModel::SecureField { .. } => None,
+            TextInputModel::SelectableText { .. } => None,
         }
     }
 }
@@ -2127,6 +2319,7 @@ fn text_selection_for_env<E: crate::text::TextEngine>(
     }))
 }
 
+#[cfg(feature = "menu")]
 impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn show_text_context_menu(
         &mut self,
@@ -2159,8 +2352,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             Some(selection) => menu_env.extending(State(selection)),
             None => menu_env,
         };
-        let nodes =
-            SemanticCore::build_text_context_menu_nodes(&target, &menu_env, self.window_closable);
+        let nodes = SemanticCore::build_text_context_menu_nodes(
+            &target,
+            &menu_env,
+            self.window_closable,
+            &self.text_editing.clipboard_write,
+        );
         if nodes.is_empty() {
             self.dismiss_active_text_context_menu();
             return false;
@@ -2259,13 +2456,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     pub fn handle_ime_preedit(&mut self, text: &str, caret: Option<usize>) -> bool {
-        // A password-purpose field is not IME-allowed: the platform should
-        // never mark one up, and a stray preedit must not draw extra mask
-        // glyphs that leak the composition's length.
-        let ime_allowed = self
-            .text_editing
-            .focused_target()
-            .is_some_and(|target| target.purpose != TextInputPurpose::Password);
+        // Password fields and read-only selectable text are never IME-allowed:
+        // a stray preedit must not draw mask glyphs or mutate static text.
+        let ime_allowed = self.text_editing.focused_target().is_some_and(|target| {
+            target.model.is_editable() && target.purpose != TextInputPurpose::Password
+        });
         if !ime_allowed {
             tracing::trace!(
                 target: "waterui::hydrolysis::input",
@@ -2311,6 +2506,22 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         changed
     }
 
+    fn dismiss_text_menus(&mut self) -> bool {
+        #[cfg(feature = "menu")]
+        {
+            let changed = self.text_editing.active_text_context_menu.is_some()
+                || self.active_popup_menu_visible();
+            self.dismiss_active_text_context_menu();
+            self.dismiss_active_popup_menu();
+            changed
+        }
+        #[cfg(not(feature = "menu"))]
+        {
+            let _ = self;
+            false
+        }
+    }
+
     pub fn handle_key(&mut self, key: &KeyCode, modifiers: Modifiers) -> bool {
         if !self.text_editing.has_focus() {
             return false;
@@ -2336,13 +2547,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     "v" => self.paste_clipboard_into_focused_target(),
                     _ => false,
                 },
-                KeyCode::Named(value) if value == "Escape" => {
-                    let changed = self.text_editing.active_text_context_menu.is_some()
-                        || self.active_popup_menu_visible();
-                    self.dismiss_active_text_context_menu();
-                    self.dismiss_active_popup_menu();
-                    changed
-                }
+                KeyCode::Named(value) if value == "Escape" => self.dismiss_text_menus(),
                 _ => false,
             }
         } else {
@@ -2373,13 +2578,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 KeyCode::Named(value) if value == "End" => {
                     self.move_focused_caret_to_boundary(true, modifiers.shift)
                 }
-                KeyCode::Named(value) if value == "Escape" => {
-                    let changed = self.text_editing.active_text_context_menu.is_some()
-                        || self.active_popup_menu_visible();
-                    self.dismiss_active_text_context_menu();
-                    self.dismiss_active_popup_menu();
-                    changed
-                }
+                KeyCode::Named(value) if value == "Escape" => self.dismiss_text_menus(),
                 KeyCode::Named(value) if value == "Enter" => {
                     if self.text_editing.ime_preedit.is_some() {
                         false
@@ -2456,6 +2655,7 @@ impl<E: crate::text::TextEngine> Clone for TextInputTarget<E> {
             model: self.model.clone(),
             selection: self.selection.clone(),
             env: self.env.clone(),
+            #[cfg(feature = "menu")]
             show_context_menu: self.show_context_menu,
             key_handlers: self.key_handlers.clone(),
             focus_binding: self.focus_binding.clone(),
@@ -2468,9 +2668,11 @@ impl<E: crate::text::TextEngine> Clone for TextInputTarget<E> {
 impl<E: crate::text::TextEngine> Default for TextEditingState<E> {
     fn default() -> Self {
         Self {
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             clearance_surfaces: RefCell::default(),
             text_input_targets: Vec::default(),
             active_text_selection_drag: Option::default(),
+            #[cfg(feature = "menu")]
             active_text_context_menu: Option::default(),
             focused_text_input: RefCell::default(),
             focused_binding: Option::default(),
@@ -2479,6 +2681,7 @@ impl<E: crate::text::TextEngine> Default for TextEditingState<E> {
             text_caret_fade_started_at: Option::default(),
             text_caret_next_frame_at: Option::default(),
             text_caret_motion: Option::default(),
+            clipboard_write: system_clipboard_write(),
         }
     }
 }

@@ -33,7 +33,7 @@ pub use measurement::*;
 pub use measurement_cache::{MeasurementCaches, MemoGate, NodeMeasureEntry};
 #[cfg(feature = "navigation")]
 pub use render_context::ChromeGroup;
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
+#[cfg(feature = "menu")]
 pub use render_context::HydrolysisTextContextMenuMode;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 pub use render_context::HydrolysisWindowOrigin;

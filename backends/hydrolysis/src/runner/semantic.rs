@@ -271,7 +271,7 @@ impl SemanticRuntime {
         #[cfg(any(test, hydrolysis_platform_services))]
         install_platform_services(&mut env);
         install_window_registries::<crate::text::ParleyEngine>(&mut env);
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        #[cfg(feature = "menu")]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // Framework tokens only: the semantic runtime has no `Style`, so no
         // style-package tokens ever install — widget structure, roles, labels
@@ -458,7 +458,6 @@ impl SemanticRuntime {
 
     /// Drops UI focus, if any text input holds it.
     #[cfg(feature = "accessibility")]
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub fn clear_ui_focus(&mut self) -> bool {
         let changed = self.window.core.clear_ui_focus();
         if changed {
@@ -644,15 +643,10 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
     // Same consumed-press suppression as the rendered runner: the press
     // precedes its paired `TextInput`, so this flag set at the press is read
     // by the very next `TextInput` event.
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     let mut suppress_key_text = false;
     for (event, ime_owned) in events.into_iter().zip(ime_owned) {
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let key_consumed = suppress_key_text;
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
-        {
-            suppress_key_text = false;
-        }
+        suppress_key_text = false;
         let changed = match event {
             InputEvent::CloseRequested => {
                 // The rendered runner's close gate (`handle_input_events`):
@@ -692,11 +686,9 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                 window.core.set_window_frame(kurbo_frame(frame));
                 false
             }
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             InputEvent::TextInput { text } => {
                 !ime_owned && window.core.handle_text_input(text.as_str())
             }
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             InputEvent::KeyText { text } => {
                 !ime_owned && !key_consumed && window.core.handle_text_input(text.as_str())
             }
@@ -723,10 +715,7 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                     let outcome = window
                         .core
                         .handle_key_press(&key, modifiers, key_env, &press);
-                    #[cfg(any(feature = "text-field", feature = "secure-field"))]
-                    {
-                        suppress_key_text = outcome == KeyPressOutcome::Consumed;
-                    }
+                    suppress_key_text = outcome == KeyPressOutcome::Consumed;
                     outcome != KeyPressOutcome::Ignored
                 }
             }
@@ -752,20 +741,11 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                         modifiers,
                     }) || window.core.handle_key_release_with_env(&key, key_env))
             }
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             InputEvent::ImePreedit { text, caret } => {
                 window.core.handle_ime_preedit(text.as_str(), caret)
             }
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             InputEvent::ImeCommit { text } => window.core.handle_ime_commit(text.as_str()),
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             InputEvent::ImeDisabled => window.core.handle_ime_disabled(),
-            #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
-            InputEvent::TextInput { .. }
-            | InputEvent::KeyText { .. }
-            | InputEvent::ImePreedit { .. }
-            | InputEvent::ImeCommit { .. }
-            | InputEvent::ImeDisabled => false,
             InputEvent::Focused(focused) => window.core.handle_window_focused(focused),
             InputEvent::KeyboardCancel => window.core.cancel_keyboard_press(),
             InputEvent::Paste { text } => window.core.paste_text(&text),

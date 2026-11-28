@@ -626,6 +626,13 @@ Both carry the full font API:
 sets the paragraph alignment of multiline text (a signal works too) and
 `.background_color(color)` paints behind the text run.
 
+Static text is non-selectable by default so it stays transparent to surrounding button,
+row, and gesture hit-testing. Opt in per leaf with `text(..).selectable(impl IntoSignal<bool>)`
+or across a subtree with `view.text_selectable(impl IntoComputed<bool>)` (which installs
+the `TextSelectable` environment plugin). An explicit leaf `.selectable(..)` overrides an
+enclosing `.text_selectable(..)` scope, and reactive `Binding<bool>` / `Computed<bool>`
+signals toggle read-only selection and copy in place.
+
 `StyledStr` (`waterui::text::StyledStr`; what `TextField::new` and `text(..)` also accept) takes
 `.strikethrough(bool)` beside `.underline(bool)`, and `.on_tap(payload, handler)` makes the
 whole string a tappable span: the handler receives the payload (`impl IntoComputed<E>`,

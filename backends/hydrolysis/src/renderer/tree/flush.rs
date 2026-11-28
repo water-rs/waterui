@@ -14,9 +14,12 @@ use crate::text::TextEngine;
     waterui_feature = "dialog"
 ))]
 use crate::theme::DialogLook;
+use crate::theme::ModalInteraction;
 #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
 use crate::theme::SheetLook;
 use kurbo::Affine;
+#[cfg(hydrolysis_cherenkov)]
+use waterui_core::resolve::Resolvable as _;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -242,6 +245,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 let styled = renderer.read_signal(&text.content);
                 let alignment = renderer.read_signal(&text.alignment);
                 let line_limit = renderer.read_signal(&text.line_limit);
+                let selectable = renderer.read_signal(&text.selectable);
+                if !selectable {
+                    let mut slot = text.selection_slot.borrow_mut();
+                    slot.anchor = 0;
+                    slot.focus = 0;
+                    slot.initialized = false;
+                }
                 #[cfg(feature = "accessibility")]
                 let text_node_id = TextNode::emit_accessibility(
                     renderer,
@@ -250,10 +260,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         accessibility_rect(env, &geometry),
                     )),
                     &styled,
+                    selectable,
+                    &text.selection_slot,
                     env,
                 );
-                #[cfg(not(feature = "accessibility"))]
-                TextNode::emit_accessibility(renderer, Some(ctx), &styled, env);
                 renderer.pop_render_owner();
                 let tail =
                     line_limit.map_or(TailMark::None, |limit| TailMark::Ellipsis(limit.get()));
@@ -262,7 +272,101 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 let paint = env
                     .get::<crate::renderer::chrome::LabelPaint>()
                     .map(|paint| paint.0.clone());
-                if styled.tap_spans().is_empty() {
+                let needs_layout = selectable || !styled.tap_spans().is_empty();
+                if needs_layout {
+                    let layout = renderer.render_styled_text_with_layout(
+                        ctx,
+                        max_width,
+                        &styled,
+                        alignment,
+                        env,
+                        tail,
+                        paint.as_ref(),
+                    );
+                    if styled.tap_spans().is_empty() {
+                        text.tap_span_targets.borrow_mut().clear();
+                    } else {
+                        // Span targets and `Link` children belong to this leaf:
+                        // register them under its render owner so their ancestry
+                        // matches the node that emitted them.
+                        renderer.push_render_owner(&text.accessibility_identity);
+                        text.flush_tap_spans(
+                            renderer,
+                            ctx,
+                            &layout,
+                            &styled,
+                            env,
+                            #[cfg(feature = "accessibility")]
+                            text_node_id,
+                        );
+                        renderer.pop_render_owner();
+                    }
+                    if selectable {
+                        let plain = styled.to_plain();
+                        let text_rect = ctx.bounds();
+                        #[cfg(hydrolysis_cherenkov)]
+                        let paints = {
+                            let selection_color = renderer.read_signal(
+                                &waterui_controls::theme::color::SelectionContainer.resolve(env),
+                            );
+                            let highlight_alpha = selection_color.components[3].min(0.35);
+                            let selection_paint = cherenkov_record::Paint::Solid(
+                                selection_color.with_alpha(highlight_alpha),
+                            );
+                            Some(crate::renderer::text_editing::CaretPaints::selection_only(
+                                selection_paint,
+                            ))
+                        };
+                        #[cfg(not(hydrolysis_cherenkov))]
+                        let paints = None;
+                        let interaction_key = crate::renderer::InteractionKey::for_rc(
+                            &text.accessibility_identity,
+                            0,
+                        );
+                        {
+                            let mut slot = text.selection_slot.borrow_mut();
+                            let anchor = crate::renderer::clamp_to_char_boundary(
+                                plain.as_str(),
+                                slot.anchor,
+                            );
+                            let focus =
+                                crate::renderer::clamp_to_char_boundary(plain.as_str(), slot.focus);
+                            slot.anchor = anchor;
+                            slot.focus = focus;
+                            slot.initialized = true;
+                        }
+                        let content_alpha = renderer.record_alpha();
+                        renderer.register_cursor_target(
+                            text_rect,
+                            waterui_interaction::cursor::CursorStyle::IBeam,
+                        );
+                        renderer.register_text_input_target(
+                            crate::renderer::TextInputTargetRegistration {
+                                interaction_key,
+                                modal: env
+                                    .get::<ModalInteraction>()
+                                    .is_some_and(ModalInteraction::is_active),
+                                bounds: text_rect,
+                                cursor_area: text_rect,
+                                text_bounds: text_rect,
+                                text_clip_bounds: text_rect,
+                                content_alpha,
+                                paints,
+                                layout: layout.clone(),
+                                display_text: plain.clone(),
+                                display_layout: layout,
+                                purpose: crate::platform::TextInputPurpose::Normal,
+                                model: crate::renderer::TextInputModel::SelectableText {
+                                    value: plain,
+                                },
+                                selection: Rc::clone(&text.selection_slot),
+                                env: env.clone(),
+                                #[cfg(feature = "menu")]
+                                show_context_menu: HydrolysisRenderer::<E>::show_text_context_menu,
+                            },
+                        );
+                    }
+                } else {
                     // Content that lost its spans drops their retained targets.
                     text.tap_span_targets.borrow_mut().clear();
                     renderer.render_styled_text_limited(
@@ -274,30 +378,6 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         tail,
                         paint.as_ref(),
                     );
-                } else {
-                    let layout = renderer.render_styled_text_with_layout(
-                        ctx,
-                        max_width,
-                        &styled,
-                        alignment,
-                        env,
-                        tail,
-                        paint.as_ref(),
-                    );
-                    // Span targets and `Link` children belong to this leaf:
-                    // register them under its render owner so their ancestry
-                    // matches the node that emitted them.
-                    renderer.push_render_owner(&text.accessibility_identity);
-                    text.flush_tap_spans(
-                        renderer,
-                        ctx,
-                        &layout,
-                        &styled,
-                        env,
-                        #[cfg(feature = "accessibility")]
-                        text_node_id,
-                    );
-                    renderer.pop_render_owner();
                 }
             }
             Self::Container(container) => {
@@ -1061,7 +1141,21 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Text(text) => {
                 renderer.push_accessibility_owner(&text.accessibility_identity);
                 let styled = renderer.read_signal(&text.content);
-                let text_node_id = TextNode::emit_accessibility(renderer, None, &styled, env);
+                let selectable = renderer.read_signal(&text.selectable);
+                if !selectable {
+                    let mut slot = text.selection_slot.borrow_mut();
+                    slot.anchor = 0;
+                    slot.focus = 0;
+                    slot.initialized = false;
+                }
+                let text_node_id = TextNode::emit_accessibility(
+                    renderer,
+                    None,
+                    &styled,
+                    selectable,
+                    &text.selection_slot,
+                    env,
+                );
                 let tap_spans = styled.tap_spans();
                 if !tap_spans.is_empty() {
                     let plain = styled.to_plain();

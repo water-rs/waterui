@@ -62,7 +62,7 @@ use crate::platform::{InputEvent, PlatformWindow, TextInputState, validated_wind
 use crate::renderer::FontFamilyResolution;
 #[cfg(hydrolysis_gpu_painter)]
 use crate::renderer::HydrolysisRenderer;
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
+#[cfg(feature = "menu")]
 use crate::renderer::HydrolysisTextContextMenuMode;
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::android_metrics::InsetsMetrics;
@@ -1647,7 +1647,7 @@ fn session_mounts(
     if let Some(menu_bar) = AppMenuBar::declared(&menu_bar) {
         menu_bar::register_menu_bar::<super::AndroidTextEngine>(menu_bar, &env);
     }
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
+    #[cfg(feature = "menu")]
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     // The configuration's night mode is the colour-scheme signal: created
     // with the real `uiMode` the create call carried and kept current by

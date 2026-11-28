@@ -437,6 +437,7 @@ fn trials() -> Vec<Trial> {
     #[cfg(feature = "highlight")]
     tests.extend(code::trials());
     tests.extend(a11y_combine::trials());
+    tests.extend(resolve::text_selectable_trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
@@ -1172,6 +1173,122 @@ mod resolve {
         let measured = leaf.layout().measure(ProposalSize::UNSPECIFIED);
         assert!(measured.size.width > 0.0);
         assert!(measured.size.height > 0.0);
+    }
+
+    /// Registers the selectable-text trials in the native harness.
+    pub fn text_selectable_trials() -> Vec<super::Trial> {
+        vec![super::Trial::test(
+            "resolve::text_selectable_defaults_false_and_supports_leaf_scope_override_and_reactive_toggle",
+            || {
+                text_selectable_defaults_false_and_supports_leaf_scope_override_and_reactive_toggle(
+                );
+                Ok(())
+            },
+        )]
+    }
+
+    /// Recursively collects every kit `Label` mounted under `root` in view order.
+    fn collect_labels(root: &Retained<PlatformView>, out: &mut Vec<Retained<Label>>) {
+        if let Ok(label) = root.clone().downcast::<Label>() {
+            out.push(label);
+        }
+        for subview in cocoa_ui::view::subviews(root) {
+            collect_labels(&subview, out);
+        }
+    }
+
+    /// Verifies read-only selectability on a mounted kit `Label`:
+    /// - default is non-selectable,
+    /// - `Text::selectable(true)` makes it selectable without making it editable
+    ///   and preserves exact layout measurement,
+    /// - `.text_selectable(true)` propagates to descendant `Text` and bare `Str`
+    ///   while leaf `.selectable(false)` overrides to non-selectable,
+    /// - a reactive `Binding<bool>` toggles selectability in place.
+    pub fn text_selectable_defaults_false_and_supports_leaf_scope_override_and_reactive_toggle() {
+        use waterui::Binding;
+        use waterui::component::text;
+        use waterui_layout::stack::vstack;
+
+        // Default text and bare string are non-selectable.
+        let default_leaf = render(text("error_404"));
+        let default_view = cocoa_ui::view::retain_base(default_leaf.view());
+        let default_label_view = text_leaf_label(&default_view);
+        let default_label = default_label_view
+            .downcast_ref::<Label>()
+            .expect("default text mounts a kit label");
+        assert!(!default_label.is_selectable());
+        #[cfg(target_os = "macos")]
+        assert!(!default_label.isEditable());
+
+        // Leaf `.selectable(true)` enables read-only selection and keeps identical sizing.
+        let selectable_leaf = render(text("error_404").selectable(true));
+        let selectable_view = cocoa_ui::view::retain_base(selectable_leaf.view());
+        let selectable_label_view = text_leaf_label(&selectable_view);
+        let selectable_label = selectable_label_view
+            .downcast_ref::<Label>()
+            .expect("selectable text mounts a kit label");
+        assert!(selectable_label.is_selectable());
+        #[cfg(target_os = "macos")]
+        assert!(!selectable_label.isEditable());
+        #[cfg(target_os = "ios")]
+        {
+            let tv = selectable_label
+                .selectable_text_view()
+                .expect("selectable UIKit label mounts a read-only UITextView");
+            assert!(!tv.isEditable());
+            assert!(tv.isSelectable());
+        }
+        assert_eq!(
+            default_leaf
+                .layout()
+                .measure(ProposalSize::UNSPECIFIED)
+                .size,
+            selectable_leaf
+                .layout()
+                .measure(ProposalSize::UNSPECIFIED)
+                .size,
+            "selectable text must preserve identical layout measurement"
+        );
+
+        // Subtree `.text_selectable(true)` propagates to `Text` and bare `Str`,
+        // while leaf `.selectable(false)` opts out.
+        let scoped_leaf = render(
+            vstack((
+                text("inherited_text"),
+                "inherited_str",
+                text("opt_out_text").selectable(false),
+            ))
+            .text_selectable(true),
+        );
+        let scoped_view = cocoa_ui::view::retain_base(scoped_leaf.view());
+        let mut labels = Vec::new();
+        collect_labels(&scoped_view, &mut labels);
+        assert_eq!(labels.len(), 3, "expected 3 labels in scoped vstack");
+        assert!(labels[0].is_selectable());
+        assert!(labels[1].is_selectable());
+        assert!(!labels[2].is_selectable());
+
+        // Reactive `Binding<bool>` toggles selectability dynamically.
+        let flag = Binding::new(false);
+        let reactive_leaf = render(text("trace_id").selectable(flag.clone()));
+        let reactive_view = cocoa_ui::view::retain_base(reactive_leaf.view());
+        let reactive_label_view = text_leaf_label(&reactive_view);
+        let reactive_label = reactive_label_view
+            .downcast_ref::<Label>()
+            .expect("reactive text mounts a kit label");
+        assert!(!reactive_label.is_selectable());
+
+        flag.set(true);
+        assert!(reactive_label.is_selectable());
+        #[cfg(target_os = "macos")]
+        assert!(!reactive_label.isEditable());
+
+        flag.set(false);
+        assert!(!reactive_label.is_selectable());
+        #[cfg(target_os = "macos")]
+        assert!(!reactive_label.isEditable());
+        #[cfg(target_os = "ios")]
+        assert!(reactive_label.selectable_text_view().is_none());
     }
 
     /// The label view of a string's rich-text leaf: a `HostView` wrapping

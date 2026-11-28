@@ -129,7 +129,6 @@ pub struct OwnerRegistrations<E: crate::text::TextEngine> {
     pub scroll_targets: Vec<RetainedEntry<crate::renderer::ScrollTarget<E>, E>>,
     /// Text-input targets: the payload keeps its rects in the node's
     /// local space; materialization resolves them through the region.
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub text_input_targets: Vec<RetainedEntry<crate::renderer::TextInputTarget<E>, E>>,
     /// Embedded-surface input targets.
     pub embedded_input_targets: Vec<RetainedEntry<crate::renderer::EmbeddedInputTarget<E>, E>>,
@@ -224,7 +223,6 @@ impl<E: crate::text::TextEngine> RetainedRegistry<E> {
 
     /// The live owners without pruning — the lookup paths that run with
     /// the registry shared (`&self`) walk it through here.
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn live_owners(&self) -> impl Iterator<Item = Rc<NodeCell<E>>> + '_ {
         self.owners.iter().filter_map(Weak::upgrade)
     }
@@ -331,7 +329,6 @@ owner_tagged!(
 #[cfg(feature = "navigation")]
 owner_tagged!(crate::renderer::NavigationBackTarget<E>);
 
-#[cfg(any(feature = "text-field", feature = "secure-field"))]
 owner_tagged!(crate::renderer::input::TextInputTarget<E>);
 
 impl<E: crate::text::TextEngine> SetRegistrationOwner<E> for () {}
@@ -357,7 +354,6 @@ impl<E: crate::text::TextEngine> Default for OwnerRegistrations<E> {
             #[cfg(feature = "menu")]
             context_menu_targets: Vec::default(),
             scroll_targets: Vec::default(),
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             text_input_targets: Vec::default(),
             embedded_input_targets: Vec::default(),
             native_view_occlusions: Vec::default(),

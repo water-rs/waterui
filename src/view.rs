@@ -92,7 +92,7 @@ use waterui_interaction::event::{
 use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState, Selected};
 use waterui_interaction::key::{KeyHandling, KeyPress, OnKeyPress};
 use waterui_structural_transition::{Transition, Transitioned};
-use waterui_text::IntoText;
+use waterui_text::{IntoText, TextSelectable};
 
 pub use waterui_layout::padding::DEFAULT_PADDING;
 
@@ -1701,6 +1701,22 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, Hittable::new(enabled))
     }
 
+    /// Controls whether static [`Text`](waterui_text::Text) views in this
+    /// subtree are selectable for copying.
+    ///
+    /// Installs a [`TextSelectable`] plugin into the subtree's environment
+    /// without erasing the view type. An explicit
+    /// [`Text::selectable`](waterui_text::Text::selectable) call on a leaf
+    /// overrides this scope, and a nested `.text_selectable(...)` replaces the
+    /// outer scope for its descendants. Default when no scope or leaf override
+    /// is present is `false`.
+    fn text_selectable(
+        self,
+        selectable: impl IntoComputed<bool>,
+    ) -> Installed<Self, TextSelectable> {
+        Installed::new(self, TextSelectable::new(selectable))
+    }
+
     /// Disables every interactive control in this view subtree.
     ///
     /// Installs a [`waterui_interaction::interaction::Disabled`] scope into the
@@ -2145,5 +2161,37 @@ mod tests {
         let (fill_layout, _) = fill_container.as_parts();
         let fill_size = fill_layout.size_that_fits(proposal, &[]);
         assert_eq!(fill_size, Size::new(300.0, 150.0));
+    }
+
+    #[test]
+    fn text_selectable_installs_plugin_without_erasure_and_supports_overrides() {
+        use nami::Signal as _;
+        use waterui_core::{Environment, env::Installed, plugin::Plugin as _};
+        use waterui_text::{Text, TextSelectable, text};
+
+        // Concrete return type guarantees zero `AnyView` erasure on the default path.
+        let scoped: Installed<Text, TextSelectable> = text("ERR-404").text_selectable(true);
+        let _ = scoped;
+
+        let mut env = Environment::new();
+        let flag = Binding::new(true);
+        TextSelectable::new(flag.clone()).install(&mut env);
+
+        let inherited = text("copyable").resolve(&env);
+        let leaf_disabled = text("not copyable").selectable(false).resolve(&env);
+        assert!(inherited.selectable().snapshot());
+        assert!(!leaf_disabled.selectable().snapshot());
+
+        flag.set(false);
+        assert!(!inherited.selectable().snapshot());
+        assert!(!leaf_disabled.selectable().snapshot());
+
+        // A nested `.text_selectable(false)` replaces an outer `true` scope.
+        let mut outer = Environment::new();
+        TextSelectable::new(true).install(&mut outer);
+        let mut inner = outer.clone();
+        TextSelectable::new(false).install(&mut inner);
+        assert!(text("outer").resolve(&outer).selectable().snapshot());
+        assert!(!text("inner").resolve(&inner).selectable().snapshot());
     }
 }

@@ -114,7 +114,7 @@ pub mod prelude {
     pub use super::shape::{Capsule, Circle, Rectangle, RoundedRectangle, ShapeExt};
     pub use waterui_core::IntoSignalF32;
 
-    pub use super::text::{IntoText, TextConfig, font, highlight, styled};
+    pub use super::text::{IntoText, TextConfig, TextSelectable, font, highlight, styled};
 
     #[cfg(feature = "link")]
     pub use super::component::link::{Link, link};

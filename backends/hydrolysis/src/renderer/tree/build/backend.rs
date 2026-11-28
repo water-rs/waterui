@@ -462,7 +462,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     ) -> RenderNode<E> {
         mark_reached!("text");
         let renderer = &mut *self.renderer;
-        let (content, alignment, line_limit) = native.into_parts();
+        let (content, alignment, line_limit, selectable) = native.into_parts();
         let core = renderer.new_core();
         let (layout_dirty, invalidate) = layout_invalidation(&core.cell);
         let guards = [
@@ -484,6 +484,8 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             content,
             alignment,
             line_limit,
+            selectable,
+            selection_slot: Rc::new(RefCell::new(crate::renderer::TextSelectionSlot::default())),
             layout_dirty,
             geometry: None,
             _guards: guards,
@@ -1797,6 +1799,10 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     fn label(&mut self, native: waterui_core::Str, env: &Environment, (): ()) -> RenderNode<E> {
         mark_reached!("label");
+        if env.get::<waterui_text::TextSelectable>().is_some() {
+            let config = waterui_text::Text::new(native).resolve(env);
+            return self.text(config, env, ());
+        }
         let renderer = &mut *self.renderer;
         RenderNode::build_str(renderer, native, env)
     }

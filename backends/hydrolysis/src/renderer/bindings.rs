@@ -15,7 +15,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         (order, depth, index)
     }
 
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(super) fn topmost_text_input_index_at_point(&self, point: kurbo::Point) -> Option<usize> {
         self.text_editing
             .text_input_targets
@@ -31,7 +30,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn focused_text_input_accessibility_node(&self) -> Option<AccessibilityNodeId> {
         self.text_editing.focused_target()?.accessibility_node_id
     }
@@ -39,7 +37,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Whether a text input claims this accessibility node — the check the
     /// Android runner runs before the panicking focus call.
     #[cfg(all(feature = "accessibility", target_os = "android"))]
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn accessibility_node_is_text_input(&self, node_id: AccessibilityNodeId) -> bool {
         self.text_editing
             .text_input_targets
@@ -48,7 +45,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn focus_text_input_for_accessibility_node(
         &mut self,
         node_id: AccessibilityNodeId,
@@ -103,7 +99,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Whether an IME composition currently owns keyboard input — either a
     /// widget field holding marked text or an embedded surface's session.
     pub(crate) const fn ime_composition_active(&self) -> bool {
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         if self.text_editing.ime_preedit.is_some() {
             return true;
         }
@@ -145,22 +140,18 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 activations,
             ));
         }
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
-        {
-            let target = self.text_editing.focused_target()?;
-            Some(TextInputState::new(
-                target.cursor_area.x0,
-                target.cursor_area.y0,
-                target.cursor_area.width().max(1.0),
-                target.cursor_area.height().max(1.0),
-                target.purpose,
-                activations,
-            ))
+        let target = self.text_editing.focused_target()?;
+        if !target.model.is_editable() {
+            return None;
         }
-        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
-        {
-            None
-        }
+        Some(TextInputState::new(
+            target.cursor_area.x0,
+            target.cursor_area.y0,
+            target.cursor_area.width().max(1.0),
+            target.cursor_area.height().max(1.0),
+            target.purpose,
+            activations,
+        ))
     }
 
     /// The focused text input's accessibility node — UI focus is the text
@@ -171,26 +162,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// a pointer press — ends editing (#95).
     #[cfg(feature = "accessibility")]
     #[must_use]
-    #[cfg_attr(
-        not(any(feature = "text-field", feature = "secure-field")),
-        expect(
-            clippy::unused_self,
-            clippy::missing_const_for_fn,
-            reason = "accessibility queries retain the same interface when no text input can hold UI focus"
-        )
-    )]
     pub fn focused_ui_node(&self) -> Option<AccessibilityNodeId> {
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
-        {
-            self.focused_text_input_accessibility_node()
-        }
-        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
-        {
-            None
-        }
+        self.focused_text_input_accessibility_node()
     }
 
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub fn clear_ui_focus(&mut self) -> bool {
         self.set_focused_text_input(None)
     }
@@ -222,7 +197,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn sync_hosted_focus(&mut self) -> bool {
         let hosted = self.hosted_has_focus();
         if hosted {
-            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             self.set_focused_text_input(None);
             self.set_focused_embedded_key(None);
             self.set_keyboard_focus(None, false);
@@ -347,9 +321,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// of [`Self::next_gesture_deadline`] and the focused caret's next blink
     /// frame.
     pub fn next_wake_deadline(&self) -> Option<Instant> {
-        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
-        let caret_deadline: Option<Instant> = None;
-        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let caret_deadline = self
             .text_editing
             .has_focus()
@@ -447,7 +418,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         group_id
     }
 
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn register_text_input_target(&mut self, target: TextInputTargetRegistration<E>) {
         #[cfg(feature = "accessibility")]
         let accessibility_node_id = self.take_pending_text_input_accessibility_node();
@@ -460,7 +430,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         });
     }
 
-    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(super) fn register_text_input_target_data(
         &mut self,
         data: text_editing::TextInputTargetData<E>,
@@ -490,6 +459,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 model: data.target.model,
                 selection: data.target.selection,
                 env: data.target.env,
+                #[cfg(feature = "menu")]
                 show_context_menu: data.target.show_context_menu,
                 key_handlers,
                 focus_binding: data.focus_binding,
