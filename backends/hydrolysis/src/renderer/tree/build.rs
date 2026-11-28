@@ -404,7 +404,6 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             accessibility_container_env,
             entries,
             placed: Vec::new(),
-            #[cfg(feature = "accessibility")]
             geometry: None,
             ghosts: Vec::new(),
             ghost_placed: Vec::new(),
@@ -706,6 +705,7 @@ fn is_background_fill_leaf<E: crate::text::TextEngine>(node: &RenderNode<E>) -> 
             matches!(
                 node.effect,
                 WrapperEffect::LayoutPriority(_)
+                    | WrapperEffect::ReportSize(_)
                     | WrapperEffect::LifeCycle(_)
                     | WrapperEffect::Task(_)
                     | WrapperEffect::Focused(_)

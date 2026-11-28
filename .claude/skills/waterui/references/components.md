@@ -148,6 +148,16 @@ Two more sizing modifiers:
 .layout_priority(1)                                // a stack compresses its lowest-priority children first
 ```
 
+To read back a view's committed placed size (for adaptive layouts driven by available width rather than window or platform checks), attach `.report_size(&Binding<Size>)`. The binding is written after layout commits only when the size changes and never feeds back into layout proposals:
+
+```rust
+let size = binding(Size::zero());
+let adaptive = when(size.map(|s| s.width > 600.0), two_column)
+    .otherwise(one_column)
+    .max_width(f32::INFINITY)
+    .report_size(&size);
+```
+
 `.horizontal_alignment_guide(HorizontalAlignment::Leading, |d| d.size.width / 2.0)` and
 `.vertical_alignment_guide(VerticalAlignment::Center, |d| ..)` move where a view's guide
 sits, so a stack aligned on that guide lines the view up there; the size and placement of the
@@ -311,7 +321,8 @@ renders its title instead, so install it freely on a toolbar and give each label
 ```rust
 button("Save")                              // Button<_, NoAction>: not a View until .action / .action_async is set
     .action(handler)                        // -> Button<_, impl FnMut(&Environment)>
-    .action_async(|| async { … })
+    .action_async(|| async { … })           // single-flight: disables interaction & reports busy until completion or drop
+    .pending(&saving)                       // mirrors in-flight state into &Binding<bool>; composes before or after .action_async
     .style(ButtonStyle::Plain)              // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
                                             // | Glass | GlassProminent (Liquid Glass capsules on Apple;
                                             //   bordered / bordered-prominent elsewhere)
@@ -831,7 +842,9 @@ Validation wraps a validatable control (`TextField`, `Stepper`, `Slider`): the b
 accepts only values the validator passes, and the failure reason shows under the control.
 `Required` and a `Range` are validators; combine with `.and(..)` / `.or(..)`. A text field is backed by styled text, so lift a plain-text
 validator with `Plain(..)`. `SecureField` (`secure(label, &Binding<Secure>)`) edits a
-password without exposing it in `Debug`:
+password without exposing it in `Debug`; it defaults to `ContentType::Password` and shares
+`.prompt(..)`, `.content_type(..)` (e.g. `ContentType::NewPassword`), `.submit_label(..)`,
+and `.on_submit(..)` with `TextField`:
 
 ```rust
 use waterui::form::valid::{Plain, Required, ValidatableView};

@@ -186,10 +186,9 @@ pub struct CollectionNode<E: crate::text::TextEngine> {
     pub(super) placed: Vec<Rect>,
     /// The geometry this collection was committed with at its last layout,
     /// its response resolved by `place_layout` — kept beside `placed` so a
-    /// naming-scope owner reports its response rectangle when the parent
-    /// assigned more than it answered (water-rs/hydrolysis#51). `None` until
-    /// the first layout.
-    #[cfg(feature = "accessibility")]
+    /// naming-scope owner or `report_size` modifier reads its response
+    /// rectangle when the parent assigned more than it answered
+    /// (water-rs/hydrolysis#51). `None` until the first layout.
     pub(super) geometry: Option<PlacedGeometry>,
     /// Detached removals still animating out, each anchored after the live id
     /// it followed (`None` = before the first live entry). A ghost's node is
@@ -450,15 +449,12 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
             }
             (placement, frozen, priorities)
         };
-        #[cfg(feature = "accessibility")]
-        {
-            self.geometry = Some(PlacedGeometry {
-                proposal,
-                answer: placement.answer,
-                allocation: Rect::from_size(*bounds.size()),
-                response_rect: placement.response_rect,
-            });
-        }
+        self.geometry = Some(PlacedGeometry {
+            proposal,
+            answer: placement.answer,
+            allocation: Rect::from_size(*bounds.size()),
+            response_rect: placement.response_rect,
+        });
         let mut entry_frames = vec![None; self.entries.len()];
         let mut ghost_frames = vec![None; self.ghosts.len()];
         for (slot, child) in order.iter().zip(&placement.children) {

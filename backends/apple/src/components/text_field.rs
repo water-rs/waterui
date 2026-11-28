@@ -16,10 +16,8 @@
 //! it in Swift. `WuiSecureField` and the selection menu stay in the
 //! Swift fallback until their own ports land.
 
-use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
-use core::any::Any;
 use core::cell::RefCell;
 #[cfg(target_os = "macos")]
 use core::num::NonZeroUsize;
@@ -31,9 +29,8 @@ use nami::{Binding, Signal};
 use objc2::rc::Weak;
 use objc2_foundation::{NSRange, NSString};
 use waterui_backend_core::Environment;
-use waterui_controls::input::ContentType;
 #[cfg(target_os = "ios")]
-use waterui_controls::input::{Capitalization, KeyboardType, SubmitLabel};
+use waterui_controls::input::{Capitalization, KeyboardType};
 use waterui_controls::menu::ResolvedMenuItem;
 use waterui_controls::text_field::TextFieldConfig;
 use waterui_controls::text_selection::{CustomTextSelection, TextSelection};
@@ -41,275 +38,43 @@ use waterui_controls::theme::color::Foreground;
 use waterui_core::State;
 use waterui_core::Str;
 use waterui_core::layout::{
-    HorizontalAlignment, LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size,
-    StretchAxis, SubView, ViewDimensions,
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
 };
 use waterui_core::resolve::Resolvable;
-use waterui_graphics::color::WorkingColor;
 use waterui_interaction::interaction::Disabled;
 use waterui_text::StyledStr;
 #[cfg(target_os = "macos")]
 use waterui_text::font::Body;
-use waterui_text::font::ResolvedFont;
 
+use super::field_input::{
+    self, StyledPush, apply_styled, platform_color, push, render_attributed, resolve_alignment,
+    styled_push,
+};
+#[cfg(target_os = "macos")]
 use super::font::platform_font;
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
-    pub(super) use cocoa_ui::appkit::colors;
     pub(super) use cocoa_ui::appkit::{HostView, TextField};
-    pub(super) use cocoa_ui::objc2_app_kit::{NSColor, NSTextAlignment};
 }
 
 #[cfg(target_os = "ios")]
 mod platform {
-    pub(super) use cocoa_ui::objc2_ui_kit::{NSTextAlignment, UIColor};
-    pub(super) use cocoa_ui::uikit::colors;
     pub(super) use cocoa_ui::uikit::text_field::Keyboard;
-    pub(super) use cocoa_ui::uikit::text_input::{Autocapitalization, Autocorrection, ReturnKey};
+    pub(super) use cocoa_ui::uikit::text_input::{Autocapitalization, Autocorrection};
     pub(super) use cocoa_ui::uikit::{HostView, TextField};
 }
 
 use crate::contract::RenderContext;
 use platform::{HostView, TextField};
 
-/// The platform color a [`StyledPush`]'s default foreground draws in.
-#[cfg(target_os = "macos")]
-type PlatformColor = platform::NSColor;
-/// The platform color a [`StyledPush`]'s default foreground draws in.
-#[cfg(target_os = "ios")]
-type PlatformColor = platform::UIColor;
-
 /// The gap between the label and the field — `WuiTextField.verticalSpacing`.
 const VERTICAL_SPACING: f64 = 4.0;
 /// The narrowest width the leaf reports — `WuiTextField`'s 100pt floor.
 const MIN_WIDTH: f64 = 100.0;
-
-/// A styled chunk resolved into its current values, as in `text`.
-struct Chunk {
-    /// The chunk's characters.
-    text: Str,
-    /// Its latest resolved font.
-    font: ResolvedFont,
-    /// Its latest foreground — `None` draws the state's default.
-    foreground: Option<WorkingColor>,
-    /// Its latest background.
-    background: Option<WorkingColor>,
-    /// Whether the chunk is italicized.
-    italic: bool,
-    /// Whether the chunk is underlined.
-    underline: bool,
-    /// Whether the chunk is struck through.
-    strikethrough: bool,
-}
-
-/// A `StyledStr` the leaf renders into an attributed string and pushes to a
-/// kit setter: the field's `value` (theme `Foreground` default) or its
-/// `prompt` (placeholder-color default). Same model as `text`'s `TextState`
-/// — per-chunk signal watches re-push the rebuilt string.
-struct StyledPush {
-    /// Proof of the main thread for font construction inside watchers.
-    mtm: cocoa_ui::MainThreadMarker,
-    /// The environment chunks resolve through.
-    env: Environment,
-    /// The color chunks without their own foreground draw in.
-    default_foreground: Retained<PlatformColor>,
-    /// The resolved chunks of the current `StyledStr`.
-    chunks: Vec<Chunk>,
-    /// Watcher guards of the current `StyledStr`'s per-chunk signals,
-    /// replaced wholesale when the value changes.
-    signal_guards: Vec<Box<dyn Any>>,
-    /// Where the rebuilt attributed string goes.
-    push: Box<dyn Fn(&Self)>,
-}
-
-impl core::fmt::Debug for StyledPush {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("StyledPush").finish_non_exhaustive()
-    }
-}
-
-/// A `WorkingColor` as the platform's extended linear Display-P3 color object.
-#[cfg(target_os = "ios")]
-fn platform_color(color: &WorkingColor) -> Retained<PlatformColor> {
-    {
-        let [red, green, blue, alpha] = color.components;
-        platform::colors::extended_linear_display_p3(
-            f64::from(red),
-            f64::from(green),
-            f64::from(blue),
-            f64::from(alpha),
-        )
-    }
-}
-
-/// A `WorkingColor` as the platform's extended linear Display-P3 color object, with HDR
-/// headroom applied as a content-headroom multiplier — the `AppKit` variant.
-#[cfg(target_os = "macos")]
-fn platform_color(color: &WorkingColor) -> Retained<PlatformColor> {
-    {
-        let [red, green, blue, alpha] = color.components;
-        platform::colors::extended_linear_display_p3(
-            f64::from(red),
-            f64::from(green),
-            f64::from(blue),
-            f64::from(alpha),
-        )
-    }
-}
-
-/// The attributed string the current chunks render into — `text`'s builder
-/// run against this state's default foreground.
-fn render_attributed(state: &StyledPush) -> Retained<objc2_foundation::NSAttributedString> {
-    let fonts: Vec<Retained<cocoa_ui::Font>> = state
-        .chunks
-        .iter()
-        .map(|chunk| platform_font(state.mtm, &chunk.font, chunk.italic))
-        .collect();
-    let foregrounds: Vec<Option<Retained<PlatformColor>>> = state
-        .chunks
-        .iter()
-        .map(|chunk| {
-            Some(
-                chunk
-                    .foreground
-                    .as_ref()
-                    .map_or_else(|| state.default_foreground.clone(), platform_color),
-            )
-        })
-        .collect();
-    let backgrounds: Vec<Option<Retained<PlatformColor>>> = state
-        .chunks
-        .iter()
-        .map(|chunk| chunk.background.as_ref().map(platform_color))
-        .collect();
-    let runs: Vec<cocoa_ui::text::TextRun<'_>> = state
-        .chunks
-        .iter()
-        .enumerate()
-        .map(|(i, chunk)| cocoa_ui::text::TextRun {
-            text: chunk.text.as_str(),
-            font: &fonts[i],
-            foreground: foregrounds[i].as_deref(),
-            background: backgrounds[i].as_deref(),
-            underline: chunk.underline,
-            strikethrough: chunk.strikethrough,
-            letter_spacing: f64::from(chunk.font.letter_spacing()),
-            line_height: chunk.font.line_height().map_or(0.0, f64::from),
-        })
-        .collect();
-    cocoa_ui::text::build(state.mtm, &runs).into_super()
-}
-
-/// Rebuilds the attributed string and pushes it through the state's setter.
-fn push(state: &StyledPush) {
-    (state.push)(state);
-}
-
-/// A live `StyledPush` holding `styled`'s resolved chunks and signal
-/// watches, already pushed once — the leaf then watches the value signal
-/// and re-runs [`apply_styled`] on it.
-fn styled_push(
-    mtm: cocoa_ui::MainThreadMarker,
-    env: &Environment,
-    default_foreground: Retained<PlatformColor>,
-    styled: &StyledStr,
-    push: impl Fn(&StyledPush) + 'static,
-) -> Rc<RefCell<StyledPush>> {
-    let state = Rc::new(RefCell::new(StyledPush {
-        mtm,
-        env: env.clone(),
-        default_foreground,
-        chunks: Vec::new(),
-        signal_guards: Vec::new(),
-        push: Box::new(push),
-    }));
-    apply_styled(&state, styled);
-    self::push(&state.borrow());
-    state
-}
-
-/// Resolves `styled` into chunk state plus the per-chunk signal watches
-/// that re-push a rebuild — the work `text`'s `apply_styled` performs.
-fn apply_styled(state: &Rc<RefCell<StyledPush>>, styled: &StyledStr) {
-    let env = state.borrow().env.clone();
-    let mut chunks = Vec::with_capacity(styled.chunks().len());
-    let mut guards: Vec<Box<dyn Any>> = Vec::new();
-    for (index, (text, style)) in styled.chunks().iter().enumerate() {
-        let font = style.get_font().resolve(&env);
-        let foreground = style
-            .get_foreground()
-            .as_ref()
-            .map(|color| color.resolve(&env));
-        let background = style
-            .get_background()
-            .as_ref()
-            .map(|color| color.resolve(&env));
-        chunks.push(Chunk {
-            text: text.clone(),
-            font: font.snapshot(),
-            foreground: foreground.as_ref().map(Signal::snapshot),
-            background: background.as_ref().map(Signal::snapshot),
-            italic: style.get_italic(),
-            underline: style.get_underline(),
-            strikethrough: style.get_strikethrough(),
-        });
-
-        guards.push(Box::new(font.watch({
-            let state = Rc::clone(state);
-            move |ctx| {
-                let mut state = state.borrow_mut();
-                state.chunks[index].font = ctx.into_value();
-                push(&state);
-            }
-        })));
-        if let Some(signal) = foreground {
-            guards.push(Box::new(signal.watch({
-                let state = Rc::clone(state);
-                move |ctx| {
-                    let mut state = state.borrow_mut();
-                    state.chunks[index].foreground = Some(ctx.into_value());
-                    push(&state);
-                }
-            })));
-        }
-        if let Some(signal) = background {
-            guards.push(Box::new(signal.watch({
-                let state = Rc::clone(state);
-                move |ctx| {
-                    let mut state = state.borrow_mut();
-                    state.chunks[index].background = Some(ctx.into_value());
-                    push(&state);
-                }
-            })));
-        }
-    }
-    let mut state = state.borrow_mut();
-    state.chunks = chunks;
-    state.signal_guards = guards;
-}
-
-/// The `HorizontalAlignment` mapping `WuiTextField.applyPromptAlignment`
-/// applies: `Center` centers, `Trailing` flips with the reading direction,
-/// anything else stays natural.
-fn apply_alignment(field: &TextField, alignment: HorizontalAlignment) {
-    use platform::NSTextAlignment;
-    let field_view: &PlatformView = field;
-    let alignment = if alignment == HorizontalAlignment::Center {
-        NSTextAlignment::Center
-    } else if alignment == HorizontalAlignment::Trailing {
-        if view::is_right_to_left(field_view) {
-            NSTextAlignment::Left
-        } else {
-            NSTextAlignment::Right
-        }
-    } else {
-        NSTextAlignment::Natural
-    };
-    field.set_text_alignment(alignment);
-}
 
 /// The `Keyboard` a `KeyboardType` asks for — `WuiKeyboardType.uiKeyboardType`'s
 /// table. `AppKit` has no on-screen keyboard; there the hint is unused.
@@ -360,45 +125,6 @@ const fn autocorrection(enabled: bool) -> platform::Autocorrection {
     }
 }
 
-/// The `UIKit` return-key type a `SubmitLabel` asks for.
-#[cfg(target_os = "ios")]
-fn return_key(label: SubmitLabel) -> platform::ReturnKey {
-    match label {
-        SubmitLabel::Return => platform::ReturnKey::Default,
-        SubmitLabel::Done => platform::ReturnKey::Done,
-        SubmitLabel::Go => platform::ReturnKey::Go,
-        SubmitLabel::Next => platform::ReturnKey::Next,
-        SubmitLabel::Search => platform::ReturnKey::Search,
-        SubmitLabel::Send => platform::ReturnKey::Send,
-        SubmitLabel::Join => platform::ReturnKey::Join,
-        SubmitLabel::Continue => platform::ReturnKey::Continue,
-        _ => {
-            waterui_core::contract_violation!(
-                "unsupported WaterUI submit label; the default return key is used"
-            );
-            platform::ReturnKey::Default
-        }
-    }
-}
-
-/// The kit `ContentType` a `WaterUI` `ContentType` asks for —
-/// `UITextContentType`/`NSTextContentType` share the vocabulary, so one
-/// table covers both platforms.
-const fn content_type(kind: ContentType) -> cocoa_ui::ContentType {
-    match kind {
-        ContentType::Username => cocoa_ui::ContentType::Username,
-        ContentType::Password => cocoa_ui::ContentType::Password,
-        ContentType::NewPassword => cocoa_ui::ContentType::NewPassword,
-        ContentType::EmailAddress => cocoa_ui::ContentType::EmailAddress,
-        ContentType::PhoneNumber => cocoa_ui::ContentType::PhoneNumber,
-        ContentType::OneTimeCode => cocoa_ui::ContentType::OneTimeCode,
-        ContentType::PersonName => cocoa_ui::ContentType::PersonName,
-        ContentType::PostalAddress => cocoa_ui::ContentType::PostalAddress,
-        ContentType::PostalCode => cocoa_ui::ContentType::PostalCode,
-        ContentType::CreditCardNumber => cocoa_ui::ContentType::CreditCardNumber,
-    }
-}
-
 /// The field's share of a measure — the text height `WuiTextField` reports.
 /// `AppKit` reads `intrinsicContentSize`; `UIKit` floors `sizeThatFits` at
 /// intrinsic so the field never reports shorter than its font needs.
@@ -411,18 +137,6 @@ fn field_height(field: &TextField, _width: f64) -> f64 {
 #[cfg(target_os = "ios")]
 fn field_height(field: &TextField, width: f64) -> f64 {
     field.measured_height(width)
-}
-
-/// The watcher a new `StyledStr` value installs on its push state:
-/// re-resolve every chunk signal, then push the rebuild.
-fn restyle(
-    state: &Rc<RefCell<StyledPush>>,
-) -> impl Fn(nami::watcher::Context<StyledStr>) + 'static + use<> {
-    let state = Rc::clone(state);
-    move |ctx| {
-        apply_styled(&state, ctx.value());
-        push(&state.borrow());
-    }
 }
 
 /// The value side of the leaf: binding watches pushing the resolved text
@@ -498,26 +212,19 @@ fn wire_prompt(
     field: &Retained<TextField>,
     prompt: &waterui_text::TextConfig,
 ) {
-    let content = prompt.content();
-    let state = styled_push(
+    let placeholder_field = field.clone();
+    let alignment_field = field.clone();
+    field_input::wire_prompt(
         mtm,
-        ctx.env(),
-        platform::colors::placeholder_text(),
-        &content.snapshot(),
-        {
-            let field = field.clone();
-            move |state| {
-                crate::measure_memo::invalidate();
-                field.set_placeholder(&render_attributed(state));
-            }
+        leaf,
+        ctx,
+        prompt,
+        move |attributed| placeholder_field.set_placeholder(attributed),
+        move |alignment| {
+            let view: &PlatformView = &alignment_field;
+            alignment_field.set_text_alignment(resolve_alignment(view, alignment));
         },
     );
-    leaf.watch(&content, restyle(&state));
-    leaf.bind(prompt.paragraph_alignment(), {
-        let field = field.clone();
-        move |alignment| apply_alignment(&field, alignment)
-    });
-    leaf.keep(state);
 }
 
 /// The leaf's live state: the platform field and the mounted label child.
@@ -649,7 +356,7 @@ fn configure_input_traits(field: &TextField, config: &TextFieldConfig<Held>) {
         field.set_keyboard(keyboard(config.keyboard()));
         field.set_autocapitalization(autocapitalization(config.autocapitalization()));
         field.set_autocorrection(autocorrection(config.autocorrect()));
-        field.set_return_key(return_key(config.submit_label()));
+        field.set_return_key(field_input::return_key(config.submit_label()));
     }
     #[cfg(target_os = "macos")]
     field.set_autocorrect(config.autocorrect());
@@ -658,7 +365,7 @@ fn configure_input_traits(field: &TextField, config: &TextFieldConfig<Held>) {
     // both kits — `UITextContentType`/`NSTextContentType` is what the
     // system offers an SMS code for.
     if let Some(declared) = config.content_type() {
-        field.set_content_type(content_type(declared));
+        field.set_content_type(field_input::content_type(declared));
     }
 }
 
@@ -1056,17 +763,41 @@ mod tests {
         assert_eq!(autocorrection(false), platform::Autocorrection::Disabled);
 
         let labels = [
-            (SubmitLabel::Return, platform::ReturnKey::Default),
-            (SubmitLabel::Done, platform::ReturnKey::Done),
-            (SubmitLabel::Go, platform::ReturnKey::Go),
-            (SubmitLabel::Next, platform::ReturnKey::Next),
-            (SubmitLabel::Search, platform::ReturnKey::Search),
-            (SubmitLabel::Send, platform::ReturnKey::Send),
-            (SubmitLabel::Join, platform::ReturnKey::Join),
-            (SubmitLabel::Continue, platform::ReturnKey::Continue),
+            (
+                waterui_controls::input::SubmitLabel::Return,
+                cocoa_ui::uikit::text_input::ReturnKey::Default,
+            ),
+            (
+                waterui_controls::input::SubmitLabel::Done,
+                cocoa_ui::uikit::text_input::ReturnKey::Done,
+            ),
+            (
+                waterui_controls::input::SubmitLabel::Go,
+                cocoa_ui::uikit::text_input::ReturnKey::Go,
+            ),
+            (
+                waterui_controls::input::SubmitLabel::Next,
+                cocoa_ui::uikit::text_input::ReturnKey::Next,
+            ),
+            (
+                waterui_controls::input::SubmitLabel::Search,
+                cocoa_ui::uikit::text_input::ReturnKey::Search,
+            ),
+            (
+                waterui_controls::input::SubmitLabel::Send,
+                cocoa_ui::uikit::text_input::ReturnKey::Send,
+            ),
+            (
+                waterui_controls::input::SubmitLabel::Join,
+                cocoa_ui::uikit::text_input::ReturnKey::Join,
+            ),
+            (
+                waterui_controls::input::SubmitLabel::Continue,
+                cocoa_ui::uikit::text_input::ReturnKey::Continue,
+            ),
         ];
         for (source, expected) in labels {
-            assert_eq!(return_key(source), expected);
+            assert_eq!(field_input::return_key(source), expected);
         }
     }
 

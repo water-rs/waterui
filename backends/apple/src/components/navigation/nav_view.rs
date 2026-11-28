@@ -119,7 +119,23 @@ mod platform {
             &mut keep,
         );
 
-        bar_view.set_page(&page(&bar, &mut keep, env));
+        let built_items = Rc::new(crate::components::navigation::BuiltBarItems::build(
+            &bar,
+            &mut keep,
+            |item, keep| button(item, keep, env),
+        ));
+        bar_view.set_page(&page(&bar, &built_items));
+        built_items.watch_visibility(&mut keep, {
+            let bar_view = bar_view.clone();
+            let built_items = Rc::clone(&built_items);
+            move || {
+                let title_view = built_items.visible_title_view();
+                let leading = built_items.visible_leading();
+                let trailing = built_items.visible_trailing();
+                bar_view.set_items(title_view.as_deref(), &leading, &trailing);
+            }
+        });
+        keep.keep(built_items);
         keep.bind(&Foreground.resolve(env), {
             let bar_view = bar_view.clone();
             move |color| bar_view.set_title_color(&platform_color(&color))
@@ -279,33 +295,14 @@ mod platform {
 
     /// The standalone page chrome — no back affordance: there is nothing to
     /// pop without a controller in the environment.
-    fn page(bar: &BarState, keep: &mut KeepAlive, env: &waterui_core::Environment) -> NavPage {
-        let title_view = bar.principal().map_or_else(
-            || {
-                if bar.title.text.is_some() {
-                    None
-                } else {
-                    Some(cocoa_ui::view::retain_base(bar.title.leaf.view()))
-                }
-            },
-            |item| Some(cocoa_ui::view::retain_base(item.leaf.view())),
-        );
+    fn page(bar: &BarState, items: &crate::components::navigation::BuiltBarItems) -> NavPage {
         NavPage {
             title: bar.title.text.clone().unwrap_or_default(),
-            title_view,
+            title_view: items.visible_title_view(),
             subtitle: bar.subtitle.text.clone(),
-            leading: bar
-                .leading_items()
-                .map(|item| button(item, keep, env))
-                .collect(),
-            trailing: bar
-                .trailing_items()
-                .map(|item| button(item, keep, env))
-                .collect(),
-            bottom: bar
-                .bottom_items()
-                .map(|item| button(item, keep, env))
-                .collect(),
+            leading: items.visible_leading(),
+            trailing: items.visible_trailing(),
+            bottom: items.visible_bottom(),
             hides_back: true,
             on_back: None,
             search: None,
@@ -470,6 +467,7 @@ mod platform {
         }
         header.addSubview(&title);
         for item in &bar.items {
+            view::set_hidden(item.leaf.view(), !item.is_visible());
             header.addSubview(item.leaf.view());
         }
         let search_field = bar.search.as_ref().map(|search| {
@@ -550,6 +548,9 @@ mod platform {
                     let mut left = 12.0;
                     let mut right = chrome.size.width - 12.0;
                     for item in &bar.items {
+                        if !item.is_visible() {
+                            continue;
+                        }
                         let size = bar_item_frame(item).size;
                         let leading = matches!(
                             item.placement,
@@ -676,6 +677,23 @@ mod platform {
             let publish = publish_bar.clone();
             move |host, _hidden| publish(host)
         });
+        for item in &bar.items {
+            if let Some(visible) = &item.visible {
+                let publish = publish_bar.clone();
+                let host = host.clone();
+                let item_view = view::retain_base(item.leaf.view());
+                keep.watch(visible, move |visible| {
+                    view::set_hidden(&item_view, !visible.into_value());
+                    host.set_needs_layout();
+                    publish(host.as_ref());
+                });
+            }
+            if let Some(disabled) = &item.disabled {
+                let publish = publish_bar.clone();
+                let host = host.clone();
+                keep.watch(disabled, move |_| publish(host.as_ref()));
+            }
+        }
         keep.watch(&bar.hidden, {
             let publish = publish_bar;
             let host = host.clone();
@@ -734,6 +752,7 @@ mod platform {
     /// forwarded to the content's own button.
     fn child(item: &BarItem, icons: &Rc<crate::toolbar::IconJobs>) -> ToolbarChild {
         let button = first_button(item.leaf.view());
+        let enabled = !item.is_disabled() && button.as_ref().is_none_or(|b| b.isEnabled());
         let action = button.as_ref().map(|button| {
             let button = button.clone();
             alloc::rc::Rc::new(move || {
@@ -770,6 +789,7 @@ mod platform {
                 .as_ref()
                 .map_or_else(String::new, |title| title.snapshot().to_plain().to_string()),
             action,
+            enabled,
         }
     }
 

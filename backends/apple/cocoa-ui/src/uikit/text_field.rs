@@ -551,6 +551,25 @@ impl SecureField {
         self.setAttributedPlaceholder(Some(placeholder));
     }
 
+    /// The declared content type (`UITextContentType`, e.g. password or new-password).
+    pub fn set_content_type(&self, content_type: crate::ContentType) {
+        // SAFETY: `setTextContentType:` is a `UITextInputTraits` setter on
+        // `UITextField` — see `send_trait_setter`. The constants are
+        // framework statics, so passing one cannot alias.
+        unsafe {
+            send_trait_setter(self, sel!(setTextContentType:), Some(content_type.native()));
+        }
+    }
+
+    /// The label and action shown on the software keyboard's Return key (`UIReturnKeyType`).
+    pub fn set_return_key(&self, return_key: ReturnKey) {
+        // SAFETY: `setReturnKeyType:` is a `UITextInputTraits` setter on
+        // `UITextField` — see `send_trait_setter`.
+        unsafe {
+            send_trait_setter(self, sel!(setReturnKeyType:), return_key.native());
+        }
+    }
+
     /// How the field aligns its text.
     pub fn set_text_alignment(&self, alignment: NSTextAlignment) {
         self.setTextAlignment(alignment);

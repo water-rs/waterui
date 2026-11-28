@@ -48,7 +48,7 @@ use waterui_core::layout::{
 use waterui_core::{Environment, Metadata, Native};
 use waterui_graphics::color::Color;
 use waterui_interaction::focus::Focused;
-use waterui_interaction::interaction::InteractionState;
+use waterui_interaction::interaction::{Disabled, InteractionState};
 use waterui_structural_transition::{ReduceMotion, TransitionProperties};
 use waterui_text::font::Body;
 
@@ -273,6 +273,33 @@ struct SearchSuggestionsOverlay<E: crate::text::TextEngine> {
     placed_edge: Binding<AnchorEdge>,
 }
 
+/// One retained toolbar item together with its optional reactive visibility.
+struct ToolbarItemEntry<E: crate::text::TextEngine> {
+    subview: RetainedSubview<E>,
+    visible: Option<Computed<bool>>,
+}
+
+impl<E: crate::text::TextEngine> ToolbarItemEntry<E> {
+    fn is_visible_measure(&self, hydro: &mut HydroState<E>) -> bool {
+        self.visible
+            .as_ref()
+            .is_none_or(|visible| hydro.measure_signal(visible))
+    }
+
+    fn is_visible_render(&self, renderer: &mut HydrolysisRenderer<E>) -> bool {
+        self.visible
+            .as_ref()
+            .is_none_or(|visible| renderer.read_signal(visible))
+    }
+
+    #[cfg(feature = "accessibility")]
+    fn is_visible_semantic(&self, renderer: &mut crate::renderer::SemanticCore<E>) -> bool {
+        self.visible
+            .as_ref()
+            .is_none_or(|visible| renderer.read_signal(visible))
+    }
+}
+
 /// The retained render state of a `NavigationView`. The bar's semantic title,
 /// subtitle, toolbar items and screen content are move-only `AnyView`s, so the persistent
 /// `Widget` node holds each as a [`RetainedSubview`] built once and re-flushed at
@@ -283,10 +310,10 @@ struct SearchSuggestionsOverlay<E: crate::text::TextEngine> {
 pub struct NavigationViewRenderState<E: crate::text::TextEngine> {
     title: RetainedSubview<E>,
     subtitle: RetainedSubview<E>,
-    principal: Vec<RetainedSubview<E>>,
-    leading: Vec<RetainedSubview<E>>,
-    trailing: Vec<RetainedSubview<E>>,
-    bottom: Vec<RetainedSubview<E>>,
+    principal: Vec<ToolbarItemEntry<E>>,
+    leading: Vec<ToolbarItemEntry<E>>,
+    trailing: Vec<ToolbarItemEntry<E>>,
+    bottom: Vec<ToolbarItemEntry<E>>,
     content: RetainedSubview<E>,
     search: Option<NavigationSearch>,
     /// The search field as a retained node sub-view (the `TextField`'s reactive text
@@ -371,9 +398,15 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
         let mut trailing = Vec::new();
         let mut bottom = Vec::new();
         for item in toolbar.take_items() {
-            let (placement, content, _, _, item_env) = item.into_parts();
-            let scoped = scoped_toolbar_item_env(item_env.as_ref().unwrap_or(env));
-            let retained = RetainedSubview::held_in(content, scoped);
+            let (placement, content, _, _, disabled, visible, item_env) = item.into_parts();
+            let mut scoped = scoped_toolbar_item_env(item_env.as_ref().unwrap_or(env));
+            if let Some(disabled) = disabled {
+                Disabled::install(&mut scoped, disabled);
+            }
+            let retained = ToolbarItemEntry {
+                subview: RetainedSubview::held_in(content, scoped),
+                visible,
+            };
             match placement {
                 NavigationToolbarPlacement::Principal => principal.push(retained),
                 NavigationToolbarPlacement::Cancellation
@@ -481,12 +514,33 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
             .chain(&mut self.trailing)
             .chain(&mut self.bottom)
         {
-            item.ensure_built(renderer, env);
+            item.subview.ensure_built(renderer, env);
         }
         if let Some(search_field) = &mut self.search_field {
             search_field.ensure_built(renderer, env);
         }
         self.content.ensure_built(renderer, env);
+    }
+
+    /// Prepares prebuilt bar and content sub-views for measurement so controls
+    /// whose labels build during `prepare` (such as icon toolbar buttons) are
+    /// ready before measure or accessibility runs.
+    pub(crate) fn prepare(&mut self, renderer: &mut HydrolysisRenderer<E>, _env: &Environment) {
+        self.title.prepare_for_measure(renderer);
+        self.subtitle.prepare_for_measure(renderer);
+        for item in self
+            .principal
+            .iter_mut()
+            .chain(&mut self.leading)
+            .chain(&mut self.trailing)
+            .chain(&mut self.bottom)
+        {
+            item.subview.prepare_for_measure(renderer);
+        }
+        if let Some(search_field) = &mut self.search_field {
+            search_field.prepare_for_measure(renderer);
+        }
+        self.content.prepare_for_measure(renderer);
     }
 
     /// The built screen content: the root a navigation stack claims its
@@ -511,7 +565,7 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
             .chain(&mut self.trailing)
             .chain(&mut self.bottom)
         {
-            dirty |= item.take_layout_dirty_if_built();
+            dirty |= item.subview.take_layout_dirty_if_built();
         }
         if let Some(search_field) = &mut self.search_field {
             dirty |= search_field.take_layout_dirty_if_built();
@@ -741,7 +795,11 @@ pub fn measure_navigation_view_node<E: crate::text::TextEngine>(
         };
         base + search_extra
     };
-    let title_size = if bar_height > 0.0 && state.principal.is_empty() {
+    let has_visible_principal = state
+        .principal
+        .iter()
+        .any(|item| item.is_visible_measure(hydro));
+    let title_size = if bar_height > 0.0 && !has_visible_principal {
         let title_env = navigation_title_env(env, &look, state.display_mode);
         let title = state.title.measure_built(hydro, &title_env, theme);
         let subtitle = if state.subtitle_present() {
@@ -784,10 +842,14 @@ pub fn measure_navigation_view_node<E: crate::text::TextEngine>(
         ))
         .max(horizontal_inset.mul_add(2.0, f64::from(search_size.width)))
         .max(horizontal_inset.mul_add(2.0, f64::from(bottom_size.width)));
-    let bottom_height = if state.bottom.is_empty() {
-        0.0
-    } else {
+    let has_visible_bottom = state
+        .bottom
+        .iter()
+        .any(|item| item.is_visible_measure(hydro));
+    let bottom_height = if has_visible_bottom {
         f64::from(metrics.inline_bar_height)
+    } else {
+        0.0
     };
     let height = f64::from(content_size.height) + bar_height + bottom_height;
     ViewDimensions::new(LayoutSize::new(
@@ -797,7 +859,7 @@ pub fn measure_navigation_view_node<E: crate::text::TextEngine>(
 }
 
 fn measure_retained_toolbar_group<E: crate::text::TextEngine>(
-    group: &[RetainedSubview<E>],
+    group: &[ToolbarItemEntry<E>],
     hydro: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
@@ -805,11 +867,16 @@ fn measure_retained_toolbar_group<E: crate::text::TextEngine>(
 ) -> LayoutSize {
     let mut width = 0.0_f64;
     let mut height = 0.0_f64;
-    for (index, item) in group.iter().enumerate() {
-        let size = item.measure_built(hydro, env, theme);
-        if index > 0 {
+    let mut visible_count = 0_usize;
+    for item in group {
+        if !item.is_visible_measure(hydro) {
+            continue;
+        }
+        let size = item.subview.measure_built(hydro, env, theme);
+        if visible_count > 0 {
             width += f64::from(metrics.item_spacing);
         }
+        visible_count += 1;
         width += f64::from(size.width);
         height = height.max(f64::from(size.height));
     }
@@ -860,16 +927,20 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
     state: &Rc<RefCell<NavigationViewRenderState<E>>>,
     env: &Environment,
 ) {
-    let (hidden_signal, color_signal, display_mode, search, has_bottom) = {
+    let (hidden_signal, color_signal, display_mode, search) = {
         let state = state.borrow();
         (
             state.hidden.clone(),
             state.color.clone(),
             state.display_mode,
             state.search.clone(),
-            !state.bottom.is_empty(),
         )
     };
+    let has_bottom = state
+        .borrow()
+        .bottom
+        .iter()
+        .any(|item| item.is_visible_render(ctx.renderer_mut()));
     let theme = ctx.theme();
     let look = state.borrow_mut().navigation_look(&theme, env);
     let metrics = look.metrics();
@@ -1027,7 +1098,21 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
         let title_rect = kurbo::Rect::new(title_x0, title_y0, title_x1, title_y0 + title_height);
         if title_rect.width() > 0.0 && title_rect.height() > 0.0 {
             let mut state = state.borrow_mut();
-            if state.principal.is_empty() {
+            let has_visible_principal = state
+                .principal
+                .iter()
+                .any(|item| item.is_visible_render(ctx.renderer_mut()));
+            if has_visible_principal {
+                flush_toolbar_group(
+                    ctx,
+                    &mut state.principal,
+                    env,
+                    title_rect,
+                    ToolbarAlignment::Center,
+                    top,
+                    f64::from(metrics.item_spacing),
+                );
+            } else {
                 // The bar title's and subtitle's a11y are emitted by
                 // `navigation_view_accessibility`, so suppress the sub-views'
                 // own a11y (matching the dispatch path's
@@ -1040,16 +1125,6 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
                 flush_title_and_subtitle(ctx, &mut state, env, &title_env, title_rect, top);
                 #[cfg(feature = "accessibility")]
                 ctx.renderer_mut().pop_accessibility_suppression();
-            } else {
-                flush_toolbar_group(
-                    ctx,
-                    &mut state.principal,
-                    env,
-                    title_rect,
-                    ToolbarAlignment::Center,
-                    top,
-                    f64::from(metrics.item_spacing),
-                );
             }
         }
 
@@ -1172,18 +1247,23 @@ enum ToolbarAlignment {
 }
 
 fn measure_toolbar_group_intrinsic<E: crate::text::TextEngine>(
-    group: &mut [RetainedSubview<E>],
+    group: &mut [ToolbarItemEntry<E>],
     renderer: &mut HydrolysisRenderer<E>,
     env: &Environment,
     metrics: &crate::theme::NavigationMetrics,
 ) -> LayoutSize {
     let mut width = 0.0_f64;
     let mut height = 0.0_f64;
-    for (index, item) in group.iter_mut().enumerate() {
-        let size = item.measure_intrinsic(renderer, env);
-        if index > 0 {
+    let mut visible_count = 0_usize;
+    for item in group.iter_mut() {
+        if !item.is_visible_render(renderer) {
+            continue;
+        }
+        let size = item.subview.measure_intrinsic(renderer, env);
+        if visible_count > 0 {
             width += f64::from(metrics.item_spacing);
         }
+        visible_count += 1;
         width += f64::from(size.width);
         height = height.max(f64::from(size.height));
     }
@@ -1195,7 +1275,7 @@ fn measure_toolbar_group_intrinsic<E: crate::text::TextEngine>(
 
 fn flush_toolbar_group<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
-    group: &mut [RetainedSubview<E>],
+    group: &mut [ToolbarItemEntry<E>],
     env: &Environment,
     bounds: kurbo::Rect,
     alignment: ToolbarAlignment,
@@ -1205,13 +1285,26 @@ fn flush_toolbar_group<E: crate::text::TextEngine>(
     if group.is_empty() || bounds.width() <= 0.0 || bounds.height() <= 0.0 {
         return;
     }
-    let sizes: Vec<LayoutSize> = group
+    let visible_items: Vec<(usize, LayoutSize)> = group
         .iter_mut()
-        .map(|item| item.measure_intrinsic(ctx.renderer_mut(), env))
+        .enumerate()
+        .filter_map(|(index, item)| {
+            if !item.is_visible_render(ctx.renderer_mut()) {
+                return None;
+            }
+            let size = item.subview.measure_intrinsic(ctx.renderer_mut(), env);
+            Some((index, size))
+        })
         .collect();
+    if visible_items.is_empty() {
+        return;
+    }
     let total_width = item_spacing.mul_add(
-        crate::num_cast::usize_as_f64(sizes.len().saturating_sub(1)),
-        sizes.iter().map(|size| f64::from(size.width)).sum::<f64>(),
+        crate::num_cast::usize_as_f64(visible_items.len().saturating_sub(1)),
+        visible_items
+            .iter()
+            .map(|(_, size)| f64::from(size.width))
+            .sum::<f64>(),
     );
     let rtl = layout_direction(env).snapshot().is_right_to_left();
     if rtl {
@@ -1221,7 +1314,8 @@ fn flush_toolbar_group<E: crate::text::TextEngine>(
             ToolbarAlignment::Trailing => bounds.x0 + total_width,
         }
         .min(bounds.x1);
-        for (item, size) in group.iter_mut().zip(sizes) {
+        for (index, size) in visible_items {
+            let item = &mut group[index];
             let width = f64::from(size.width).min((cursor_x1 - bounds.x0).max(0.0));
             let height = f64::from(size.height).min(bounds.height());
             let y = (bounds.height() - height).mul_add(0.5, bounds.y0);
@@ -1230,7 +1324,7 @@ fn flush_toolbar_group<E: crate::text::TextEngine>(
             if rect.width() > 0.0 && rect.height() > 0.0 {
                 let render_ctx = ctx.render_context();
                 let item_area = bar.area_for(rect);
-                item.place(
+                item.subview.place(
                     ctx.renderer_mut(),
                     render_ctx,
                     env,
@@ -1248,7 +1342,8 @@ fn flush_toolbar_group<E: crate::text::TextEngine>(
             ToolbarAlignment::Trailing => bounds.x1 - total_width,
         }
         .max(bounds.x0);
-        for (item, size) in group.iter_mut().zip(sizes) {
+        for (index, size) in visible_items {
+            let item = &mut group[index];
             let width = f64::from(size.width).min((bounds.x1 - x).max(0.0));
             let height = f64::from(size.height).min(bounds.height());
             let y = (bounds.height() - height).mul_add(0.5, bounds.y0);
@@ -1256,7 +1351,7 @@ fn flush_toolbar_group<E: crate::text::TextEngine>(
             if rect.width() > 0.0 && rect.height() > 0.0 {
                 let render_ctx = ctx.render_context();
                 let item_area = bar.area_for(rect);
-                item.place(
+                item.subview.place(
                     ctx.renderer_mut(),
                     render_ctx,
                     env,
@@ -3478,16 +3573,24 @@ pub fn emit_navigation_view_accessibility<E: crate::text::TextEngine>(
         env,
     );
     for item in &mut state.leading {
-        item.emit_accessibility(renderer, env);
+        if item.is_visible_semantic(renderer) {
+            item.subview.emit_accessibility(renderer, env);
+        }
     }
     for item in &mut state.principal {
-        item.emit_accessibility(renderer, env);
+        if item.is_visible_semantic(renderer) {
+            item.subview.emit_accessibility(renderer, env);
+        }
     }
     for item in &mut state.trailing {
-        item.emit_accessibility(renderer, env);
+        if item.is_visible_semantic(renderer) {
+            item.subview.emit_accessibility(renderer, env);
+        }
     }
     for item in &mut state.bottom {
-        item.emit_accessibility(renderer, env);
+        if item.is_visible_semantic(renderer) {
+            item.subview.emit_accessibility(renderer, env);
+        }
     }
     if let Some(field) = state.search_field.as_mut() {
         field.emit_accessibility(renderer, env);

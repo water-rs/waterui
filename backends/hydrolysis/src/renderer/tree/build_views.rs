@@ -53,6 +53,7 @@ impl_widget_behavior!(
     crate::widgets::nav::navigation::NavigationViewRenderState<E>,
     crate::widgets::nav::navigation::render_navigation_view_node,
     crate::widgets::nav::navigation::measure_navigation_view_node
+    ; prepare: prepare
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::nav::navigation::emit_navigation_view_accessibility
     ; page: navigation_page_transition

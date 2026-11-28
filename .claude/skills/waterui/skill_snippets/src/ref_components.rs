@@ -171,6 +171,20 @@ pub fn components_block_06() {
     let _ = {
         view.layout_priority(1) // a stack compresses its lowest-priority children first
     };
+
+    // components.md § "## Layout containers" — report_size adaptive layout snippet.
+    fn two_column() -> impl View {
+        hstack((text("Left"), text("Right")))
+    }
+    fn one_column() -> impl View {
+        vstack((text("Top"), text("Bottom")))
+    }
+    let size = binding(Size::zero());
+    let adaptive = when(size.map(|s| s.width > 600.0), two_column)
+        .otherwise(one_column)
+        .max_width(f32::INFINITY)
+        .report_size(&size);
+    let _ = adaptive;
 }
 
 // ---------------------------------------------------------------------------
@@ -412,12 +426,14 @@ pub fn components_block_14() {
     let notes = Binding::new(Str::from(""));
     let code = Binding::new(Str::from(""));
     let note = Binding::new(Str::from(""));
+    let saving = Binding::new(false);
     let fraction = 0.5_f64;
 
     let _ = {
         button("Save") // Button<NoAction>
             .action(handler) // -> Button<impl FnMut(&Environment)>
-            .action_async(|| async {}) // [ellipsis filled]
+            .action_async(|| async {}) // [ellipsis filled] single-flight: disables interaction & reports busy until completion or drop
+            .pending(&saving) // mirrors in-flight state into &Binding<bool>; composes before or after .action_async
             .style(ButtonStyle::Plain) // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
             // | Glass | GlassProminent (Liquid Glass capsules on Apple;
             //   bordered / bordered-prominent elsewhere)
@@ -1186,11 +1202,15 @@ pub fn components_block_31() -> impl View {
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_form_validation_prose() {
-    use waterui::form::secure::Secure;
+    use waterui::form::secure::{ContentType, Secure, SubmitLabel};
     use waterui::form::valid::{Required, Validator};
 
     let password = Binding::new(Secure::default());
-    let _ = secure("Password", &password);
+    let _ = secure("Password", &password)
+        .prompt("At least 12 characters")
+        .content_type(ContentType::NewPassword)
+        .submit_label(SubmitLabel::Done)
+        .on_submit(|| {});
     // `Required` validates several text types, so `.and` names the one it combines over.
     let _ = Validator::<Str>::and(Required, Required);
     let _ = <Required as Validator<Str>>::validate;

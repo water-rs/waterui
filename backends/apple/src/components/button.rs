@@ -16,7 +16,7 @@ use core::cell::RefCell;
 use cocoa_ui::accessibility::Role;
 use cocoa_ui::action::ActionTarget;
 use cocoa_ui::{PlatformView, Rect as KitRect, Retained, view};
-use nami::Computed;
+use nami::{Computed, SignalExt as _, zip::zip};
 use waterui_backend_core::Environment;
 use waterui_controls::ControlSize;
 use waterui_controls::button::{ButtonConfig, ButtonRole, ButtonStyle};
@@ -166,6 +166,7 @@ pub fn realize_button_config(config: ButtonConfig<Held>, ctx: &RenderContext<'_>
     let style = config.style();
     let size = config.size();
     let role = config.role();
+    let pending = config.pending().cloned();
     let (label, mut action, ..) = config.into_parts();
     realize_control_button(
         &label,
@@ -173,6 +174,7 @@ pub fn realize_button_config(config: ButtonConfig<Held>, ctx: &RenderContext<'_>
         size,
         role,
         None,
+        pending.as_ref(),
         move |env| {
             action(env).report_extraction();
         },
@@ -181,12 +183,17 @@ pub fn realize_button_config(config: ButtonConfig<Held>, ctx: &RenderContext<'_>
 }
 
 /// Shared realization for native Apple button and link controls.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shared button/link realization accepts semantic fields, pending signal, activation callback, and render context"
+)]
 pub(super) fn realize_control_button(
     label: &ControlLabel<Held>,
     style: ButtonStyle,
     size: ControlSize,
     role: Option<ButtonRole>,
     accessibility_role: Option<Role>,
+    pending: Option<&Computed<bool>>,
     on_activate: impl FnMut(&Environment) + 'static,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
@@ -282,7 +289,10 @@ pub(super) fn realize_control_button(
     if let Some(a11y_role) = accessibility_role {
         view::set_accessibility_role(as_view(&button), a11y_role);
     }
-    bind_disabled(&mut leaf, &button, &label_container, ctx.env());
+    if let Some(pending) = pending {
+        bind_pending_accessibility(&mut leaf, &button, pending);
+    }
+    bind_disabled(&mut leaf, &button, &label_container, ctx.env(), pending);
     button_chrome::bind_tint(&mut leaf, styled(&button), style, role, ctx.env(), mtm);
     #[cfg(target_os = "macos")]
     if style == ButtonStyle::Link {
@@ -373,14 +383,43 @@ fn bind_accessibility(
     view::hide_from_accessibility(label_container);
 }
 
-/// The disabled signal: `isEnabled` flips and the label dims.
+/// Pushes the pending busy accessibility state onto the button's element.
+fn bind_pending_accessibility(leaf: &mut NativeLeaf, button: &Button, pending: &Computed<bool>) {
+    let button_view = view::retain_base(as_view(button));
+    #[cfg(target_os = "ios")]
+    {
+        let original_hint = cocoa_ui::accessibility::hint(&button_view);
+        leaf.bind(pending, move |busy| {
+            cocoa_ui::accessibility::set_busy(&button_view, busy, original_hint.as_deref());
+        });
+    }
+    #[cfg(target_os = "macos")]
+    {
+        leaf.bind(pending, move |busy| {
+            cocoa_ui::accessibility::set_busy(
+                crate::components::accessibility_metadata::target::of(&button_view),
+                busy,
+            );
+        });
+    }
+}
+
+/// The disabled signal (combining enclosing `Disabled` and in-flight async
+/// `pending`): `isEnabled` flips and the label dims.
 fn bind_disabled(
     leaf: &mut NativeLeaf,
     button: &platform::OwnedButton,
     label_container: &Retained<HostView>,
     env: &Environment,
+    pending: Option<&Computed<bool>>,
 ) {
-    let disabled = Disabled::resolve(env, false);
+    let env_disabled = Disabled::resolve(env, false);
+    let disabled = match pending {
+        Some(pending) => zip(env_disabled, pending.clone())
+            .map(|(disabled, is_pending)| disabled || is_pending)
+            .computed(),
+        None => env_disabled,
+    };
     {
         let button = button.clone();
         let label_container = label_container.clone();
