@@ -1386,6 +1386,16 @@ impl fmt::Debug for TableHeaderFooterViewIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TableHeaderFooterViewIvars")
             .field("payload", &self.payload.borrow().is_some())
+            .field("disclosure", &self.disclosure.borrow().is_some())
+            .field(
+                "disclosure_constraints",
+                &self.disclosure_constraints.borrow().len(),
+            )
+            .field(
+                "disclosure_target",
+                &self.disclosure_target.borrow().is_some(),
+            )
+            .field("label_click", &self.label_click.borrow().is_some())
             .finish()
     }
 }
