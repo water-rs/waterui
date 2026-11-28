@@ -21,6 +21,7 @@ use waterui_backend_core::Environment;
 use waterui_controls::ControlSize;
 use waterui_controls::button::{ButtonConfig, ButtonRole, ButtonStyle};
 use waterui_controls::label::ControlLabel;
+use waterui_controls::shortcut::Shortcut;
 use waterui_core::handler::ReportExtraction;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
@@ -167,6 +168,7 @@ pub fn realize_button_config(config: ButtonConfig<Held>, ctx: &RenderContext<'_>
     let size = config.size();
     let role = config.role();
     let pending = config.pending().cloned();
+    let shortcut = config.shortcut();
     let (label, mut action, ..) = config.into_parts();
     realize_control_button(
         &label,
@@ -175,6 +177,7 @@ pub fn realize_button_config(config: ButtonConfig<Held>, ctx: &RenderContext<'_>
         role,
         None,
         pending.as_ref(),
+        shortcut.as_ref(),
         move |env| {
             action(env).report_extraction();
         },
@@ -185,7 +188,7 @@ pub fn realize_button_config(config: ButtonConfig<Held>, ctx: &RenderContext<'_>
 /// Shared realization for native Apple button and link controls.
 #[expect(
     clippy::too_many_arguments,
-    reason = "shared button/link realization accepts semantic fields, pending signal, activation callback, and render context"
+    reason = "shared button/link realization accepts semantic fields, pending signal, shortcut, activation callback, and render context"
 )]
 pub(super) fn realize_control_button(
     label: &ControlLabel<Held>,
@@ -194,6 +197,7 @@ pub(super) fn realize_control_button(
     role: Option<ButtonRole>,
     accessibility_role: Option<Role>,
     pending: Option<&Computed<bool>>,
+    shortcut: Option<&Shortcut>,
     on_activate: impl FnMut(&Environment) + 'static,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
@@ -283,7 +287,22 @@ pub(super) fn realize_control_button(
     // `Button<Action>` extracted state into — not the label's clone.
     let on_activate = Rc::new(RefCell::new(on_activate));
     let action_env = ctx.env().clone();
-    wire_action(&mut leaf, &button, on_activate, action_env);
+    wire_action(
+        &mut leaf,
+        &button,
+        Rc::clone(&on_activate),
+        action_env.clone(),
+    );
+    if let Some(shortcut) = shortcut {
+        wire_shortcut(
+            &mut leaf,
+            &button,
+            shortcut,
+            &accessibility_label,
+            on_activate,
+            action_env,
+        );
+    }
 
     bind_accessibility(&mut leaf, &button, &label_container, &accessibility_label);
     if let Some(a11y_role) = accessibility_role {
@@ -303,6 +322,38 @@ pub(super) fn realize_control_button(
         leaf.keep(platform::PointerInteraction::rounded_rect(as_view(&button)));
     }
     leaf
+}
+
+/// Arms `shortcut` on the native button, sharing `waterui_apple_menu::shortcut_parts`
+/// with menu `Command`s: `NSButton.keyEquivalent` on `AppKit` and a `UIKeyCommand`
+/// on `UIKit` active while mounted and enabled.
+fn wire_shortcut<F: FnMut(&Environment) + 'static>(
+    leaf: &mut NativeLeaf,
+    button: &Button,
+    shortcut: &Shortcut,
+    accessibility_label: &Computed<StyledStr>,
+    action: Rc<RefCell<F>>,
+    env: Environment,
+) {
+    let (key_equivalent, modifiers) = waterui_apple_menu::shortcut_parts(shortcut);
+    if key_equivalent.is_empty() {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (leaf, accessibility_label, action, env);
+        button.set_key_equivalent(&key_equivalent, modifiers);
+    }
+    #[cfg(target_os = "ios")]
+    {
+        use nami::Signal as _;
+        let title =
+            cocoa_ui::text::strip_bidi_controls(accessibility_label.snapshot().to_plain().as_str());
+        let scope = button.arm_shortcut(&title, &key_equivalent, modifiers, move || {
+            (action.borrow_mut())(&env);
+        });
+        leaf.keep(scope);
+    }
 }
 
 /// Wires an activation callback through `ActionTarget` so a tap runs it on the

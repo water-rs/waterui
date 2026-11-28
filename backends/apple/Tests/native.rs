@@ -417,6 +417,7 @@ fn trials() -> Vec<Trial> {
     #[cfg(feature = "link")]
     tests.extend(link::trials());
     tests.extend(async_button_pending::trials());
+    tests.extend(button_keyboard_shortcut::trials());
     tests.extend(markdown_a11y::trials());
     tests.extend(icon_a11y::trials());
     #[cfg(feature = "highlight")]
@@ -19507,6 +19508,162 @@ mod async_button_pending {
             let mtm = mtm();
             assert!(native_button.isEnabled());
             assert_eq!(native_button.accessibilityHint(mtm), None);
+        }
+    }
+}
+
+mod button_keyboard_shortcut {
+    use core::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::Message;
+    use cocoa_ui::view::subviews;
+    use cocoa_ui::{PlatformView, Retained};
+    use libtest_mimic::Trial;
+    use nami::binding;
+    use waterui::ViewExt as _;
+    use waterui::component::button::button;
+    use waterui::component::shortcut::Shortcut;
+
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::appkit::Button as PlatformButton;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::uikit::button::CocoaUiButton as PlatformButton;
+
+    use super::{mtm, resolve};
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "button_keyboard_shortcut::arms_shortcut_while_enabled_and_respects_disabled",
+            || {
+                arms_shortcut_while_enabled_and_respects_disabled();
+                Ok(())
+            },
+        )]
+    }
+
+    fn find_button(root: &PlatformView) -> Option<Retained<PlatformButton>> {
+        for sub in subviews(root) {
+            if let Some(button) = sub.downcast_ref::<PlatformButton>() {
+                return Some(Message::retain(button));
+            }
+            if let Some(found) = find_button(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn arms_shortcut_while_enabled_and_respects_disabled() {
+        let disabled = binding(false);
+        let calls = Rc::new(Cell::new(0u32));
+        let calls_action = Rc::clone(&calls);
+
+        let leaf = resolve::render(
+            button("Save")
+                .keyboard_shortcut(Shortcut::new('s').command())
+                .action(move || calls_action.set(calls_action.get() + 1))
+                .disabled(disabled.clone()),
+        );
+        let native_button =
+            find_button(leaf.view()).expect("button leaf must mount a native button");
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
+            use cocoa_ui::objc2_foundation::{NSPoint, NSString};
+
+            assert_eq!(native_button.keyEquivalent().to_string(), "s");
+            assert_eq!(
+                native_button.keyEquivalentModifierMask(),
+                NSEventModifierFlags::Command
+            );
+
+            let cmd_s = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+                NSEventType::KeyDown,
+                NSPoint::ZERO,
+                NSEventModifierFlags::Command,
+                0.0,
+                0,
+                None,
+                &NSString::from_str("s"),
+                &NSString::from_str("s"),
+                false,
+                1,
+            )
+            .expect("synthetic Cmd+S key event constructs");
+
+            assert!(
+                native_button.performKeyEquivalent(&cmd_s),
+                "enabled NSButton must claim its key equivalent"
+            );
+            assert_eq!(calls.get(), 1);
+
+            disabled.set(true);
+            assert!(
+                waterui_apple::native_test_support::drain_main_queue(mtm()),
+                "main queue must drain disabled watcher"
+            );
+            assert!(!native_button.is_enabled());
+            assert!(
+                !native_button.performKeyEquivalent(&cmd_s),
+                "disabled NSButton must not perform its key equivalent"
+            );
+            assert_eq!(calls.get(), 1);
+
+            disabled.set(false);
+            assert!(
+                waterui_apple::native_test_support::drain_main_queue(mtm()),
+                "main queue must drain re-enabled watcher"
+            );
+            assert!(native_button.is_enabled());
+            assert!(native_button.performKeyEquivalent(&cmd_s));
+            assert_eq!(calls.get(), 2);
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::objc2::runtime::AnyObject;
+            use cocoa_ui::objc2::sel;
+            use cocoa_ui::objc2_ui_kit::UIKeyModifierFlags;
+
+            let mtm = mtm();
+            let commands = native_button
+                .keyCommands()
+                .expect("UIButton with keyboard_shortcut must expose keyCommands");
+            assert_eq!(commands.len(), 1);
+            let cmd = commands.objectAtIndex(0);
+            let sender: &AnyObject = AsRef::<AnyObject>::as_ref(&*cmd);
+            assert_eq!(cmd.input().map(|s| s.to_string()), Some(String::from("s")));
+            assert_eq!(cmd.modifierFlags(), UIKeyModifierFlags::Command);
+            assert!(
+                // SAFETY: `canPerformAction:withSender:` queries the responder chain on the main thread.
+                unsafe {
+                    native_button.canPerformAction_withSender(
+                        sel!(cocoaUiButtonMenuCommandFired:),
+                        Some(sender),
+                    )
+                },
+                "enabled UIButton must accept its armed key command"
+            );
+
+            disabled.set(true);
+            assert!(
+                waterui_apple::native_test_support::drain_main_queue(mtm),
+                "main queue must drain disabled watcher"
+            );
+            assert!(!native_button.isEnabled());
+            assert!(
+                // SAFETY: `canPerformAction:withSender:` queries the responder chain on the main thread.
+                !unsafe {
+                    native_button.canPerformAction_withSender(
+                        sel!(cocoaUiButtonMenuCommandFired:),
+                        Some(sender),
+                    )
+                },
+                "disabled UIButton must refuse its armed key command"
+            );
+            assert_eq!(calls.get(), 0);
         }
     }
 }

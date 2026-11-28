@@ -36,7 +36,6 @@ use crate::platform::web_locale::SystemLocale;
 use crate::platform::{BrowserWindow, PlatformWindow};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
-#[cfg(feature = "menu")]
 use crate::renderer::MenuShortcutRegistry;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, Next};
 use crate::runner::web_accessibility::WebAccessibilityBridge;
@@ -585,7 +584,6 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
         let _ = env.get_or_insert_with::<crate::renderer::WindowIdentities, _>(
             crate::renderer::WindowIdentities::default,
         );
-        #[cfg(feature = "menu")]
         let _ = env.get_or_insert_with::<MenuShortcutRegistry<crate::text::ParleyEngine>, _>(
             MenuShortcutRegistry::default,
         );

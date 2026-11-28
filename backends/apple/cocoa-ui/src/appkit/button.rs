@@ -165,6 +165,16 @@ impl Button {
         self.isEnabled()
     }
 
+    /// Arms a native key equivalent on this `NSButton`.
+    ///
+    /// While the button is mounted in a window and enabled, `AppKit` routes
+    /// matching key equivalents through `performKeyEquivalent:` and fires the
+    /// button's action target.
+    pub fn set_key_equivalent(&self, key_equivalent: &str, modifiers: crate::menu::KeyModifiers) {
+        self.setKeyEquivalent(&NSString::from_str(key_equivalent));
+        self.setKeyEquivalentModifierMask(modifiers.native());
+    }
+
     /// The plain-text title. A button whose owner lays out the label never
     /// sets one, but it is available for completeness.
     pub fn set_title(&self, title: &str) {

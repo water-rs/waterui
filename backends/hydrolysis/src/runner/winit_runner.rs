@@ -81,7 +81,6 @@ use crate::renderer::HostRedraw;
 use crate::renderer::HydrolysisTextContextMenuMode;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use crate::renderer::HydrolysisWindowOrigin;
-#[cfg(feature = "menu")]
 use crate::renderer::MenuShortcutRegistry;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use crate::renderer::PopupWindowManager;
@@ -973,7 +972,6 @@ pub fn run<W: Windows, M: AppMenuBar>(
     let _ = env.get_or_insert_with::<crate::renderer::WindowIdentities, _>(
         crate::renderer::WindowIdentities::default,
     );
-    #[cfg(feature = "menu")]
     let _ = env.get_or_insert_with::<MenuShortcutRegistry<crate::text::ParleyEngine>, _>(
         MenuShortcutRegistry::default,
     );

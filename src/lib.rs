@@ -123,14 +123,12 @@ pub mod prelude {
         ForEachExt, List, ListContent, ListMinRowHeight, Row, Section, detail_row,
     };
     #[cfg(feature = "menu")]
-    pub use super::component::menu::{
-        Command, CommandExt, Menu, MenuItem, Shortcut, ShortcutKey, ShortcutModifiers,
-        ShortcutNamedKey,
-    };
+    pub use super::component::menu::{Command, CommandExt, Menu, MenuItem};
     #[cfg(feature = "table")]
     pub use super::component::table::{
         SortDirection, SortableTableColumn, Table, TableColumn, TableSort, col, table,
     };
+    pub use super::component::{Shortcut, ShortcutKey, ShortcutModifiers, ShortcutNamedKey};
     #[cfg(feature = "menu")]
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
     pub use super::metadata::secure::DynamicRange;
