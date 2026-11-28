@@ -358,9 +358,10 @@ fn chrome_trials() -> Vec<Trial> {
     ]
 }
 
-fn trials() -> Vec<Trial> {
-    let mut tests = base_trials();
-    #[cfg(all(target_os = "macos", feature = "native-test"))]
+#[cfg(target_os = "macos")]
+fn macos_trials() -> Vec<Trial> {
+    let mut tests = Vec::new();
+    #[cfg(feature = "native-test")]
     {
         tests.extend([
             Trial::test("window::channel_connects_typed_declarations", || {
@@ -375,16 +376,13 @@ fn trials() -> Vec<Trial> {
         tests.extend(embedding_trials());
         tests.extend(navigation_trials());
         tests.extend(chrome_trials());
-        #[cfg(target_os = "macos")]
         tests.extend(material_reduce_transparency::trials());
         tests.extend(list_ax::trials());
         tests.extend(gesture_ax::trials());
         tests.extend(a11y_frame::trials());
         tests.extend(gesture_events::trials());
         tests.extend(transform_modifiers::trials());
-        #[cfg(target_os = "macos")]
         tests.extend(border_modifier::trials());
-        #[cfg(target_os = "macos")]
         tests.extend(shadow_modifier::trials());
         #[cfg(feature = "gpu_surface")]
         {
@@ -393,45 +391,66 @@ fn trials() -> Vec<Trial> {
             tests.extend(capture_order::trials());
         }
     }
-    #[cfg(target_os = "macos")]
-    {
-        tests.push(Trial::test(
-            "resolve::a_wheel_picker_on_macos_renders_and_syncs_selection",
-            || {
-                resolve::a_wheel_picker_on_macos_renders_and_syncs_selection();
-                Ok(())
-            },
-        ));
-    }
-    #[cfg(target_os = "ios")]
-    {
-        tests.push(Trial::test(
+    tests.push(Trial::test(
+        "resolve::a_wheel_picker_on_macos_renders_and_syncs_selection",
+        || {
+            resolve::a_wheel_picker_on_macos_renders_and_syncs_selection();
+            Ok(())
+        },
+    ));
+    tests.extend(row_major_table::trials());
+    #[cfg(all(
+        feature = "menu",
+        feature = "slider",
+        feature = "toggle",
+        feature = "picker",
+        feature = "stepper",
+        feature = "text_field",
+        feature = "date_picker"
+    ))]
+    tests.extend(control_size::trials());
+    tests
+}
+
+#[cfg(target_os = "ios")]
+fn ios_trials() -> Vec<Trial> {
+    let mut tests = vec![
+        Trial::test(
             "resolve::a_wheel_picker_spaces_rows_at_the_swiftui_pitch",
             || {
                 resolve::a_wheel_picker_spaces_rows_at_the_swiftui_pitch();
                 Ok(())
             },
-        ));
-        tests.push(Trial::test(
+        ),
+        Trial::test(
             "resolve::a_radio_picker_on_ios_renders_a_radio_group",
             || {
                 resolve::a_radio_picker_on_ios_renders_a_radio_group();
                 Ok(())
             },
-        ));
-        tests.extend(tabs::trials());
-        tests.extend(menus_ios::trials());
-        tests.extend(navigation::trials());
-        tests.extend(controller_bounds::trials());
-        // A Catalyst window carries no container bands, so the suite's
-        // mount precondition cannot hold there (#3556). Its own Catalyst
-        // title-bar case runs instead.
-        #[cfg(not(catalyst))]
-        tests.extend(safe_area::trials());
-        #[cfg(catalyst)]
-        tests.extend(safe_area::catalyst_trials());
-        tests.extend(offset::trials());
-    }
+        ),
+    ];
+    tests.extend(tabs::trials());
+    tests.extend(menus_ios::trials());
+    tests.extend(navigation::trials());
+    tests.extend(controller_bounds::trials());
+    // A Catalyst window carries no container bands, so the suite's
+    // mount precondition cannot hold there (#3556). Its own Catalyst
+    // title-bar case runs instead.
+    #[cfg(not(catalyst))]
+    tests.extend(safe_area::trials());
+    #[cfg(catalyst)]
+    tests.extend(safe_area::catalyst_trials());
+    tests.extend(offset::trials());
+    tests
+}
+
+fn trials() -> Vec<Trial> {
+    let mut tests = base_trials();
+    #[cfg(target_os = "macos")]
+    tests.extend(macos_trials());
+    #[cfg(target_os = "ios")]
+    tests.extend(ios_trials());
     tests.extend(migration::trials());
     tests.extend(transition::trials());
     tests.extend(dismiss::trials());
@@ -440,8 +459,6 @@ fn trials() -> Vec<Trial> {
     tests.extend(report_size::trials());
     tests.extend(list_scroll::trials());
     tests.extend(apple_content::trials());
-    #[cfg(target_os = "macos")]
-    tests.extend(row_major_table::trials());
     tests.extend(disclosure::trials());
     #[cfg(feature = "avatar")]
     tests.extend(avatar::trials());
@@ -455,17 +472,6 @@ fn trials() -> Vec<Trial> {
     #[cfg(feature = "highlight")]
     tests.extend(code::trials());
     tests.extend(a11y_combine::trials());
-    #[cfg(all(
-        target_os = "macos",
-        feature = "menu",
-        feature = "slider",
-        feature = "toggle",
-        feature = "picker",
-        feature = "stepper",
-        feature = "text_field",
-        feature = "date_picker"
-    ))]
-    tests.extend(control_size::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
