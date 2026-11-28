@@ -15,7 +15,8 @@ use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::id::{Id as RawId, Mapping};
 use waterui_core::views::{AnyViews, ForEach, SharedAnyViews, Views};
 use waterui_core::{
-    AnyView, Environment, Native, NativeView, View, handler::Handler, layout::StretchAxis,
+    AnyView, Environment, Native, NativeView, View, contract_violation, handler::Handler,
+    layout::StretchAxis, plugin::Plugin,
 };
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::scroll::{ScrollController, ScrollDriver, ScrollPosition, ScrollRequest};
@@ -122,6 +123,8 @@ pub struct ListConfig<C> {
     /// The minimum height of a row, from [`ListMinRowHeight`] in the list's
     /// environment. `None` uses the theme's one-line row height.
     min_row_height: Option<f32>,
+    /// The resolved presentation style of the list.
+    style: ListStyle,
 }
 
 impl<C> ListConfig<C> {
@@ -180,6 +183,12 @@ impl<C> ListConfig<C> {
     pub const fn min_row_height(&self) -> Option<f32> {
         self.min_row_height
     }
+
+    /// The presentation style resolved for this list.
+    #[must_use]
+    pub const fn style(&self) -> ListStyle {
+        self.style
+    }
 }
 
 impl<C> core::fmt::Debug for ListConfig<C> {
@@ -202,6 +211,79 @@ impl<C: 'static> MapSlots<C> for ListConfig<C> {
             scroll_controller: self.scroll_controller,
             sections: self.sections,
             min_row_height: self.min_row_height,
+            style: self.style,
+        }
+    }
+}
+
+/// Visual presentation style for a [`List`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ListStyle {
+    /// The platform's default presentation, or [`Self::Sidebar`] inside a
+    /// `NavigationSplitView`'s sidebar column.
+    #[default]
+    Automatic,
+    /// Edge-to-edge rows with full-width chrome and no outer grouping card.
+    Plain,
+    /// Horizontally inset rows without carded section containers.
+    Inset,
+    /// Grouped sections presented as rounded, horizontally inset cards.
+    InsetGrouped,
+    /// Grouped sections separated into full-width bands.
+    Grouped,
+    /// Compact navigation sidebar chrome with unemphasised pill selection.
+    Sidebar,
+}
+
+/// Installing a [`ListStyle`] on a subtree makes it the default for descendant
+/// lists whose style is [`ListStyle::Automatic`].
+impl Plugin for ListStyle {}
+
+/// Context-installed default [`ListStyle`] read when [`ListStyle::Automatic`]
+/// resolves without an ambient [`ListStyle`] override in the environment.
+#[derive(Debug, Clone, Copy)]
+struct DefaultListStyle(ListStyle);
+
+impl ListStyle {
+    /// Registers `style` as the default [`ListStyle`] in `env` for descendants
+    /// whose style is [`Self::Automatic`] — for example, a
+    /// `NavigationSplitView` backend installs [`Self::Sidebar`] on its sidebar
+    /// column.
+    ///
+    /// An explicit `.style(...)` on a list or an ambient `.list_style(...)`
+    /// ancestor wins over this default, while an explicit
+    /// `.list_style(ListStyle::Automatic)` restores it.
+    pub fn install_default(style: Self, env: &mut Environment) {
+        let resolved = match style {
+            Self::Automatic => {
+                contract_violation!(
+                    "ListStyle::install_default requires a concrete style; \
+                     leaving ListStyle::Automatic"
+                );
+                Self::Automatic
+            }
+            concrete => concrete,
+        };
+        env.insert(DefaultListStyle(resolved));
+    }
+
+    /// Resolves this style against `env`.
+    ///
+    /// Explicit concrete styles resolve to themselves. [`Self::Automatic`]
+    /// checks an ambient [`ListStyle`] in `env` first, then any default
+    /// registered via [`Self::install_default`], leaving [`Self::Automatic`]
+    /// for backends to apply their platform default when neither is present.
+    #[must_use]
+    pub fn resolve(self, env: &Environment) -> Self {
+        match self {
+            Self::Automatic => match env.get::<Self>().copied() {
+                Some(Self::Automatic) | None => env
+                    .get::<DefaultListStyle>()
+                    .map_or(Self::Automatic, |default| default.0),
+                Some(style) => style,
+            },
+            style => style,
         }
     }
 }
@@ -228,17 +310,6 @@ pub struct ListRowDeletable(pub Computed<bool>);
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListRowInsets(pub EdgeInsets);
 
-/// Marks the subtree below it as a navigation container's sidebar column.
-///
-/// The owner of the sidebar — a `NavigationSplitView` backend — installs it
-/// into the sidebar's environment; a list reads it to take the platform's
-/// sidebar presentation: the unemphasised selection chrome rather than the
-/// accent fill, and a selected row keeping its own colors rather than
-/// re-theming onto `SelectionForeground`.
-#[derive(Debug, Clone, Copy)]
-#[doc(hidden)]
-pub struct SidebarContent;
-
 impl<C: 'static> NativeView for ListConfig<C> {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Both
@@ -258,6 +329,7 @@ pub struct List<V: Views> {
     contents: V,
     sections: RowSections<V::Id>,
     edits: RowEdits<V::Id>,
+    style: ListStyle,
 }
 
 impl<V> List<V>
@@ -271,7 +343,19 @@ where
             contents,
             sections: RowSections::plain(),
             edits: RowEdits::none(),
+            style: ListStyle::Automatic,
         }
+    }
+
+    /// Sets the visual presentation style for this list.
+    ///
+    /// An explicit style overrides any ambient [`ListStyle`] installed via
+    /// [`ViewExt::list_style`](crate::ViewExt::list_style) or a surrounding
+    /// sidebar container.
+    #[must_use]
+    pub const fn style(mut self, style: ListStyle) -> Self {
+        self.style = style;
+        self
     }
 
     /// The builder carrying this list's contents, sections, and edits, with
@@ -287,6 +371,7 @@ where
             single_move: None,
             scroll_controller: None,
             sections: self.sections,
+            style: self.style,
         }
     }
 
@@ -438,6 +523,7 @@ impl<C: ListContent> List<ContentRows<C, C::Row>> {
             contents,
             sections,
             edits,
+            style: ListStyle::Automatic,
         }
     }
 }
@@ -459,12 +545,13 @@ impl<C: View> From<ListConfig<C>> for List<SharedAnyViews<C>> {
             contents: value.contents,
             sections: RowSections::from_erased(value.sections),
             edits: RowEdits::from_erased(value.edits),
+            style: value.style,
         }
     }
 }
 
 /// `config` as it reaches a backend: every row themed for the selection, the
-/// sections resolved and the row metrics read from `env`.
+/// sections resolved, the style resolved, and the row metrics read from `env`.
 fn resolve_list_config<C: View>(
     config: ListConfig<C>,
     env: &Environment,
@@ -473,10 +560,11 @@ fn resolve_list_config<C: View>(
     // tags, sections and edits travel through the same generator — a backend's
     // `get_id` must return exactly the ids all three are keyed by. The
     // selection holds tags, which the re-keying leaves alone.
+    let style = config.style.resolve(env);
     let selection = config.selection.clone();
     let tags = config.tags.clone();
     let (contents, ids) = AnyViews::new_with_ids(WithId::new(config.contents, move |id, item| {
-        selection_themed(item, &selection, tags.tag(id))
+        selection_themed(item, &selection, tags.tag(id), style)
     }));
     ListConfig {
         contents: SharedAnyViews::from(contents),
@@ -487,6 +575,7 @@ fn resolve_list_config<C: View>(
         sections: config.sections.rekeyed(&ids).resolved(env),
         edits: config.edits.rekeyed(&ids),
         min_row_height: env.get::<ListMinRowHeight>().map(|height| height.0),
+        style,
         selection: config.selection,
         editing: config.editing,
         scroll_controller: config
@@ -521,13 +610,19 @@ fn dispatch_list<B: Backend, C: View>(
 /// color over it. Anything the row resolves through the theme's foreground,
 /// muted-foreground, or accent slots follows the `selected` signal reactively;
 /// the row itself is not rebuilt. A row without a tag is never selected and
-/// is left as it is.
+/// is left as it is. Inside a [`ListStyle::Sidebar`] list the unemphasised
+/// selection pill preserves the row's own colours (`water-rs/waterui#1495`).
 fn selection_themed<C>(
     content: C,
     selection: &ListSelection<ListTagId>,
     tag: Option<ListTagId>,
+    style: ListStyle,
 ) -> SelectionThemed<C> {
     use nami::SignalExt;
+
+    if style == ListStyle::Sidebar {
+        return SelectionThemed::new(content, None);
+    }
 
     // A row's selected state derives from the list selection and the row's
     // tag: the row is selected exactly when its tag is in the binding. A row
@@ -549,7 +644,7 @@ fn selection_themed<C>(
             ),
         }
     });
-    SelectionThemed::for_list(content, selected)
+    SelectionThemed::new(content, selected)
 }
 
 impl<V> View for List<V>
@@ -582,6 +677,7 @@ pub struct ListBuilder<V: Views> {
     single_move: Option<TypedOnMove<V::Id>>,
     scroll_controller: Option<(ScrollDriver<ListTagId>, RowTags<V::Id>)>,
     sections: RowSections<V::Id>,
+    style: ListStyle,
 }
 
 impl<V: Views> core::fmt::Debug for ListBuilder<V> {
@@ -594,6 +690,13 @@ impl<V> ListBuilder<V>
 where
     V: Views,
 {
+    /// Sets the visual presentation style for this list, as [`List::style`].
+    #[must_use]
+    pub const fn style(mut self, style: ListStyle) -> Self {
+        self.style = style;
+        self
+    }
+
     /// Enables edit mode with the given reactive signal.
     #[must_use]
     pub fn editing(mut self, editing: impl IntoComputed<bool>) -> Self {
@@ -690,6 +793,7 @@ where
                 .map(|(driver, tags)| ListScrollController::new(driver, tags.erased(&ids))),
             sections: self.sections.erased(&ids),
             min_row_height: None,
+            style: self.style,
         }
     }
 }
@@ -1012,5 +1116,110 @@ mod tests {
             assert_eq!(edits.movable_span(&snapshot, flat), Some(5..7));
         }
         assert_ne!(edits.movable_part(id(2)), edits.movable_part(id(5)));
+    }
+
+    #[test]
+    fn list_style_resolution_precedence_and_sidebar_default() {
+        let empty = Environment::new();
+        assert_eq!(ListStyle::Automatic.resolve(&empty), ListStyle::Automatic);
+        for style in [
+            ListStyle::Plain,
+            ListStyle::Inset,
+            ListStyle::InsetGrouped,
+            ListStyle::Grouped,
+            ListStyle::Sidebar,
+        ] {
+            assert_eq!(style.resolve(&empty), style);
+        }
+
+        // Ambient `.list_style(...)` applies to `ListStyle::Automatic`, while explicit `.style(...)` wins.
+        let ambient_grouped = empty.extending(ListStyle::InsetGrouped);
+        let implicit = render_config(List::content((|| text!("Row"),)).config(), &ambient_grouped);
+        assert_eq!(implicit.style(), ListStyle::InsetGrouped);
+
+        let explicit = render_config(
+            List::content((|| text!("Row"),))
+                .style(ListStyle::Plain)
+                .config(),
+            &ambient_grouped,
+        );
+        assert_eq!(explicit.style(), ListStyle::Plain);
+
+        // Chaining `.style(...)` after `.selection(...)` (on `ListBuilder`) works identically.
+        let sel = Binding::new(Option::<i32>::None);
+        let builder_styled = render_config(
+            List::content((TaggedView::new(1, || text!("Row")),))
+                .selection(&sel)
+                .style(ListStyle::Grouped)
+                .config(),
+            &ambient_grouped,
+        );
+        assert_eq!(builder_styled.style(), ListStyle::Grouped);
+
+        // Sidebar context installs default `ListStyle::Sidebar` so `Automatic` resolves to `Sidebar`.
+        let mut sidebar_env = Environment::new();
+        ListStyle::install_default(ListStyle::Sidebar, &mut sidebar_env);
+        assert_eq!(
+            ListStyle::Automatic.resolve(&sidebar_env),
+            ListStyle::Sidebar
+        );
+        let in_sidebar = render_config(List::content((|| text!("Row"),)).config(), &sidebar_env);
+        assert_eq!(in_sidebar.style(), ListStyle::Sidebar);
+
+        // Subtree `.list_style(...)` overrides sidebar default; resetting to `Automatic` restores it.
+        let sidebar_plain = sidebar_env.extending(ListStyle::Plain);
+        assert_eq!(
+            ListStyle::Automatic.resolve(&sidebar_plain),
+            ListStyle::Plain
+        );
+        let sidebar_reset = sidebar_plain.extending(ListStyle::Automatic);
+        assert_eq!(
+            ListStyle::Automatic.resolve(&sidebar_reset),
+            ListStyle::Sidebar
+        );
+    }
+
+    #[test]
+    fn sidebar_style_preserves_row_foreground_when_selected() {
+        use crate::theme::color::{Accent, Foreground, MutedForeground, SelectionForeground};
+        use crate::theme::install_color_signal;
+        use waterui_color::WorkingColor;
+
+        let mut env = Environment::new();
+        install_color_signal::<Foreground>(
+            &mut env,
+            Computed::constant(WorkingColor::new([0.1, 0.2, 0.3, 1.0])),
+        );
+        install_color_signal::<MutedForeground>(
+            &mut env,
+            Computed::constant(WorkingColor::new([0.4, 0.4, 0.4, 1.0])),
+        );
+        install_color_signal::<Accent>(
+            &mut env,
+            Computed::constant(WorkingColor::new([0.0, 0.5, 1.0, 1.0])),
+        );
+        install_color_signal::<SelectionForeground>(
+            &mut env,
+            Computed::constant(WorkingColor::new([1.0, 1.0, 1.0, 1.0])),
+        );
+
+        let selection = Binding::new(Some(1_i32));
+        let sidebar_config = render_config(
+            List::content((TaggedView::new(1, || text!("Item")),))
+                .style(ListStyle::Sidebar)
+                .selection(&selection)
+                .config(),
+            &env,
+        );
+        let row = sidebar_config
+            .contents()
+            .snapshot()
+            .get_view(0)
+            .expect("sidebar row exists");
+        // Sidebar selection skips the SelectionForeground wrapper so row keeps its original colors.
+        assert!(
+            peel_metadata::<Environment>(AnyView::new(row), &env).is_none(),
+            "sidebar list rows must not wrap content in SelectionForeground metadata"
+        );
     }
 }

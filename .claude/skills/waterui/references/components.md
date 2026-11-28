@@ -779,7 +779,11 @@ with a `Section` per group, each over its own `SignalCollection`; sections do no
 
 Row modifiers: `.list_row_deletable(signal)`, `.list_row_insets(insets)`; `.list_min_row_height(h)` on
 any ancestor sets the row-height floor for every list inside (`0.0` sizes rows to their
-content). Selection lives on the
+content). List presentation style is chosen with `.style(ListStyle::...)` on `List` / `ListBuilder`
+or ambiently across a subtree with `.list_style(ListStyle::...)` (`Automatic`, `Plain`, `Inset`,
+`InsetGrouped`, `Grouped`, `Sidebar`). `ListStyle::Automatic` keeps each platform's default and
+resolves to `ListStyle::Sidebar` inside a `NavigationSplitView`'s sidebar column; an explicit
+`.style(...)` wins over an ambient `.list_style(...)`. Selection lives on the
 list itself and holds the app's own values — `.selection(&Binding<Option<T>>)` or
 `.multi_selection(&Binding<BTreeSet<T>>)` on both `List` and `ListBuilder`, `T: Ord + Clone`.
 A `ForEach` row — every row of `List::for_each`, or a `ForEach` inside `List::content` —

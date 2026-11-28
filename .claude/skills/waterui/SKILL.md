@@ -144,7 +144,7 @@ struct Row { #[id] id: u64, title: Str }
 let rows = StateList::from(seed_rows);                 // bulk-seed; .push/.insert/.remove (&mut self) diff by id
 
 scroll(VStack::for_each(rows.clone(), |row| text(row.title))) // virtualized inside scroll
-List::for_each(rows.clone(), |row| text(row.title))           // platform list: lazy, editable
+List::for_each(rows.clone(), |row| text(row.title))           // platform list: lazy, editable; .style(ListStyle::...) or .list_style(...)
 ```
 
 Note the shape: **`ForEach` is a *collection of views*, not a view.** A container consumes

@@ -1394,12 +1394,26 @@ impl<E: crate::text::TextEngine> NavigationSplitRenderState<E> {
         }
     }
 
+    fn sidebar_env(env: &Environment) -> Environment {
+        let mut sidebar_env = env.clone();
+        #[cfg(feature = "list")]
+        {
+            sidebar_env.remove::<waterui_controls::list::ListStyle>();
+            waterui_controls::list::ListStyle::install_default(
+                waterui_controls::list::ListStyle::Sidebar,
+                &mut sidebar_env,
+            );
+        }
+        sidebar_env
+    }
+
     pub(crate) fn prebuild(
         &mut self,
         renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) {
-        self.primary.ensure_built(renderer, env);
+        let sidebar_env = Self::sidebar_env(env);
+        self.primary.ensure_built(renderer, &sidebar_env);
         self.placeholder.ensure_built(renderer, env);
     }
 
@@ -1597,33 +1611,56 @@ pub fn measure_navigation_split_node<E: crate::text::TextEngine>(
     // belongs to the selection change, not to measurement — against the
     // proposal the column's rect hands it.
     if plan.compact {
-        let column = if plan.three_column {
+        let (column, column_env) = if plan.three_column {
             if detail_selection.is_some() {
-                retained_split_column(detail_selection, split.detail.as_ref(), &split.placeholder)
+                (
+                    retained_split_column(
+                        detail_selection,
+                        split.detail.as_ref(),
+                        &split.placeholder,
+                    ),
+                    None,
+                )
             } else if primary_selection.is_some() {
-                retained_split_column(
-                    primary_selection,
-                    split.content.as_ref(),
-                    &split.placeholder,
+                (
+                    retained_split_column(
+                        primary_selection,
+                        split.content.as_ref(),
+                        &split.placeholder,
+                    ),
+                    None,
                 )
             } else {
-                &split.primary
+                (
+                    &split.primary,
+                    Some(NavigationSplitRenderState::<E>::sidebar_env(env)),
+                )
             }
         } else {
-            retained_split_column(detail_selection, split.detail.as_ref(), &split.placeholder)
+            (
+                retained_split_column(detail_selection, split.detail.as_ref(), &split.placeholder),
+                None,
+            )
         };
-        return ViewDimensions::new(
-            column.measure_built_with_proposal(state, env, theme, proposal),
-        );
+        let measure_env = column_env.as_ref().unwrap_or(env);
+        return ViewDimensions::new(column.measure_built_with_proposal(
+            state,
+            measure_env,
+            theme,
+            proposal,
+        ));
     }
 
     let mut width = 0.0_f64;
     let mut height = 0.0_f64;
     if !plan.three_column || plan.show_all {
-        let size =
-            split
-                .primary
-                .measure_built_with_proposal(state, env, theme, plan.column_proposal);
+        let sidebar_env = NavigationSplitRenderState::<E>::sidebar_env(env);
+        let size = split.primary.measure_built_with_proposal(
+            state,
+            &sidebar_env,
+            theme,
+            plan.column_proposal,
+        );
         width += f64::from(size.width);
         height = height.max(f64::from(size.height));
     }
@@ -1751,10 +1788,11 @@ pub fn render_navigation_split_parts<E: crate::text::TextEngine>(
         // A split column is chrome-hosted content, like navigation content:
         // it inherits the widget's boundaries edge by edge.
         let primary_area = ctx.content_area_for(primary_rect);
+        let sidebar_env = NavigationSplitRenderState::<E>::sidebar_env(env);
         state.borrow_mut().primary.place(
             ctx.renderer_mut(),
             render_ctx,
-            env,
+            &sidebar_env,
             bounded_proposal(primary_rect),
             primary_rect,
             primary_area,
@@ -1949,10 +1987,11 @@ fn render_compact_split<E: crate::text::TextEngine>(
         CompactSplitFront::Sidebar => {
             let render_ctx = ctx.render_context();
             let pane_area = ctx.content_area_for(bounds);
+            let sidebar_env = NavigationSplitRenderState::<E>::sidebar_env(env);
             state.borrow_mut().primary.place(
                 ctx.renderer_mut(),
                 render_ctx,
-                env,
+                &sidebar_env,
                 bounded_proposal(bounds),
                 bounds,
                 pane_area,
