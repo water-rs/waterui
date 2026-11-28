@@ -445,6 +445,30 @@ pub trait ViewExt: View + Sized {
         self.with(theme::Tint::new(color))
     }
 
+    /// Sets the ambient [`ControlSize`](crate::component::ControlSize) for
+    /// controls in this view's subtree that do not specify an explicit
+    /// `.size(...)`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// # fn demo(enabled: Binding<bool>) -> impl View {
+    /// hstack((
+    ///     button("Apply").action(|| {}),
+    ///     toggle("Auto", &enabled),
+    /// ))
+    /// .control_size(ControlSize::Small)
+    /// # }
+    /// ```
+    fn control_size(
+        self,
+        size: crate::component::ControlSize,
+    ) -> Installed<Self, crate::component::ControlSize> {
+        Installed::new(self, size)
+    }
+
     /// Sets the shared icon size (in points) for icons in this view's subtree.
     ///
     /// Icons read the nearest [`IconSize`] in the environment and default to `24.0`

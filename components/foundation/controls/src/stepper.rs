@@ -9,6 +9,7 @@ use core::ops::RangeInclusive;
 use crate::label::{
     ControlLabel, IntoLabel, Label, LabelDisplayMode, LabelKind, impl_label_style_methods,
 };
+use crate::size::ControlSize;
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Computed, Signal, SignalExt, signal::IntoComputed};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
@@ -230,6 +231,8 @@ pub struct StepperConfig<S> {
     value_formatter: Option<Computed<StyledStr>>,
     /// The valid range of values for the stepper.
     range: Computed<RangeInclusive<i64>>,
+    /// How large the stepper is drawn.
+    size: ControlSize,
 }
 
 impl<S> StepperConfig<S> {
@@ -275,6 +278,12 @@ impl<S> StepperConfig<S> {
         &self.range
     }
 
+    /// How large the stepper is drawn.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
+    }
+
     /// Watches `range` and re-clamps `value` in place whenever the range
     /// updates, returning the subscription guard.
     pub fn watch_range_clamp(&self) -> BoxWatcherGuard {
@@ -299,6 +308,7 @@ impl<S> StepperConfig<S> {
         ControlLabel<S>,
         Option<Computed<StyledStr>>,
         Computed<RangeInclusive<i64>>,
+        ControlSize,
     ) {
         (
             self.value,
@@ -306,6 +316,7 @@ impl<S> StepperConfig<S> {
             self.label,
             self.value_formatter,
             self.range,
+            self.size,
         )
     }
 
@@ -343,6 +354,7 @@ impl<S: 'static> MapSlots<S> for StepperConfig<S> {
             label: self.label.map_slots(f),
             value_formatter: self.value_formatter,
             range: self.range,
+            size: self.size,
         }
     }
 }
@@ -394,6 +406,7 @@ pub struct Stepper<L, T = i64> {
     label: Label<L>,
     value_formatter: Option<Computed<StyledStr>>,
     range: Computed<RangeInclusive<i64>>,
+    size: Option<ControlSize>,
     _value: PhantomData<fn() -> T>,
 }
 
@@ -408,6 +421,14 @@ impl<L, T> Stepper<L, T> {
     /// wraps the control by splicing a filtered binding in front of its value.
     pub const fn value_binding(&mut self) -> &mut Binding<i64> {
         &mut self.value
+    }
+
+    /// Sets how large the stepper is drawn. When omitted, the stepper inherits
+    /// the nearest ambient [`ControlSize`] or defaults to
+    /// [`ControlSize::Small`].
+    pub const fn size(mut self, size: ControlSize) -> Self {
+        self.size = Some(size);
+        self
     }
 }
 
@@ -424,6 +445,7 @@ impl<L, T: StepperValue> Stepper<L, T> {
             label: label.into_label(),
             value_formatter: None,
             range: Computed::constant(T::default_range()),
+            size: None,
             _value: PhantomData,
         }
     }
@@ -488,6 +510,7 @@ impl<L: LabelKind, T> Stepper<L, T> {
             label: self.label.into_control_label::<S>(env),
             value_formatter: self.value_formatter,
             range: self.range,
+            size: ControlSize::resolve(self.size, env, ControlSize::Small),
         }
     }
 
@@ -500,6 +523,7 @@ impl<L: LabelKind, T> Stepper<L, T> {
             label: self.label.into_unscoped_control_label(),
             value_formatter: self.value_formatter,
             range: self.range,
+            size: self.size.unwrap_or(ControlSize::Small),
         }
     }
 }
@@ -513,6 +537,7 @@ impl<S: View> From<StepperConfig<S>> for Stepper<ControlLabel<S>, i64> {
             label: Label::from_control_label(value.label, mode),
             value_formatter: value.value_formatter,
             range: value.range,
+            size: Some(value.size),
             _value: PhantomData,
         }
     }
@@ -642,5 +667,39 @@ mod tests {
         let mut env = Environment::new();
         env.insert(locales::EN);
         env
+    }
+
+    #[test]
+    fn stepper_control_size_inherits_from_environment_and_explicit_size_wins() {
+        use crate::size::ControlSize;
+        use waterui_core::plugin::Plugin as _;
+
+        let count = Binding::new(1_i32);
+        let base_env = test_env();
+        let mut ambient_env = test_env();
+        ControlSize::ExtraSmall.install(&mut ambient_env);
+
+        assert_eq!(
+            stepper("Count", &count)
+                .into_config::<AnyView>(&base_env)
+                .size(),
+            ControlSize::Small
+        );
+        assert_eq!(
+            stepper("Count", &count)
+                .into_config::<AnyView>(&ambient_env)
+                .size(),
+            ControlSize::ExtraSmall
+        );
+        let explicit = stepper("Count", &count)
+            .size(ControlSize::Large)
+            .into_config::<AnyView>(&ambient_env);
+        assert_eq!(explicit.size(), ControlSize::Large);
+        assert_eq!(
+            super::Stepper::from(explicit)
+                .into_config::<AnyView>(&ambient_env)
+                .size(),
+            ControlSize::Large
+        );
     }
 }

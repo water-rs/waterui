@@ -54,7 +54,11 @@ fn settle_returns_with_a_focused_field() {
     let mut app = ui()
         .viewport(320, 120)
         .theme(TestStyle::new())
-        .mount_offscreen(move || waterui::component::field("Email", &value).size(280.0, 56.0));
+        .mount_offscreen(move || {
+            waterui::component::field("Email", &value)
+                .width(280.0)
+                .height(56.0)
+        });
     let field = app.query().role(Role::TEXT_INPUT).label("Email").single();
     app.query().role(Role::TEXT_INPUT).label("Email").focus();
     app.settle();

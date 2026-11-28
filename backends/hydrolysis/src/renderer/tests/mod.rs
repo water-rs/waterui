@@ -31,6 +31,16 @@ mod chrome_safe_area;
 mod context_menu_occlusion;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod context_menu_presentation;
+#[cfg(all(
+    feature = "toggle",
+    feature = "menu",
+    feature = "slider",
+    feature = "picker",
+    feature = "stepper",
+    feature = "text-field",
+    feature = "date-picker"
+))]
+mod control_size;
 #[cfg(hydrolysis_cpu_painter)]
 mod cpu_refusals;
 #[cfg(hydrolysis_software_surface)]
@@ -2956,6 +2966,14 @@ pub struct MinimalTestTheme {
     /// The glass look the theme hands out for a glass background; `None`
     /// answers the trait's default, no glass.
     glass_look: Option<GlassLookFor>,
+    /// Every spec the theme was asked for a button look.
+    button_specs: Rc<RefCell<Vec<ButtonSpec>>>,
+    /// Every spec the theme was asked for a toggle look.
+    toggle_specs: Rc<RefCell<Vec<ToggleSpec>>>,
+    /// Every spec the theme was asked for a picker look.
+    picker_specs: Rc<RefCell<Vec<PickerSpec>>>,
+    /// Every spec the theme was asked for a segmented picker look.
+    segmented_specs: Rc<RefCell<Vec<crate::theme::SegmentedSpec>>>,
     /// Every spec the theme was asked for a stepper look.
     stepper_specs: Rc<RefCell<Vec<StepperSpec>>>,
     /// Every linear progress bar the theme's look realized, with the value
@@ -3333,6 +3351,7 @@ fn tab_highlight_strip(item: TabItemGeometry) -> Rect {
 
 impl WidgetTheme for MinimalTestTheme {
     fn button(&self, spec: &ButtonSpec, _env: &Environment) -> ButtonLook {
+        self.button_specs.borrow_mut().push(spec.clone());
         let chrome = self.button_chrome.clone().unwrap_or_else(invisible_chrome);
         let mut look = ButtonLook::new(chrome, self.button_label.clone().unwrap_or_default())
             .group_blend_space(self.button_group_blend_space);
@@ -3365,6 +3384,7 @@ impl WidgetTheme for MinimalTestTheme {
 
     #[cfg(feature = "toggle")]
     fn switch(&self, spec: &ToggleSpec, env: &Environment) -> SwitchLook {
+        self.toggle_specs.borrow_mut().push(spec.clone());
         self.switch_look.as_ref().map_or_else(
             || {
                 SwitchLook::new(
@@ -3377,7 +3397,8 @@ impl WidgetTheme for MinimalTestTheme {
     }
 
     #[cfg(feature = "toggle")]
-    fn checkbox(&self, _spec: &ToggleSpec, _env: &Environment) -> CheckboxLook {
+    fn checkbox(&self, spec: &ToggleSpec, _env: &Environment) -> CheckboxLook {
+        self.toggle_specs.borrow_mut().push(spec.clone());
         CheckboxLook::new(crate::testing::plain_toggle_control())
     }
 
@@ -3395,6 +3416,7 @@ impl WidgetTheme for MinimalTestTheme {
         spec: &crate::theme::SegmentedSpec,
         env: &Environment,
     ) -> crate::theme::SegmentedLook {
+        self.segmented_specs.borrow_mut().push(spec.clone());
         self.segmented_look
             .as_ref()
             .map_or_else(crate::testing::plain_segmented_look, |look| look(spec, env))
@@ -3434,12 +3456,14 @@ impl WidgetTheme for MinimalTestTheme {
     }
 
     #[cfg(any(feature = "picker", feature = "date-picker"))]
-    fn menu_picker(&self, _spec: &PickerSpec, _env: &Environment) -> MenuPickerLook {
+    fn menu_picker(&self, spec: &PickerSpec, _env: &Environment) -> MenuPickerLook {
+        self.picker_specs.borrow_mut().push(spec.clone());
         crate::testing::plain_menu_picker_look()
     }
 
     #[cfg(feature = "picker")]
-    fn radio_group(&self, _spec: &PickerSpec, _env: &Environment) -> RadioGroupLook {
+    fn radio_group(&self, spec: &PickerSpec, _env: &Environment) -> RadioGroupLook {
+        self.picker_specs.borrow_mut().push(spec.clone());
         let realizations = Rc::clone(&self.radio_indicator_realizations);
         let plain = crate::testing::plain_radio_group_look();
         RadioGroupLook::new(

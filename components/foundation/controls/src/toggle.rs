@@ -338,7 +338,7 @@ impl SealedToggleStyle for ToggleStyle {
             toggle: data.toggle,
             style: *self,
             explicit_style: true,
-            size: data.size,
+            size: Some(data.size),
         })
     }
 }
@@ -352,7 +352,7 @@ impl<S: CustomToggleStyle> SealedToggleStyle for CustomToggle<S> {
             label,
             &a11y_label,
             &toggle.toggle,
-            toggle.size,
+            ControlSize::resolve(toggle.size, env, ControlSize::Small),
             env,
         )
     }
@@ -370,7 +370,7 @@ impl<S: CustomToggleStyle> SealedToggleStyle for CustomToggle<S> {
             label,
             &a11y_label,
             &toggle.toggle,
-            toggle.size,
+            ControlSize::resolve(toggle.size, env, ControlSize::Small),
             env,
         )
         .dispatch(backend, env, cx)
@@ -695,7 +695,7 @@ pub struct Toggle<L, Style = ToggleStyle> {
     toggle: Binding<bool>,
     style: Style,
     explicit_style: bool,
-    size: ControlSize,
+    size: Option<ControlSize>,
 }
 
 impl<L> Toggle<L, ToggleStyle> {
@@ -710,7 +710,7 @@ impl<L> Toggle<L, ToggleStyle> {
             toggle: toggle.clone(),
             style: ToggleStyle::default(),
             explicit_style: false,
-            size: ControlSize::Small,
+            size: None,
         }
     }
 
@@ -753,11 +753,12 @@ impl<L, Style> Toggle<L, Style> {
         }
     }
 
-    /// Sets how large the toggle is drawn. A toggle is
-    /// [`ControlSize::Small`], like a [`Button`](crate::button::Button), when
-    /// none is chosen; a theme decides what each size changes.
+    /// Sets how large the toggle is drawn. When omitted, the toggle inherits
+    /// the nearest ambient [`ControlSize`] or defaults to
+    /// [`ControlSize::Small`], like a [`Button`](crate::button::Button); a
+    /// theme decides what each size changes.
     pub const fn size(mut self, size: ControlSize) -> Self {
-        self.size = size;
+        self.size = Some(size);
         self
     }
 }
@@ -769,7 +770,7 @@ impl<L: LabelKind> Toggle<L, ToggleStyle> {
             toggle: self.toggle,
             style: self.style.resolve(env),
             explicit_style: self.explicit_style,
-            size: self.size,
+            size: ControlSize::resolve(self.size, env, ControlSize::Small),
         }
     }
 }
@@ -783,7 +784,7 @@ impl<L: LabelKind> Toggle<L> {
             toggle: self.toggle,
             style: self.style,
             explicit_style: self.explicit_style,
-            size: self.size,
+            size: self.size.unwrap_or(ControlSize::Small),
         }
     }
 }
@@ -796,7 +797,7 @@ impl<S: View> From<ToggleConfig<S>> for Toggle<ControlLabel<S>> {
             toggle: value.toggle,
             style: value.style,
             explicit_style: value.explicit_style,
-            size: value.size,
+            size: Some(value.size),
         }
     }
 }
@@ -1042,5 +1043,50 @@ mod custom_style_tests {
         Disabled::install(&mut action_env, true);
         action(&action_env).expect("disabled toggle tap check succeeds");
         assert!(on.snapshot());
+    }
+
+    #[test]
+    fn control_size_inherits_from_environment_and_explicit_size_wins() {
+        use waterui_core::plugin::Plugin as _;
+
+        let on = Binding::new(false);
+        let base_env = Environment::new();
+        let mut ambient_env = Environment::new();
+        ControlSize::ExtraSmall.install(&mut ambient_env);
+
+        assert_eq!(
+            Toggle::new("A", &on)
+                .into_config::<AnyView>(&base_env)
+                .size(),
+            ControlSize::Small
+        );
+        assert_eq!(
+            Toggle::new("A", &on)
+                .into_config::<AnyView>(&ambient_env)
+                .size(),
+            ControlSize::ExtraSmall
+        );
+        let explicit = Toggle::new("A", &on)
+            .size(ControlSize::Large)
+            .into_config::<AnyView>(&ambient_env);
+        assert_eq!(explicit.size(), ControlSize::Large);
+        assert_eq!(
+            Toggle::from(explicit)
+                .into_config::<AnyView>(&ambient_env)
+                .size(),
+            ControlSize::Large
+        );
+
+        let recorded = Rc::new(RefCell::new(None));
+        let _ = View::body(
+            Toggle::new("Custom", &on).style(RecordingToggleStyle {
+                recorded: Rc::clone(&recorded),
+            }),
+            &ambient_env,
+        );
+        assert_eq!(
+            recorded.borrow().as_ref().expect("custom toggle ran").size,
+            ControlSize::ExtraSmall
+        );
     }
 }

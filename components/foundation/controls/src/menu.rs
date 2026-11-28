@@ -626,13 +626,14 @@ pub struct Menu<L> {
     items: Computed<Vec<MenuItem>>,
     identity: Rc<()>,
     style: ButtonStyle,
-    size: ControlSize,
+    size: Option<ControlSize>,
 }
 
 impl<L> Menu<L> {
     /// Creates a menu with a semantic label. Its trigger is drawn as an
-    /// [`Automatic`](ButtonStyle::Automatic) button of
-    /// [`ControlSize::Small`], like a [`Button`].
+    /// [`Automatic`](ButtonStyle::Automatic) button inheriting any ambient
+    /// [`ControlSize`] or falling back to [`ControlSize::Small`], like a
+    /// [`Button`].
     #[must_use]
     pub fn new<I: IntoLabel<Kind = L>>(label: I, items: impl MenuView) -> Self {
         Self {
@@ -640,7 +641,7 @@ impl<L> Menu<L> {
             items: items.into_menu_items(),
             identity: Rc::new(()),
             style: ButtonStyle::Automatic,
-            size: ControlSize::Small,
+            size: None,
         }
     }
 
@@ -660,7 +661,7 @@ impl<L> Menu<L> {
     /// Sets how large the menu's trigger button is drawn.
     #[must_use]
     pub const fn size(mut self, size: ControlSize) -> Self {
-        self.size = size;
+        self.size = Some(size);
         self
     }
 
@@ -724,7 +725,7 @@ impl<L: LabelKind> Menu<L> {
             items: resolve_menu_items::<S>(&self.items, env),
             accessibility_label,
             style: self.style.resolve(env),
-            size: self.size,
+            size: ControlSize::resolve(self.size, env, ControlSize::Small),
         }
     }
 }
@@ -2318,5 +2319,34 @@ mod tests {
         resolved.action.run(&Environment::default());
 
         assert_eq!(count.get(), 2);
+    }
+
+    #[test]
+    fn menu_control_size_inherits_from_environment_and_explicit_size_wins() {
+        use waterui_core::plugin::Plugin as _;
+
+        let base_env = Environment::default();
+        let mut ambient_env = Environment::default();
+        ControlSize::ExtraSmall.install(&mut ambient_env);
+
+        assert_eq!(
+            Menu::new("File", ())
+                .into_resolved::<NoopSlot>(&base_env)
+                .size,
+            ControlSize::Small
+        );
+        assert_eq!(
+            Menu::new("File", ())
+                .into_resolved::<NoopSlot>(&ambient_env)
+                .size,
+            ControlSize::ExtraSmall
+        );
+        assert_eq!(
+            Menu::new("File", ())
+                .size(ControlSize::Large)
+                .into_resolved::<NoopSlot>(&ambient_env)
+                .size,
+            ControlSize::Large
+        );
     }
 }

@@ -141,7 +141,8 @@ fn selection_menu_nested_command_dispatches() {
                     "Open".action(|| {}),
                     Menu::new("More", "Deep".action(move || deep.set(deep.get() + 1))),
                 ))
-                .size(300.0, 60.0),
+                .width(300.0)
+                .height(60.0),
         )
     }));
     pump_until_settled(&mut runtime);
@@ -285,7 +286,8 @@ fn selection_menu_command_reads_selection() {
                     // selection with empty" must delete it, not no-op.
                     selection.replace(if call == 0 { "[wrapped]" } else { "" });
                 }))
-                .size(300.0, 60.0),
+                .width(300.0)
+                .height(60.0),
         )
     }));
     pump_until_settled(&mut runtime);

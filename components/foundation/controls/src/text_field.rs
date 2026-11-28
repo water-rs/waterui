@@ -19,6 +19,7 @@ use crate::input::{FieldInput, ResolvedFieldInput};
 
 use crate::label::{ControlLabel, IntoLabel, Label, LabelKind, impl_label_style_methods};
 use crate::menu::{MenuItem, MenuView, ResolvedMenuItem, resolve_menu_items};
+use crate::size::ControlSize;
 
 mod private {
     pub trait Sealed {}
@@ -69,6 +70,8 @@ pub struct TextFieldConfig<S> {
     selection_menu: Computed<Vec<ResolvedMenuItem<S>>>,
     /// Maximum number of lines the field renders. `None` removes the limit.
     line_limit: Computed<Option<NonZeroUsize>>,
+    /// How large the text field is drawn.
+    size: ControlSize,
 }
 
 impl<S> TextFieldConfig<S> {
@@ -151,6 +154,12 @@ impl<S> TextFieldConfig<S> {
         self.input.on_submit()
     }
 
+    /// How large the text field is drawn.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
+    }
+
     /// Takes the value apart into its fields, in declaration order.
     #[must_use]
     #[expect(
@@ -217,6 +226,7 @@ impl<S: 'static> MapSlots<S> for TextFieldConfig<S> {
                 })
                 .computed(),
             line_limit: self.line_limit,
+            size: self.size,
         }
     }
 }
@@ -248,6 +258,8 @@ pub struct TextField<L> {
     selection_menu: Computed<Vec<MenuItem>>,
     /// Maximum number of lines the field renders. `None` removes the limit.
     line_limit: Computed<Option<NonZeroUsize>>,
+    /// Explicit control size override; when `None`, inherits the nearest ambient [`ControlSize`].
+    size: Option<ControlSize>,
 }
 
 impl<L> TextField<L> {
@@ -268,6 +280,7 @@ impl<L> TextField<L> {
             autocorrect: None,
             selection_menu: Computed::constant(Vec::new()),
             line_limit: Computed::constant(NonZeroUsize::new(1)),
+            size: None,
         }
     }
 
@@ -359,6 +372,14 @@ impl<L> TextField<L> {
         self.input.set_submit_label(label);
         self
     }
+
+    /// Sets how large the text field is drawn. When omitted, the field inherits
+    /// the nearest ambient [`ControlSize`] or defaults to
+    /// [`ControlSize::Small`].
+    pub const fn size(mut self, size: ControlSize) -> Self {
+        self.size = Some(size);
+        self
+    }
 }
 
 impl<L: LabelKind> TextField<L> {
@@ -386,6 +407,7 @@ impl<L: LabelKind> TextField<L> {
             autocorrect,
             selection_menu,
             line_limit: self.line_limit,
+            size: ControlSize::resolve(self.size, env, ControlSize::Small),
         }
     }
 }
@@ -567,5 +589,37 @@ mod tests {
         assert_eq!(price.keyboard(), KeyboardType::Decimal);
         assert_eq!(price.autocapitalization(), Capitalization::None);
         assert!(!price.autocorrect());
+    }
+
+    #[test]
+    fn text_field_control_size_inherits_from_environment_and_explicit_size_wins() {
+        use crate::size::ControlSize;
+        use waterui_core::plugin::Plugin as _;
+        use waterui_core::{AnyView, Environment};
+
+        let value = Binding::new(Str::from(""));
+        let base_env = Environment::new();
+        let mut ambient_env = Environment::new();
+        ControlSize::ExtraSmall.install(&mut ambient_env);
+
+        assert_eq!(
+            TextField::new("Name", &value)
+                .into_config::<AnyView>(&base_env)
+                .size(),
+            ControlSize::Small
+        );
+        assert_eq!(
+            TextField::new("Name", &value)
+                .into_config::<AnyView>(&ambient_env)
+                .size(),
+            ControlSize::ExtraSmall
+        );
+        assert_eq!(
+            TextField::new("Name", &value)
+                .size(ControlSize::Large)
+                .into_config::<AnyView>(&ambient_env)
+                .size(),
+            ControlSize::Large
+        );
     }
 }

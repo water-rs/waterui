@@ -990,7 +990,7 @@ impl SealedButtonStyle for ButtonStyle {
             style: *self,
             explicit_style: true,
             role: data.role,
-            size: data.size,
+            size: Some(data.size),
             pending: data.pending.map(ButtonPending::Signal),
         })
     }
@@ -1010,7 +1010,7 @@ impl<S: CustomButtonStyle> SealedButtonStyle for CustomButton<S> {
             &a11y_label,
             action,
             button.role,
-            button.size,
+            ControlSize::resolve(button.size, env, ControlSize::Small),
             button.pending.as_ref().map(ButtonPending::signal),
             env,
         )
@@ -1035,7 +1035,7 @@ impl<S: CustomButtonStyle> SealedButtonStyle for CustomButton<S> {
             &a11y_label,
             action,
             button.role,
-            button.size,
+            ControlSize::resolve(button.size, env, ControlSize::Small),
             button.pending.as_ref().map(ButtonPending::signal),
             env,
         )
@@ -1077,7 +1077,7 @@ impl<S: PrimitiveButtonStyle> SealedButtonStyle for PrimitiveButton<S> {
             &a11y_label,
             action,
             button.role,
-            button.size,
+            ControlSize::resolve(button.size, env, ControlSize::Small),
             button.pending.as_ref().map(ButtonPending::signal),
             env,
         )
@@ -1102,7 +1102,7 @@ impl<S: PrimitiveButtonStyle> SealedButtonStyle for PrimitiveButton<S> {
             &a11y_label,
             action,
             button.role,
-            button.size,
+            ControlSize::resolve(button.size, env, ControlSize::Small),
             button.pending.as_ref().map(ButtonPending::signal),
             env,
         )
@@ -1421,7 +1421,7 @@ where
         style: button.style.resolve(env),
         explicit_style: button.explicit_style,
         role: button.role,
-        size: button.size,
+        size: ControlSize::resolve(button.size, env, ControlSize::Small),
         pending: button.pending.as_ref().map(ButtonPending::signal),
     }
 }
@@ -1464,7 +1464,7 @@ impl<S: View> From<ButtonConfig<S>> for Button<ControlLabel<S>, BoxedAction<()>>
             style: value.style,
             explicit_style: value.explicit_style,
             role: value.role,
-            size: value.size,
+            size: Some(value.size),
             pending: value.pending.map(ButtonPending::Signal),
         }
     }
@@ -1484,7 +1484,7 @@ where
             style: self.style,
             explicit_style: self.explicit_style,
             role: self.role,
-            size: self.size,
+            size: self.size.unwrap_or(ControlSize::Small),
             pending: self.pending.as_ref().map(ButtonPending::signal),
         }
     }
@@ -1510,7 +1510,7 @@ pub struct Button<L, Action, Style = ButtonStyle> {
     style: Style,
     explicit_style: bool,
     role: Option<ButtonRole>,
-    size: ControlSize,
+    size: Option<ControlSize>,
     pending: Option<ButtonPending>,
 }
 
@@ -1540,17 +1540,22 @@ impl<L, Action, Style> Button<L, Action, Style> {
         (self.label, self.action, self.role)
     }
 
-    /// Returns the size this button is drawn at.
+    /// Returns the explicit size requested for this button, or its default
+    /// ([`ControlSize::Small`]) when none was chosen explicitly.
     #[must_use]
     pub const fn button_size(&self) -> ControlSize {
-        self.size
+        match self.size {
+            Some(size) => size,
+            None => ControlSize::Small,
+        }
     }
 
-    /// Sets how large the button is drawn. Buttons default to
+    /// Sets how large the button is drawn. When omitted, the button inherits
+    /// the nearest ambient [`ControlSize`] or defaults to
     /// [`ControlSize::Small`].
     #[must_use]
     pub const fn size(mut self, size: ControlSize) -> Self {
-        self.size = size;
+        self.size = Some(size);
         self
     }
 }
@@ -1639,7 +1644,7 @@ impl<L> Button<L, NoAction, ButtonStyle> {
             style: ButtonStyle::Automatic,
             explicit_style: false,
             role: None,
-            size: ControlSize::Small,
+            size: None,
             pending: None,
         }
     }
@@ -2696,5 +2701,114 @@ mod custom_style_tests {
         let _ = waterui_testing::drain_parked_local_work();
         assert!(!saving.snapshot());
         assert!(!command.is_disabled().snapshot());
+    }
+
+    #[test]
+    fn control_size_inherits_from_environment_and_explicit_size_wins() {
+        use alloc::vec;
+        use alloc::vec::Vec;
+        use waterui_core::backend::peel_native;
+        use waterui_core::plugin::Plugin as _;
+
+        use super::{Button, ButtonConfig};
+
+        struct SizeCustomStyle(Rc<RefCell<Vec<ControlSize>>>);
+        impl CustomButtonStyle for SizeCustomStyle {
+            fn make_body<L: View>(
+                &self,
+                config: ButtonStyleConfiguration<L>,
+            ) -> impl View + use<L> {
+                self.0.borrow_mut().push(config.size());
+                config.into_label()
+            }
+        }
+
+        struct SizePrimitiveStyle(Rc<RefCell<Vec<ControlSize>>>);
+        impl PrimitiveButtonStyle for SizePrimitiveStyle {
+            fn make_body<L: View>(
+                &self,
+                config: PrimitiveButtonStyleConfiguration<L>,
+            ) -> impl View + use<L> {
+                self.0.borrow_mut().push(config.size());
+                config.into_label()
+            }
+        }
+
+        let base_env = Environment::new();
+        let default_cfg = peel_native::<ButtonConfig<AnyView>>(
+            AnyView::new(View::body(button("Save").action(|| {}), &base_env)),
+            &base_env,
+        )
+        .expect("default button lowers to ButtonConfig");
+        assert_eq!(default_cfg.size, ControlSize::Small);
+
+        let mut ambient_env = Environment::new();
+        ControlSize::Large.install(&mut ambient_env);
+        let ambient_cfg = peel_native::<ButtonConfig<AnyView>>(
+            AnyView::new(View::body(button("Save").action(|| {}), &ambient_env)),
+            &ambient_env,
+        )
+        .expect("ambient button lowers to ButtonConfig");
+        assert_eq!(ambient_cfg.size, ControlSize::Large);
+
+        let explicit_cfg = peel_native::<ButtonConfig<AnyView>>(
+            AnyView::new(View::body(
+                button("Save").size(ControlSize::ExtraSmall).action(|| {}),
+                &ambient_env,
+            )),
+            &ambient_env,
+        )
+        .expect("explicit button lowers to ButtonConfig");
+        assert_eq!(explicit_cfg.size, ControlSize::ExtraSmall);
+
+        // Re-wrapping a resolved ButtonConfig preserves its concrete size even under a
+        // different ambient ControlSize.
+        let mut override_env = Environment::new();
+        ControlSize::ExtraLarge.install(&mut override_env);
+        let preserved_cfg = peel_native::<ButtonConfig<AnyView>>(
+            AnyView::new(View::body(Button::from(explicit_cfg), &override_env)),
+            &override_env,
+        )
+        .expect("Button::from(ButtonConfig) lowers to ButtonConfig");
+        assert_eq!(preserved_cfg.size, ControlSize::ExtraSmall);
+
+        // CustomButtonStyle and PrimitiveButtonStyle both observe concrete ControlSize.
+        let custom_seen = Rc::new(RefCell::new(Vec::new()));
+        let _ = View::body(
+            button("Ambient")
+                .action(|| {})
+                .style(SizeCustomStyle(Rc::clone(&custom_seen))),
+            &ambient_env,
+        );
+        let _ = View::body(
+            button("Explicit")
+                .size(ControlSize::Medium)
+                .action(|| {})
+                .style(SizeCustomStyle(Rc::clone(&custom_seen))),
+            &ambient_env,
+        );
+        assert_eq!(
+            *custom_seen.borrow(),
+            vec![ControlSize::Large, ControlSize::Medium]
+        );
+
+        let prim_seen = Rc::new(RefCell::new(Vec::new()));
+        let _ = View::body(
+            button("Ambient")
+                .action(|| {})
+                .style(SizePrimitiveStyle(Rc::clone(&prim_seen))),
+            &ambient_env,
+        );
+        let _ = View::body(
+            button("Explicit")
+                .size(ControlSize::ExtraSmall)
+                .action(|| {})
+                .style(SizePrimitiveStyle(Rc::clone(&prim_seen))),
+            &ambient_env,
+        );
+        assert_eq!(
+            *prim_seen.borrow(),
+            vec![ControlSize::Large, ControlSize::ExtraSmall]
+        );
     }
 }

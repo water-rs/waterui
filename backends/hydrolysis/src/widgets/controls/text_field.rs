@@ -216,7 +216,7 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
     let theme = ctx.theme();
     let mut state = state.borrow_mut();
     let state = &mut *state;
-    let look = state.field.look(&theme, env).clone();
+    let look = state.field.look(&theme, state.config.size(), env).clone();
     let input_metrics = look.metrics();
     ctx.renderer_mut()
         .set_text_caret_motion(look.caret().blink());
@@ -646,7 +646,10 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
     };
     let mut state = state.borrow_mut();
     let state = &mut *state;
-    let look = state.field.look(&theme, env).clone();
+    let look = state
+        .field
+        .look(&theme, waterui_controls::ControlSize::Small, env)
+        .clone();
     let input_metrics = look.metrics();
     ctx.renderer_mut()
         .set_text_caret_motion(look.caret().blink());
@@ -979,7 +982,9 @@ pub fn measure_text_field_node<E: crate::text::TextEngine>(
         label_size,
         state,
         env,
-        &render_state.field.peek(theme, env),
+        &render_state
+            .field
+            .peek(theme, render_state.config.size(), env),
         proposal,
     ))
 }
@@ -1001,7 +1006,9 @@ pub fn measure_secure_field_node<E: crate::text::TextEngine>(
         label_size,
         state,
         env,
-        &render_state.field.peek(theme, env),
+        &render_state
+            .field
+            .peek(theme, waterui_controls::ControlSize::Small, env),
         proposal,
     ))
 }

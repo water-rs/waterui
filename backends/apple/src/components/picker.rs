@@ -35,6 +35,8 @@ use waterui_text::StyledStr;
 use waterui_text::font::{Body, ResolvedFont};
 
 use super::font::platform_font;
+#[cfg(target_os = "macos")]
+use crate::components::control_size::control_font;
 use crate::components::control_size::platform_control_size;
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
@@ -303,7 +305,8 @@ pub fn realize_picker_config(config: PickerConfig<Held>, ctx: &RenderContext<'_>
     // relative to it, so a bare picker draws at the platform's regular
     // size like a bare `NSSegmentedControl` does. `UIKit` has no size
     // classes for its selection controls and ignores the value.
-    picker.set_control_size(platform_control_size(config.size(), ControlSize::Small));
+    let control_size = platform_control_size(config.size(), ControlSize::Small);
+    picker.set_control_size(control_size);
     let host_view: &PlatformView = &host;
     cocoa_ui::view::add_subview(host_view, picker.view());
 
@@ -380,6 +383,8 @@ pub fn realize_picker_config(config: PickerConfig<Held>, ctx: &RenderContext<'_>
     leaf.bind(&body, {
         let state = Rc::clone(&state);
         move |font: ResolvedFont| {
+            #[cfg(target_os = "macos")]
+            let font = control_font(font, control_size);
             state
                 .borrow()
                 .picker

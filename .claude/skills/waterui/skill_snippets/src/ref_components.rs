@@ -433,6 +433,18 @@ pub fn components_block_14() {
     };
 
     let _ = {
+        // Scope a ControlSize to every control in a subtree; explicit .size(..) overrides it:
+        hstack((
+            button("Apply").action(|| {}),
+            toggle("Auto", &enabled),
+            stepper("Count", &count),
+            field("Tag", &address),
+            button("Primary").size(ControlSize::Large).action(|| {}),
+        ))
+        .control_size(ControlSize::Small)
+    };
+
+    let _ = {
         toggle("Wi-Fi", &enabled) // &Binding<bool>
     };
     let _ = {

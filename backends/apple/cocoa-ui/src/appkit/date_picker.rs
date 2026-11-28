@@ -13,7 +13,8 @@ use std::fmt;
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSControl, NSDatePicker, NSDatePickerElementFlags, NSDatePickerStyle, NSFont,
+    NSAccessibility, NSControl, NSControlSize, NSDatePicker, NSDatePickerElementFlags,
+    NSDatePickerStyle, NSFont,
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSDate, NSObjectProtocol, NSString};
@@ -111,6 +112,17 @@ impl DatePicker {
     /// Whether the picker responds to input.
     pub fn set_enabled(&self, enabled: bool) {
         self.setEnabled(enabled);
+    }
+
+    /// How large the picker is drawn (`NSControl.controlSize`).
+    pub fn set_control_size(&self, size: crate::slider::ControlSize) {
+        let size = match size {
+            crate::slider::ControlSize::Mini => NSControlSize::Mini,
+            crate::slider::ControlSize::Small => NSControlSize::Small,
+            crate::slider::ControlSize::Regular => NSControlSize::Regular,
+            crate::slider::ControlSize::Large => NSControlSize::Large,
+        };
+        self.setControlSize(size);
     }
 
     /// Calls `handler` each time the user edits the picker's value. The

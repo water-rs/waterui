@@ -26,9 +26,9 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::sel;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
-    NSControlTextEditingDelegate, NSEvent, NSMenu, NSSecureTextField, NSTextAlignment,
-    NSTextContent, NSTextDelegate, NSTextField, NSTextFieldBezelStyle, NSTextFieldDelegate,
-    NSTextInputClient, NSTextView, NSTextViewDelegate, NSView,
+    NSControlSize, NSControlTextEditingDelegate, NSEvent, NSMenu, NSSecureTextField,
+    NSTextAlignment, NSTextContent, NSTextDelegate, NSTextField, NSTextFieldBezelStyle,
+    NSTextFieldDelegate, NSTextInputClient, NSTextView, NSTextViewDelegate, NSView,
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{
@@ -411,6 +411,17 @@ impl TextField {
         self.setEnabled(enabled);
     }
 
+    /// How large the field is drawn (`NSControl.controlSize`).
+    pub fn set_control_size(&self, size: crate::slider::ControlSize) {
+        let size = match size {
+            crate::slider::ControlSize::Mini => NSControlSize::Mini,
+            crate::slider::ControlSize::Small => NSControlSize::Small,
+            crate::slider::ControlSize::Regular => NSControlSize::Regular,
+            crate::slider::ControlSize::Large => NSControlSize::Large,
+        };
+        self.setControlSize(size);
+    }
+
     /// The control's intrinsic height — the text share of a measure, as
     /// `NSTextField.intrinsicContentSize`.
     #[must_use]
@@ -658,6 +669,17 @@ impl SecureField {
     /// Whether the field responds to input.
     pub fn set_enabled(&self, enabled: bool) {
         self.setEnabled(enabled);
+    }
+
+    /// How large the field is drawn (`NSControl.controlSize`).
+    pub fn set_control_size(&self, size: crate::slider::ControlSize) {
+        let size = match size {
+            crate::slider::ControlSize::Mini => NSControlSize::Mini,
+            crate::slider::ControlSize::Small => NSControlSize::Small,
+            crate::slider::ControlSize::Regular => NSControlSize::Regular,
+            crate::slider::ControlSize::Large => NSControlSize::Large,
+        };
+        self.setControlSize(size);
     }
 
     /// The control's intrinsic height — the text share of a measure.

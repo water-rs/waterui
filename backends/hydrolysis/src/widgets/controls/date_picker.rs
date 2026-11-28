@@ -28,12 +28,11 @@ use crate::widgets::controls::field_look::field_look;
 use crate::widgets::util::widget_disabled;
 use crate::widgets::util::{inset_rect, mirrored_in};
 
-/// The request a date picker's field makes of the theme: a field of the size
-/// pickers default to, in the layout direction and tint of `env`. A date
-/// picker has no size of its own to configure.
-pub fn date_picker_spec(env: &Environment) -> PickerSpec {
+/// The request a date picker's field makes of the theme: a field of the
+/// picker's resolved [`ControlSize`], in the layout direction and tint of `env`.
+pub fn date_picker_spec(size: ControlSize, env: &Environment) -> PickerSpec {
     PickerSpec::new(
-        ControlSize::Small,
+        size,
         layout_direction(env).snapshot(),
         SpecTint::resolve(env),
     )
@@ -211,8 +210,10 @@ pub fn measure_date_picker_node<E: crate::text::TextEngine>(
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let config = &render_state.config;
-    let metrics = theme.menu_picker(&date_picker_spec(env), env).layout();
-    let label_floor = f64::from(field_look(theme, env).metrics().label_height);
+    let metrics = theme
+        .menu_picker(&date_picker_spec(config.size(), env), env)
+        .layout();
+    let label_floor = f64::from(field_look(theme, config.size(), env).metrics().label_height);
     let label_size = render_state.label_view.measure_built(state, env, theme);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
     let label_height = if has_label {
@@ -343,8 +344,9 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = ctx.theme();
-    let spec = date_picker_spec(env);
     let mut state = state.borrow_mut();
+    let size = state.config.size();
+    let spec = date_picker_spec(size, env);
     if state.look.as_ref().is_none_or(|(held, _)| *held != spec) {
         let look = theme.menu_picker(&spec, env);
         state.look = Some((spec, look));
@@ -365,7 +367,7 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
         ctx,
         &mut state,
         env,
-        f64::from(field_look(&theme, env).metrics().label_height),
+        f64::from(field_look(&theme, size, env).metrics().label_height),
     );
 
     let field_bounds = kurbo::Rect::new(

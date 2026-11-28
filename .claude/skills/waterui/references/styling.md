@@ -46,6 +46,12 @@ progress indicators — instead of the theme's `Accent`. The nearest `.tint` win
 subtree with none uses `Accent`. The color may be a signal, and a change updates the
 controls in place.
 
+`.control_size(ControlSize)` installs an ambient `ControlSize` (`ExtraSmall`, `Small`,
+`Medium`, `Large`, `ExtraLarge`) on a subtree for `Button`, `Toggle`, `Menu`, `Slider`,
+`Picker`, `Stepper`, `TextField`, and `DatePicker`. Any control without an explicit
+`.size(...)` inherits the nearest enclosing `.control_size(...)`, while an explicit
+`.size(...)` overrides it.
+
 The complete set:
 
 | Token | Meaning |

@@ -110,7 +110,7 @@ fn stack_with_field_page(value: &Binding<Str>) -> AnyView {
         vstack((NavigationLink::new("Compose", move || {
             NavigationView::new(
                 "Compose",
-                field("Message", &value_for_page).size(300.0, 44.0),
+                field("Message", &value_for_page).width(300.0).height(44.0),
             )
         }),)),
     )))

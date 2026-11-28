@@ -19,6 +19,7 @@ use nami::{Binding, Signal};
 use waterui_backend_core::form::picker::date::{
     DatePickerConfig, DatePickerType, DateTime, clamp_value_to_range,
 };
+use waterui_controls::ControlSize;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
@@ -26,6 +27,9 @@ use waterui_core::layout::{
 use waterui_core::resolve::Resolvable;
 use waterui_interaction::interaction::Disabled;
 
+#[cfg(target_os = "macos")]
+use crate::components::control_size::control_font;
+use crate::components::control_size::platform_control_size;
 use crate::contract::{Held, Mounted, NativeLeaf, RenderContext};
 use crate::proposal;
 
@@ -481,6 +485,8 @@ pub fn realize_date_picker_config(
     let picker = DatePicker::new(mtm, platform::elements(config.ty()));
     #[cfg(target_os = "ios")]
     let picker = DatePicker::new(mtm, platform::mode(config.ty()));
+    let control_size = platform_control_size(config.size(), ControlSize::Small);
+    picker.set_control_size(control_size);
     let initial_range = config.range().snapshot();
     picker.set_range(
         range_bound(*initial_range.start()).as_deref(),
@@ -620,15 +626,20 @@ fn wire(
 
     // The body font themes the control's text on `AppKit`, and the
     // seconds readout's monospaced-digit face on `UIKit`.
+    #[cfg(target_os = "macos")]
+    let control_size = platform_control_size(config.size(), ControlSize::Small);
     let body = waterui_text::font::Body.resolve(ctx.env());
     leaf.bind(&body, {
         let state = Rc::clone(state);
         move |font: waterui_text::font::ResolvedFont| {
             #[cfg(target_os = "macos")]
-            state
-                .borrow()
-                .picker
-                .set_font(&super::font::platform_font(mtm, &font, false));
+            {
+                let font = control_font(font, control_size);
+                state
+                    .borrow()
+                    .picker
+                    .set_font(&super::font::platform_font(mtm, &font, false));
+            }
             #[cfg(target_os = "ios")]
             {
                 let borrowed = state.borrow();
