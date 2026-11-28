@@ -724,27 +724,9 @@ define_class!(
         }
 
         // SAFETY: see the module safety note. When wrapping a non-`HostView`
-        // leaf for `.a11y_adjustable(...)`, forward unset label/value/help/
-        // custom-actions queries to the wrapped primary view so inner
-        // modifiers remain live on the host element.
-        #[unsafe(method_id(accessibilityLabel))]
-        fn accessibility_label_override(&self) -> Option<Retained<NSString>> {
-            guarded("HostView accessibilityLabel", || {
-                // SAFETY: see the module safety note.
-                let inherited: Option<Retained<NSString>> =
-                    unsafe { msg_send![super(self), accessibilityLabel] };
-                if !self.ivars().delegates_accessibility_to_primary.get()
-                    || inherited.as_ref().is_some_and(|label| !label.is_empty())
-                {
-                    return inherited;
-                }
-                self.primary_accessibility_target()
-                    .and_then(|child| ProtocolObject::<dyn NSAccessibility>::from_ref(&*child).accessibilityLabel())
-                    .or(inherited)
-            })
-        }
-
-        // SAFETY: see the module safety note.
+        // leaf for `.a11y_adjustable(...)`, forward unset value/help queries
+        // to the wrapped primary view so inner modifiers remain live on the
+        // host element.
         #[unsafe(method_id(accessibilityValue))]
         fn accessibility_value_override(&self) -> Option<Retained<objc2::runtime::AnyObject>> {
             guarded("HostView accessibilityValue", || {
@@ -774,27 +756,6 @@ define_class!(
                 self.primary_accessibility_target()
                     .and_then(|child| ProtocolObject::<dyn NSAccessibility>::from_ref(&*child).accessibilityHelp())
                     .or(inherited)
-            })
-        }
-
-        // SAFETY: see the module safety note.
-        #[unsafe(method_id(accessibilityCustomActions))]
-        fn accessibility_custom_actions_override(
-            &self,
-        ) -> Option<Retained<NSArray<NSAccessibilityCustomAction>>> {
-            guarded("HostView accessibilityCustomActions", || {
-                // SAFETY: see the module safety note.
-                let inherited: Option<Retained<NSArray<NSAccessibilityCustomAction>>> =
-                    unsafe { msg_send![super(self), accessibilityCustomActions] };
-                if !self.ivars().delegates_accessibility_to_primary.get()
-                    || inherited.as_ref().is_some_and(|actions| !actions.is_empty())
-                {
-                    return inherited;
-                }
-                self.primary_accessibility_target().and_then(|child| {
-                    ProtocolObject::<dyn NSAccessibility>::from_ref(&*child)
-                        .accessibilityCustomActions()
-                })
             })
         }
 
@@ -828,26 +789,38 @@ define_class!(
         }
 
         // SAFETY: see the module safety note. An explicit label set on the
-        // host wins; a combining host otherwise announces its descendants'
-        // labels merged in reading order.
+        // host wins; a delegating wrapper forwards to its primary child; a
+        // combining host otherwise announces its descendants' labels merged in
+        // reading order.
         #[unsafe(method_id(accessibilityLabel))]
         fn accessibility_label_override(&self) -> Option<Retained<NSString>> {
             guarded("HostView accessibilityLabel", || {
                 // SAFETY: see the module safety note.
                 let inherited: Option<Retained<NSString>> =
                     unsafe { msg_send![super(self), accessibilityLabel] };
-                if !self.ivars().combines_accessibility_children.get()
-                    || inherited.as_ref().is_some_and(|label| !label.is_empty())
-                {
+                if inherited.as_ref().is_some_and(|label| !label.is_empty()) {
                     return inherited;
                 }
-                self.combined_accessibility_label()
+                if self.ivars().delegates_accessibility_to_primary.get()
+                    && let Some(label) = self.primary_accessibility_target().and_then(|child| {
+                        ProtocolObject::<dyn NSAccessibility>::from_ref(&*child)
+                            .accessibilityLabel()
+                    })
+                    && !label.is_empty()
+                {
+                    return Some(label);
+                }
+                if self.ivars().combines_accessibility_children.get() {
+                    return self.combined_accessibility_label();
+                }
+                inherited
             })
         }
 
-        // SAFETY: see the module safety note. A combining host re-publishes
-        // its pressable descendants' actions as custom actions so nested
-        // controls remain reachable after the descendants are folded.
+        // SAFETY: see the module safety note. A delegating wrapper forwards
+        // unset custom actions from its primary child; a combining host merges
+        // its pressable descendants' actions so nested controls remain
+        // reachable after the descendants are folded.
         #[unsafe(method_id(accessibilityCustomActions))]
         fn accessibility_custom_actions_override(
             &self,
@@ -856,10 +829,22 @@ define_class!(
                 // SAFETY: see the module safety note.
                 let inherited: Option<Retained<NSArray<NSAccessibilityCustomAction>>> =
                     unsafe { msg_send![super(self), accessibilityCustomActions] };
+                let base = if self.ivars().delegates_accessibility_to_primary.get()
+                    && inherited.as_ref().is_none_or(|actions| actions.is_empty())
+                {
+                    self.primary_accessibility_target()
+                        .and_then(|child| {
+                            ProtocolObject::<dyn NSAccessibility>::from_ref(&*child)
+                                .accessibilityCustomActions()
+                        })
+                        .or(inherited)
+                } else {
+                    inherited
+                };
                 if !self.ivars().combines_accessibility_children.get() {
-                    return inherited;
+                    return base;
                 }
-                Some(self.merged_accessibility_custom_actions(inherited.as_deref()))
+                Some(self.merged_accessibility_custom_actions(base.as_deref()))
             })
         }
 

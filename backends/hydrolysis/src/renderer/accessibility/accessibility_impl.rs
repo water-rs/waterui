@@ -1317,6 +1317,17 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         if decrement {
             child.add_action(AccessibilityAction::Decrement);
         }
+        // The scope's automation id was claimed by the container, so it would
+        // vanish with it. A child that carries its own id keeps it, matching
+        // the nearest-consumer rule that let it claim one in the first place.
+        if let Some(author_id) = author_id
+            && child.author_id().is_none()
+        {
+            child.set_author_id(author_id);
+        }
+        if role != AccessibilityNodeRole::Group {
+            child.set_role(role);
+        }
         if !child_custom.is_empty() || !container_custom.is_empty() {
             let mut merged = child_custom;
             merged.extend(container_custom);
@@ -1336,17 +1347,6 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
             self.delegated_activations
                 .entry(child_id)
                 .or_insert(donation);
-        }
-        // The scope's automation id was claimed by the container, so it would
-        // vanish with it. A child that carries its own id keeps it, matching
-        // the nearest-consumer rule that let it claim one in the first place.
-        if let Some(author_id) = author_id
-            && child.author_id().is_none()
-        {
-            child.set_author_id(author_id);
-        }
-        if role != AccessibilityNodeRole::Group {
-            child.set_role(role);
         }
         // The child takes the container's place under its parent.
         self.replace_child_in_parent(container_id, child_id);
@@ -1925,10 +1925,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
-    )]
     pub fn handle_accessibility_action(
         &mut self,
         request: AccessibilityActionRequest,
@@ -2948,11 +2944,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                         let custom_action = action.clone();
                         let captured_env = env.clone();
                         let target = AccessibilityActionTarget::Activate {
-                            action: Rc::new(RefCell::new(move |_core, dispatch_env| {
-                                let action_env = captured_env.layered_on(dispatch_env);
-                                custom_action.invoke(&action_env).report_extraction();
-                                true
-                            })),
+                            action: Rc::new(RefCell::new(
+                                move |_core: &mut Self, dispatch_env: &Environment| {
+                                    let action_env = captured_env.layered_on(dispatch_env);
+                                    custom_action.invoke(&action_env).report_extraction();
+                                    true
+                                },
+                            )),
                         };
                         (name.as_str().to_owned(), target)
                     })
