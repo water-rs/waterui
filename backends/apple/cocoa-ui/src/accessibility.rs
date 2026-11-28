@@ -101,14 +101,16 @@ mod imp {
     use std::rc::Rc;
 
     use block2::RcBlock;
+    use objc2::MainThreadOnly as _;
     use objc2::runtime::Bool;
     use objc2_foundation::{NSArray, NSString};
     use objc2_ui_kit::{
-        NSObjectUIAccessibility, UIAccessibilityCustomAction, UIAccessibilityTraitAdjustable,
-        UIAccessibilityTraitButton, UIAccessibilityTraitHeader, UIAccessibilityTraitImage,
-        UIAccessibilityTraitLink, UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSearchField,
-        UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText,
-        UIAccessibilityTraitUpdatesFrequently, UIAccessibilityTraits, UIView,
+        NSObjectUIAccessibility, NSObjectUIAccessibilityAction, UIAccessibilityCustomAction,
+        UIAccessibilityTraitAdjustable, UIAccessibilityTraitButton, UIAccessibilityTraitHeader,
+        UIAccessibilityTraitImage, UIAccessibilityTraitLink, UIAccessibilityTraitNotEnabled,
+        UIAccessibilityTraitSearchField, UIAccessibilityTraitSelected,
+        UIAccessibilityTraitStaticText, UIAccessibilityTraitUpdatesFrequently,
+        UIAccessibilityTraits, UIView,
     };
 
     use super::{Checked, CustomActionHandler, Role};

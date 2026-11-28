@@ -19918,7 +19918,7 @@ mod a11y_actions_modifiers {
 
         #[cfg(target_os = "ios")]
         {
-            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibilityAction as _;
             use core::ptr::NonNull;
 
             let actions = leaf
