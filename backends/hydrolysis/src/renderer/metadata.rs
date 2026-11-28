@@ -668,7 +668,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         AccessibilityNodeRole::Button,
                     ),
                 );
-                let default_label = content.accessibility_label(renderer);
+                let combines = env_for_claim
+                    .get::<AccessibilityChildren>()
+                    .is_some_and(AccessibilityChildren::combines_descendants);
+                let default_label = (!combines)
+                    .then(|| content.accessibility_label(renderer))
+                    .flatten();
                 if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
                     node.set_label(label);
                 }
@@ -813,8 +818,14 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 // sees the key — FOCUSED would never reach
                 // `.interaction_state` reports or the focus ring.
                 renderer.register_accessibility_focus_link(&interaction_key, node_id);
-                renderer.drain_claim_scope(node_id, claim_env.as_ref().unwrap_or(env));
-                if claim_synthesized {
+                let resolved_claim_env = claim_env.as_ref().unwrap_or(env);
+                renderer.drain_claim_scope(node_id, resolved_claim_env);
+                if resolved_claim_env
+                    .get::<AccessibilityChildren>()
+                    .is_some_and(AccessibilityChildren::combines_descendants)
+                {
+                    renderer.combine_accessibility_descendants(node_id);
+                } else if claim_synthesized {
                     renderer.collapse_synthesized_claim(node_id);
                 }
             }
@@ -860,8 +871,14 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             #[cfg(feature = "accessibility")]
             if let Some(node_id) = claimed_naming_node {
                 renderer.register_accessibility_focus_link(&focus_key, node_id);
-                renderer.drain_claim_scope(node_id, claim_env.as_ref().unwrap_or(env));
-                if claim_synthesized {
+                let resolved_claim_env = claim_env.as_ref().unwrap_or(env);
+                renderer.drain_claim_scope(node_id, resolved_claim_env);
+                if resolved_claim_env
+                    .get::<AccessibilityChildren>()
+                    .is_some_and(AccessibilityChildren::combines_descendants)
+                {
+                    renderer.combine_accessibility_descendants(node_id);
+                } else if claim_synthesized {
                     renderer.collapse_synthesized_claim(node_id);
                 }
             }
@@ -902,8 +919,14 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         }
         #[cfg(feature = "accessibility")]
         if let Some(node_id) = claimed_naming_node {
-            renderer.drain_claim_scope(node_id, claim_env.as_ref().unwrap_or(env));
-            if claim_synthesized {
+            let resolved_claim_env = claim_env.as_ref().unwrap_or(env);
+            renderer.drain_claim_scope(node_id, resolved_claim_env);
+            if resolved_claim_env
+                .get::<AccessibilityChildren>()
+                .is_some_and(AccessibilityChildren::combines_descendants)
+            {
+                renderer.combine_accessibility_descendants(node_id);
+            } else if claim_synthesized {
                 renderer.collapse_synthesized_claim(node_id);
             }
         }
@@ -995,7 +1018,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     AccessibilityNodeRole::Button,
                 ),
             );
-            let default_label = content.accessibility_label(renderer);
+            let combines = claim_env
+                .get::<AccessibilityChildren>()
+                .is_some_and(AccessibilityChildren::combines_descendants);
+            let default_label = (!combines)
+                .then(|| content.accessibility_label(renderer))
+                .flatten();
             if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
                 node.set_label(label);
             }

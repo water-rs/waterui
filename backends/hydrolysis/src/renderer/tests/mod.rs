@@ -2277,6 +2277,105 @@ fn container_value_describes_the_container_only() {
     assert_eq!(container.children().len(), 2);
 }
 
+/// `AccessibilityChildren::Combine` merges descendant labels in reading order,
+/// hides the merged descendants, preserves an outer tap as primary `Click`, and
+/// exposes every named descendant button as an invokable `CustomAction`.
+#[cfg(feature = "accessibility")]
+#[test]
+fn a11y_children_combine_merges_labels_and_dispatches_descendant_custom_actions() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let opened = Rc::new(Cell::new(0u32));
+    let replied = Rc::new(Cell::new(0u32));
+    let archived = Rc::new(Cell::new(0u32));
+
+    let opened_cb = Rc::clone(&opened);
+    let replied_cb = Rc::clone(&replied);
+    let archived_cb = Rc::clone(&archived);
+    let view = hstack((
+        text("Alice"),
+        text("See you at 5"),
+        text("Ignored").a11y_hidden(true),
+        button("Reply").action(move || replied_cb.set(replied_cb.get() + 1)),
+        button("Archive").action(move || archived_cb.set(archived_cb.get() + 1)),
+    ))
+    .on_tap(move || opened_cb.set(opened_cb.get() + 1))
+    .a11y_role(AccessibilityRole::ListItem)
+    .a11y_children(waterui_accessibility::AccessibilityChildren::Combine);
+
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 480.0, 60.0));
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("combined row must publish an accessibility tree");
+    let (row_id, row) = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == AccessibilityNodeRole::ListItem)
+        .expect("combined ListItem node must exist");
+    let row_id = *row_id;
+
+    assert_eq!(row.label(), Some("Alice, See you at 5, Reply, Archive"));
+    assert!(
+        row.children().is_empty(),
+        "merged descendants must not remain as standalone children"
+    );
+    assert!(
+        !update.nodes.iter().any(|(_, node)| matches!(
+            node.role(),
+            AccessibilityNodeRole::Label | AccessibilityNodeRole::Button
+        )),
+        "merged text and button descendants must not emit standalone nodes"
+    );
+
+    let custom_names: Vec<&str> = row
+        .custom_actions()
+        .iter()
+        .map(|action| action.description.as_ref())
+        .collect();
+    assert_eq!(custom_names, vec!["Reply", "Archive"]);
+    let reply_id = row.custom_actions()[0].id;
+    let archive_id = row.custom_actions()[1].id;
+
+    assert!(renderer.handle_accessibility_action(
+        AccessibilityActionRequest {
+            action: AccessibilityAction::Click,
+            target_tree: AccessibilityTreeId::ROOT,
+            target_node: row_id,
+            data: None,
+        },
+        &env,
+    ));
+    assert_eq!(opened.get(), 1);
+    assert_eq!(replied.get(), 0);
+    assert_eq!(archived.get(), 0);
+
+    assert!(renderer.handle_accessibility_action(
+        AccessibilityActionRequest {
+            action: AccessibilityAction::CustomAction,
+            target_tree: AccessibilityTreeId::ROOT,
+            target_node: row_id,
+            data: Some(AccessibilityActionData::CustomAction(reply_id)),
+        },
+        &env,
+    ));
+    assert_eq!(replied.get(), 1);
+
+    assert!(renderer.handle_accessibility_action(
+        AccessibilityActionRequest {
+            action: AccessibilityAction::CustomAction,
+            target_tree: AccessibilityTreeId::ROOT,
+            target_node: row_id,
+            data: Some(AccessibilityActionData::CustomAction(archive_id)),
+        },
+        &env,
+    ));
+    assert_eq!(archived.get(), 1);
+}
+
 /// A control that publishes its own value keeps it; an explicit `.a11y_value`
 /// is the override, exactly as `.a11y_label` is for the name.
 #[cfg(feature = "accessibility")]
