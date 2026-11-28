@@ -1147,7 +1147,14 @@ pub fn components_list_item_prose(records: StateList<Record>) {
     let _ = text("a").list_row_deletable(signal.clone());
     let _ = text("a").list_row_insets(EdgeInsets::all(4.0));
     let _ = text("a").list_min_row_height(0.0);
-    let _ = List::for_each(records.clone(), |r: Record| text(r.title)).selection(&record_selection);
+    let _ = List::for_each(records.clone(), |r: Record| text(r.title))
+        .style(ListStyle::Plain)
+        .selection(&record_selection);
+    let _ = vstack((
+        List::for_each(records.clone(), |r: Record| text(r.title)),
+        List::content((|| text("Row"),)).style(ListStyle::Sidebar),
+    ))
+    .list_style(ListStyle::InsetGrouped);
     let _ = List::content((
         (|| text("Inbox")).tag(Mailbox::Inbox),
         row("Archive", "12").tag(Mailbox::Archive),

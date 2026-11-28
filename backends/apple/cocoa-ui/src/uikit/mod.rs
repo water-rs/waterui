@@ -126,7 +126,9 @@ pub use split::{ColumnWidth, SplitColumnController, SplitController};
 pub mod table;
 pub use crate::geometry::IndexPath;
 pub use stepper::Stepper;
-pub use table::{SectionKind, TableCell, TableHeaderFooterView, TableSource, TableView};
+pub use table::{
+    SectionKind, TableCell, TableHeaderFooterView, TableSource, TableStyle, TableView,
+};
 pub use tabs::{TabContentController, TabSpec, TabsController};
 pub use text_field::{SecureField, TextField};
 #[cfg(feature = "native-test")]

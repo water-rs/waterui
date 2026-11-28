@@ -115,8 +115,8 @@ mod scroll;
 pub use scroll::ScrollView;
 mod stepper;
 pub use list_table::{
-    DeleteButton, RowContainer, SectionHeader, SectionKind, TableRowView, TableSource,
-    TableView as ListTableView,
+    DeleteButton, RowCardPosition, RowContainer, SectionHeader, SectionKind, TableRowView,
+    TableSource, TableStyle, TableView as ListTableView,
 };
 pub use stepper::Stepper;
 pub use table::{TableSortIndicator, TableView};

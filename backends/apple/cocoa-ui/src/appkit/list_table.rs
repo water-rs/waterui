@@ -43,9 +43,9 @@ use objc2::runtime::{AnyObject, Bool, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
     NSAccessibilityIndexAttribute, NSAccessibilityRoleAttribute, NSAccessibilityRowRole,
-    NSBezelStyle, NSButton, NSColor, NSControlTextEditingDelegate, NSDragOperation, NSDraggingInfo,
-    NSFont, NSLayoutConstraint, NSPasteboardItem, NSPasteboardType, NSPasteboardWriting,
-    NSRectFill, NSScrollView, NSTableColumn, NSTableRowView, NSTableView,
+    NSBezelStyle, NSBezierPath, NSButton, NSColor, NSControlTextEditingDelegate, NSDragOperation,
+    NSDraggingInfo, NSFont, NSLayoutConstraint, NSPasteboardItem, NSPasteboardType,
+    NSPasteboardWriting, NSRectFill, NSScrollView, NSTableColumn, NSTableRowView, NSTableView,
     NSTableViewAnimationOptions, NSTableViewDataSource, NSTableViewDelegate,
     NSTableViewDropOperation, NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextField,
     NSView,
@@ -140,6 +140,41 @@ pub trait TableSource {
     }
 }
 
+/// Visual presentation style for an `AppKit` [`TableView`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TableStyle {
+    /// Platform default (`NSTableViewStyle::FullWidth`).
+    #[default]
+    Automatic,
+    /// Edge-to-edge rows (`NSTableViewStyle::Plain`).
+    Plain,
+    /// Horizontally inset rows (`NSTableViewStyle::Inset`).
+    Inset,
+    /// Grouped sections presented as rounded, horizontally inset cards.
+    InsetGrouped,
+    /// Grouped sections separated into full-width bands.
+    Grouped,
+    /// Source-list sidebar (`NSTableViewStyle::SourceList`, clear background,
+    /// unemphasised selection pill).
+    Sidebar,
+}
+
+/// Which corners of a [`TableRowView`] round when drawing an inset-grouped card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RowCardPosition {
+    /// No card surface (regular row).
+    #[default]
+    None,
+    /// Sole row in its section — all four corners round.
+    Single,
+    /// First row in a multi-row section — top corners round.
+    First,
+    /// Interior row in a multi-row section — square corners.
+    Middle,
+    /// Last row in a multi-row section — bottom corners round.
+    Last,
+}
+
 /// The handler [`TableView`] calls after `AppKit` lays it out.
 type LayoutHandler = Rc<dyn Fn(&TableView)>;
 /// The handler [`TableView`] calls when it moves between windows.
@@ -157,8 +192,8 @@ pub struct TableViewIvars {
     layout: RefCell<Option<LayoutHandler>>,
     /// Window-attach hook (key-state observation).
     window: RefCell<Option<WindowHandler>>,
-    /// Whether the table draws sidebar chrome.
-    sidebar: Cell<bool>,
+    /// The active table presentation style.
+    style: Cell<TableStyle>,
     /// The scroll animation state: at most one flight per surface.
     flight: Rc<ScrollFlight>,
     /// Ends a flight when the user's live scroll reports a bounds change.
@@ -177,7 +212,7 @@ impl TableViewIvars {
             drag_types: RefCell::new(Vec::new()),
             layout: RefCell::new(None),
             window: RefCell::new(None),
-            sidebar: Cell::new(false),
+            style: Cell::new(TableStyle::Automatic),
             flight: ScrollFlight::new(mtm),
             live_scroll: RefCell::new(Vec::new()),
             geometry: ResponseGeometry::default(),
@@ -189,7 +224,7 @@ impl fmt::Debug for TableViewIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TableViewIvars")
             .field("source", &self.source.borrow().is_some())
-            .field("sidebar", &self.sidebar.get())
+            .field("style", &self.style.get())
             .finish_non_exhaustive()
     }
 }
@@ -567,7 +602,7 @@ define_class!(
         // table for sidebar contents without knowing this class.
         #[unsafe(method(cocoaUiIsSidebarContent))]
         fn cocoa_ui_is_sidebar_content(&self) -> bool {
-            self.ivars().sidebar.get()
+            self.is_sidebar()
         }
 
         // SAFETY: see above — `setValue:forKey:` resolves this setter for
@@ -607,7 +642,7 @@ impl TableView {
     /// The gap this table insets its content by: [`Self::TOP_GAP`], or
     /// none when a non-sidebar list's first row is a group row.
     fn top_gap(&self) -> f64 {
-        let opens_on_group_row = !self.ivars().sidebar.get()
+        let opens_on_group_row = !self.is_sidebar()
             && self
                 .ivars()
                 .source()
@@ -691,20 +726,54 @@ impl TableView {
         self.ivars().drag_types.replace(types);
     }
 
-    /// Whether the table draws sidebar chrome (`clear` background,
-    /// `sourceList` style). Readable from KVC as `cocoaUiIsSidebarContent`.
-    pub fn set_sidebar(&self, sidebar: bool) {
-        self.ivars().sidebar.set(sidebar);
+    /// Applies `style` to the wrapped `NSTableView` and scroll chrome.
+    pub fn set_style(&self, style: TableStyle) {
+        self.ivars().style.set(style);
         let table = self.table_view();
-        if sidebar {
-            table.setBackgroundColor(&NSColor::clearColor());
-            table.setStyle(NSTableViewStyle::SourceList);
-        } else {
-            table.setBackgroundColor(&NSColor::textBackgroundColor());
-            table.setStyle(NSTableViewStyle::FullWidth);
+        match style {
+            TableStyle::Automatic => {
+                table.setBackgroundColor(&NSColor::textBackgroundColor());
+                table.setStyle(NSTableViewStyle::FullWidth);
+            }
+            TableStyle::Plain => {
+                table.setBackgroundColor(&NSColor::textBackgroundColor());
+                table.setStyle(NSTableViewStyle::Plain);
+            }
+            TableStyle::Inset => {
+                table.setBackgroundColor(&NSColor::textBackgroundColor());
+                table.setStyle(NSTableViewStyle::Inset);
+            }
+            TableStyle::InsetGrouped => {
+                table.setBackgroundColor(&NSColor::windowBackgroundColor());
+                table.setStyle(NSTableViewStyle::Inset);
+            }
+            TableStyle::Grouped => {
+                table.setBackgroundColor(&NSColor::windowBackgroundColor());
+                table.setStyle(NSTableViewStyle::FullWidth);
+            }
+            TableStyle::Sidebar => {
+                table.setBackgroundColor(&NSColor::clearColor());
+                table.setStyle(NSTableViewStyle::SourceList);
+            }
         }
         self.setDrawsBackground(false);
         table.reloadData();
+    }
+
+    /// The active presentation style.
+    #[must_use]
+    pub fn style(&self) -> TableStyle {
+        self.ivars().style.get()
+    }
+
+    /// Whether the table draws sidebar chrome (`clear` background,
+    /// `sourceList` style). Readable from KVC as `cocoaUiIsSidebarContent`.
+    pub fn set_sidebar(&self, sidebar: bool) {
+        self.set_style(if sidebar {
+            TableStyle::Sidebar
+        } else {
+            TableStyle::Automatic
+        });
     }
 
     /// The size `AppKit` reports this view wants — the `fittingSize` the
@@ -717,7 +786,7 @@ impl TableView {
     /// Whether the table is drawing sidebar chrome.
     #[must_use]
     pub fn is_sidebar(&self) -> bool {
-        self.ivars().sidebar.get()
+        self.ivars().style.get() == TableStyle::Sidebar
     }
 
     /// Reloads every row's data and layout.
@@ -758,13 +827,79 @@ pub struct TableRowViewIvars {
     separator: RefCell<Option<SeparatorHandler>>,
     /// Whether the hairline paints — a section's last member draws none.
     shows_separator: Cell<bool>,
+    /// Card corner shape when the enclosing list uses [`TableStyle::InsetGrouped`].
+    card_position: Cell<RowCardPosition>,
+    /// Whether unselected rows fill a grouped content band (`TableStyle::Grouped`).
+    grouped_surface: Cell<bool>,
 }
 
 impl fmt::Debug for TableRowViewIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TableRowViewIvars")
             .field("separator", &self.separator.borrow().is_some())
+            .field("card_position", &self.card_position.get())
+            .field("grouped_surface", &self.grouped_surface.get())
             .finish_non_exhaustive()
+    }
+}
+
+/// Builds a rounded path for a flipped `NSTableRowView` card segment:
+/// `min_y` is the top edge, `max_y` is the bottom edge.
+fn card_row_path(rect: NSRect, position: RowCardPosition, radius: f64) -> Retained<NSBezierPath> {
+    let r = radius
+        .min(rect.size.width * 0.5)
+        .min(rect.size.height * 0.5);
+    match position {
+        RowCardPosition::Single => {
+            NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(rect, r, r)
+        }
+        RowCardPosition::Middle | RowCardPosition::None => NSBezierPath::bezierPathWithRect(rect),
+        RowCardPosition::First | RowCardPosition::Last => {
+            let x0 = rect.origin.x;
+            let y0 = rect.origin.y;
+            let x1 = x0 + rect.size.width;
+            let y1 = y0 + rect.size.height;
+            let round_top = position == RowCardPosition::First;
+            let round_bottom = position == RowCardPosition::Last;
+            let rt = if round_top { r } else { 0.0 };
+            let rb = if round_bottom { r } else { 0.0 };
+            let path = NSBezierPath::bezierPath();
+            path.moveToPoint(NSPoint::new(x0 + rt, y0));
+            path.lineToPoint(NSPoint::new(x1 - rt, y0));
+            if rt > 0.0 {
+                path.appendBezierPathWithArcFromPoint_toPoint_radius(
+                    NSPoint::new(x1, y0),
+                    NSPoint::new(x1, y0 + rt),
+                    rt,
+                );
+            }
+            path.lineToPoint(NSPoint::new(x1, y1 - rb));
+            if rb > 0.0 {
+                path.appendBezierPathWithArcFromPoint_toPoint_radius(
+                    NSPoint::new(x1, y1),
+                    NSPoint::new(x1 - rb, y1),
+                    rb,
+                );
+            }
+            path.lineToPoint(NSPoint::new(x0 + rb, y1));
+            if rb > 0.0 {
+                path.appendBezierPathWithArcFromPoint_toPoint_radius(
+                    NSPoint::new(x0, y1),
+                    NSPoint::new(x0, y1 - rb),
+                    rb,
+                );
+            }
+            path.lineToPoint(NSPoint::new(x0, y0 + rt));
+            if rt > 0.0 {
+                path.appendBezierPathWithArcFromPoint_toPoint_radius(
+                    NSPoint::new(x0, y0),
+                    NSPoint::new(x0 + rt, y0),
+                    rt,
+                );
+            }
+            path.closePath();
+            path
+        }
     }
 }
 
@@ -778,7 +913,8 @@ define_class!(
     #[ivars = TableRowViewIvars]
     #[derive(Debug)]
     /// A table row view that draws a hairline separator along its bottom
-    /// edge when a separator handler is installed.
+    /// edge when a separator handler is installed, and optional grouped or
+    /// inset-grouped card chrome.
     pub struct TableRowView;
 
     unsafe impl NSObjectProtocol for TableRowView {}
@@ -806,6 +942,37 @@ define_class!(
                 ancestor = unsafe { view.superview() };
             };
             !source_list && self.window().is_some_and(|window| window.isKeyWindow())
+        }
+
+        /// Draws the unselected row surface: inset-grouped card fill, grouped
+        /// section band fill, or `AppKit`'s default background.
+        #[unsafe(method(drawBackgroundInRect:))]
+        fn draw_background_in_rect(&self, dirty_rect: NSRect) {
+            let card = self.ivars().card_position.get();
+            if card != RowCardPosition::None {
+                let bounds = self.bounds();
+                // Inset horizontally to align with `NSTableViewStyle::Inset`'s
+                // 10 pt outer margin so card edges hug the inset row content.
+                let inset = 10.0;
+                let card_rect = NSRect::new(
+                    NSPoint::new(bounds.origin.x + inset, bounds.origin.y),
+                    NSSize::new(
+                        inset.mul_add(-2.0, bounds.size.width).max(0.0),
+                        bounds.size.height,
+                    ),
+                );
+                let path = card_row_path(card_rect, card, 10.0);
+                NSColor::controlBackgroundColor().setFill();
+                path.fill();
+                return;
+            }
+            if self.ivars().grouped_surface.get() {
+                NSColor::controlBackgroundColor().setFill();
+                NSRectFill(dirty_rect);
+                return;
+            }
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), drawBackgroundInRect: dirty_rect] };
         }
 
         /// Keeps `AppKit`'s row fill, then paints the hairline inside the
@@ -858,6 +1025,20 @@ impl TableRowView {
     /// row dirty so a gained or lost hairline redraws.
     pub fn set_shows_separator(&self, shows: bool) {
         if self.ivars().shows_separator.replace(shows) != shows {
+            self.setNeedsDisplay(true);
+        }
+    }
+
+    /// Sets the card corner position for [`TableStyle::InsetGrouped`] rows.
+    pub fn set_card_position(&self, position: RowCardPosition) {
+        if self.ivars().card_position.replace(position) != position {
+            self.setNeedsDisplay(true);
+        }
+    }
+
+    /// Sets whether the row fills a grouped section band surface.
+    pub fn set_grouped_surface(&self, grouped: bool) {
+        if self.ivars().grouped_surface.replace(grouped) != grouped {
             self.setNeedsDisplay(true);
         }
     }

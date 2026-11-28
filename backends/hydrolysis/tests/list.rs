@@ -28,10 +28,13 @@ use support::{
     node_id_contains, node_label_exists, nodes,
 };
 use waterui::animation::Animation;
-use waterui::component::list::{ForEachExt, List, ListDelete, ListMove, Section, detail_row, row};
+use waterui::component::list::{
+    ForEachExt, List, ListDelete, ListMove, ListStyle, Section, detail_row, row,
+};
 use waterui::component::{hstack, spacer, text, vstack};
 use waterui::id::{Identifiable, SelfId};
 use waterui::layout::scroll::ScrollController;
+use waterui::navigation::{NavigationSplitView, NavigationView};
 use waterui::theme::color::Accent;
 use waterui::views::ForEach;
 use waterui::widget::Card;
@@ -1420,4 +1423,184 @@ fn list_item_derives_labels_from_keyed_row_and_card() {
         Role::ListItem,
         "Title Subtitle Card Body"
     ));
+}
+
+fn verify_list_style(style: ListStyle) {
+    let items = StateList::from(vec![
+        SelfId::new(1_usize),
+        SelfId::new(2_usize),
+        SelfId::new(3_usize),
+    ]);
+    let selected = Binding::new(Option::<usize>::None);
+    let deleted = Rc::new(RefCell::new(Vec::<usize>::new()));
+    let moved = Rc::new(RefCell::new(Vec::<(usize, usize)>::new()));
+
+    let mut rt = mount_rendered(
+        Environment::new(),
+        {
+            let selected = selected.clone();
+            let deleted = Rc::clone(&deleted);
+            let moved = Rc::clone(&moved);
+            move || {
+                let mut items_for_delete = items.clone();
+                let mut items_for_move = items.clone();
+                let deleted = Rc::clone(&deleted);
+                let moved = Rc::clone(&moved);
+                List::content((
+                    Section::new("First").content(
+                        ForEach::new(items.clone(), |item: SelfId<usize>| {
+                            text(format!("Item {}", *item))
+                        })
+                        .on_delete(move |ListDelete(id): ListDelete<usize>| {
+                            deleted.borrow_mut().push(id);
+                            if let Some(pos) =
+                                items_for_delete.snapshot().iter().position(|r| **r == id)
+                            {
+                                let _ = items_for_delete.remove(pos);
+                            }
+                        })
+                        .on_move(move |ListMove(m): ListMove<usize>| {
+                            moved.borrow_mut().push((m.from(), m.to()));
+                            let row = items_for_move.remove(m.from());
+                            items_for_move.insert(m.to(), row);
+                        }),
+                    ),
+                    Section::new("Second").content((|| text("Static Tail"),)),
+                ))
+                .editing(true)
+                .selection(&selected)
+                .style(style)
+            }
+        },
+        400,
+        600,
+    );
+    rt.settle();
+
+    let item1 = node_bounds_with_role(rt.tree(), Role::ListItem, "Item 1");
+    let item2_id = node_id_contains(rt.tree(), "Item 2");
+
+    match style {
+        ListStyle::Automatic | ListStyle::Plain | ListStyle::Grouped => {
+            assert!(
+                item1.x0.abs() < 0.5 && (item1.x1 - 400.0).abs() < 0.5,
+                "{style:?} should span full width, got {item1:?}"
+            );
+        }
+        ListStyle::Inset | ListStyle::InsetGrouped => {
+            assert!(
+                (item1.x0 - 16.0).abs() < 0.5 && (item1.x1 - 384.0).abs() < 0.5,
+                "{style:?} should be inset horizontally by 16pt, got {item1:?}"
+            );
+        }
+        ListStyle::Sidebar => {
+            assert!(
+                (item1.x0 - 8.0).abs() < 0.5 && (item1.x1 - 392.0).abs() < 0.5,
+                "Sidebar should be inset horizontally by 8pt, got {item1:?}"
+            );
+            assert!(
+                (item1.y1 - item1.y0) < ROW_HEIGHT,
+                "Sidebar should use compact row height (< {ROW_HEIGHT}), got {}",
+                item1.y1 - item1.y0
+            );
+        }
+        _ => unreachable!(),
+    }
+
+    // Clicking row 2 selects it across every ListStyle variant.
+    rt.click(item2_id);
+    rt.settle();
+    assert_eq!(
+        selected.snapshot(),
+        Some(2),
+        "selection click must work for {style:?}"
+    );
+
+    // Triggering accessibility Move down & Delete controls works for every style.
+    let move_down_id = node_id_contains(rt.tree(), "Move");
+    rt.perform_action(move_down_id, accesskit::Action::Click, None);
+    rt.settle();
+    assert!(
+        !moved.borrow().is_empty(),
+        "reorder must work for {style:?}"
+    );
+
+    let delete_id = node_id_contains(rt.tree(), "Delete");
+    rt.perform_action(delete_id, accesskit::Action::Click, None);
+    rt.settle();
+    assert!(
+        !deleted.borrow().is_empty(),
+        "delete must work for {style:?}"
+    );
+}
+
+#[test]
+fn list_styles_render_with_distinct_geometry_and_keep_selection_and_edits() {
+    for style in [
+        ListStyle::Automatic,
+        ListStyle::Plain,
+        ListStyle::Inset,
+        ListStyle::InsetGrouped,
+        ListStyle::Grouped,
+        ListStyle::Sidebar,
+    ] {
+        verify_list_style(style);
+    }
+}
+
+#[test]
+fn ambient_list_style_and_navigation_split_sidebar_automatic_resolution() {
+    // Subtree `.list_style(InsetGrouped)` insets rows; explicit `.style(Plain)` overrides it.
+    let mut rt = mount_rendered(
+        Environment::new(),
+        || {
+            vstack((
+                List::content((|| text("Ambient Row"),)),
+                List::content((|| text("Override Row"),)).style(ListStyle::Plain),
+            ))
+            .list_style(ListStyle::InsetGrouped)
+        },
+        400,
+        400,
+    );
+    rt.settle();
+    let ambient = node_bounds_with_role(rt.tree(), Role::ListItem, "Ambient Row");
+    let overridden = node_bounds_with_role(rt.tree(), Role::ListItem, "Override Row");
+    assert!(
+        (ambient.x0 - 16.0).abs() < 0.5,
+        "ambient InsetGrouped row must be inset 16pt, got {ambient:?}"
+    );
+    assert!(
+        overridden.x0.abs() < 0.5,
+        "explicit Plain override must be edge-to-edge, got {overridden:?}"
+    );
+
+    // Inside `NavigationSplitView`'s sidebar, `ListStyle::Automatic` resolves to `ListStyle::Sidebar`.
+    let nav_sel = Binding::new(Some(1_i32));
+    let mut split_rt = mount_rendered(
+        Environment::new(),
+        move || {
+            let sidebar_sel = nav_sel.clone();
+            NavigationSplitView::new(
+                &nav_sel,
+                move || {
+                    List::content(((|| text("Sidebar Row")).tag(1_i32),)).selection(&sidebar_sel)
+                },
+                |_id: i32| NavigationView::new("Detail", text("Detail Body")),
+            )
+        },
+        800,
+        500,
+    );
+    split_rt.settle();
+    let sidebar_row = node_bounds_with_role(split_rt.tree(), Role::ListItem, "Sidebar Row");
+    assert!(
+        (sidebar_row.x0 - 8.0).abs() < 0.5,
+        "NavigationSplitView sidebar list must resolve Automatic -> Sidebar (8pt inset), got {sidebar_row:?}"
+    );
+    assert!(
+        (sidebar_row.y1 - sidebar_row.y0) < ROW_HEIGHT,
+        "NavigationSplitView sidebar list must resolve Automatic -> Sidebar compact height, got {}",
+        sidebar_row.y1 - sidebar_row.y0
+    );
 }

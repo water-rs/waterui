@@ -54,7 +54,7 @@ use waterui_layout::{
 use waterui_navigation::NavigationView;
 
 #[cfg(feature = "list")]
-use crate::component::list::{ListMinRowHeight, ListRowDeletable, ListRowInsets};
+use crate::component::list::{ListMinRowHeight, ListRowDeletable, ListRowInsets, ListStyle};
 #[cfg(feature = "haptics")]
 use crate::haptic::Feedback;
 use crate::{
@@ -1476,6 +1476,25 @@ pub trait ViewExt: View + Sized {
     #[cfg(feature = "snackbar")]
     fn snackbar_host_with_icons<I: View + 'static>(self) -> SnackbarHost<Self, I> {
         SnackbarHost::new(self)
+    }
+
+    /// Sets the visual presentation style of every [`List`](crate::component::list::List)
+    /// inside this subtree that does not specify an explicit `.style(...)`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// let grouped = vstack((
+    ///     List::content((|| text!("First"),)),
+    ///     List::content((|| text!("Second"),)),
+    /// ))
+    /// .list_style(ListStyle::InsetGrouped);
+    /// ```
+    #[cfg(feature = "list")]
+    fn list_style(self, style: ListStyle) -> With<Self, ListStyle> {
+        self.with(style)
     }
 
     /// Sets the minimum row height of every list inside this view, in points.

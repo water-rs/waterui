@@ -33,7 +33,7 @@ use waterui_backend_core::Environment;
 use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_controls::list::{
     ListConfig, ListEdits, ListRowDeletable, ListRowInsets, ListRowTags, ListScrollController,
-    ListSection, ListSections, ListSelection, ListTagId,
+    ListSection, ListSections, ListSelection, ListStyle, ListTagId,
 };
 use waterui_core::Computed;
 use waterui_core::animation::ChangeAnimation;
@@ -61,11 +61,36 @@ use waterui_core::backend::MapSlots as _;
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{
-    DeleteButton, ListTableView as TableView, RowContainer, SectionHeader, SectionKind,
-    TableRowView, TableSource,
+    DeleteButton, ListTableView as TableView, RowCardPosition, RowContainer, SectionHeader,
+    SectionKind, TableRowView, TableSource, TableStyle,
 };
 #[cfg(target_os = "ios")]
-use cocoa_ui::uikit::{IndexPath, SectionKind, TableCell, TableSource, TableView};
+use cocoa_ui::uikit::{IndexPath, SectionKind, TableCell, TableSource, TableStyle, TableView};
+
+#[cfg(target_os = "macos")]
+const fn appkit_table_style(style: ListStyle) -> TableStyle {
+    match style {
+        ListStyle::Plain => TableStyle::Plain,
+        ListStyle::Inset => TableStyle::Inset,
+        ListStyle::InsetGrouped => TableStyle::InsetGrouped,
+        ListStyle::Grouped => TableStyle::Grouped,
+        ListStyle::Sidebar => TableStyle::Sidebar,
+        // `ListStyle::Automatic` and future variants preserve AppKit's default full-width table.
+        _ => TableStyle::Automatic,
+    }
+}
+
+#[cfg(target_os = "ios")]
+const fn uikit_table_style(style: ListStyle) -> TableStyle {
+    match style {
+        ListStyle::Plain => TableStyle::Plain,
+        ListStyle::Inset => TableStyle::Inset,
+        ListStyle::Grouped => TableStyle::Grouped,
+        ListStyle::Sidebar => TableStyle::Sidebar,
+        // `ListStyle::Automatic`, `ListStyle::InsetGrouped`, and future variants preserve iOS's default.
+        _ => TableStyle::InsetGrouped,
+    }
+}
 
 /// A row's identity: the collection id `SharedAnyViews` answers for an
 /// index.
@@ -373,11 +398,20 @@ fn rebuild_flat_layout(state: &mut Shared) {
     let rows = state.display_rows();
     let sections = state.groups.len().max(usize::from(!rows.is_empty()));
     for section in 0..sections {
+        if section > 0
+            && matches!(state.style, ListStyle::Grouped | ListStyle::InsetGrouped)
+            && state
+                .groups
+                .get(section)
+                .is_none_or(|group| group.label.is_none())
+        {
+            state.flat_layout.push(FlatEntry::Spacer);
+        }
         if let Some(group) = state.groups.get(section)
             && group.label.is_some()
         {
             state.flat_layout.push(FlatEntry::Header(section));
-            if section == 0 && !state.sidebar {
+            if section == 0 && !state.is_sidebar() {
                 state.flat_layout.push(FlatEntry::Spacer);
             }
         }
@@ -409,7 +443,9 @@ fn refresh_separators(state: &Rc<RefCell<Shared>>, table: &TableView) {
         let state = Rc::clone(state);
         move |row, row_view| {
             if let Some(row_view) = row_view.downcast_ref::<TableRowView>() {
-                row_view.set_shows_separator(state.borrow().shows_separator(row));
+                let borrowed = state.borrow();
+                row_view.set_shows_separator(borrowed.shows_separator(row));
+                row_view.set_card_position(borrowed.card_position(row));
             }
         }
     });
@@ -570,10 +606,9 @@ struct Shared {
     /// `AppKit`: `flatLayout` — the table's flat entry list.
     #[cfg(target_os = "macos")]
     flat_layout: Vec<FlatEntry>,
-    /// `AppKit`: whether the table is a navigation sidebar, which keeps the
-    /// source list's own section bands instead of the platform list's.
+    /// The resolved presentation style of the list.
     #[cfg(target_os = "macos")]
-    sidebar: bool,
+    style: ListStyle,
     /// Selection bookkeeping.
     selection: SelectionMode,
     /// The tag each row is selected by, by item id.
@@ -1045,17 +1080,51 @@ impl Shared {
         insets.map_or(self.theme_insets, kit_insets)
     }
 
+    /// Whether this list uses the sidebar presentation style.
+    #[cfg(target_os = "macos")]
+    const fn is_sidebar(&self) -> bool {
+        matches!(self.style, ListStyle::Sidebar)
+    }
+
+    /// Card corner position for `row` when the list uses [`ListStyle::InsetGrouped`].
+    #[cfg(target_os = "macos")]
+    fn card_position(&self, row: usize) -> RowCardPosition {
+        if self.style != ListStyle::InsetGrouped {
+            return RowCardPosition::None;
+        }
+        let is_member = |index: Option<usize>| {
+            index
+                .and_then(|i| self.flat_layout.get(i))
+                .is_some_and(|entry| matches!(entry, FlatEntry::Row(_) | FlatEntry::Ghost(_)))
+        };
+        if !is_member(Some(row)) {
+            return RowCardPosition::None;
+        }
+        let prev = is_member(row.checked_sub(1));
+        let next = is_member(row.checked_add(1));
+        match (prev, next) {
+            (false, false) => RowCardPosition::Single,
+            (false, true) => RowCardPosition::First,
+            (true, true) => RowCardPosition::Middle,
+            (true, false) => RowCardPosition::Last,
+        }
+    }
+
     /// Whether the flat entry at `row` paints the hairline under it. The
     /// platform list separates every row from whatever follows it, a
     /// section's last row from the next section's header included, and
-    /// draws none under the list's final row; a sidebar separates only
-    /// rows of one section (water-rs/waterui#3592).
+    /// draws none under the list's final row; grouped, inset-grouped, and
+    /// sidebar lists separate only rows within one section
+    /// (water-rs/waterui#3592).
     #[cfg(target_os = "macos")]
     fn shows_separator(&self, row: usize) -> bool {
         let member = |entry: Option<&FlatEntry>| {
             matches!(entry, Some(FlatEntry::Row(_) | FlatEntry::Ghost(_)))
         };
-        if self.sidebar {
+        if matches!(
+            self.style,
+            ListStyle::Sidebar | ListStyle::Grouped | ListStyle::InsetGrouped
+        ) {
             member(self.flat_layout.get(row)) && member(self.flat_layout.get(row + 1))
         } else {
             member(self.flat_layout.get(row)) && row + 1 < self.flat_layout.len()
@@ -1869,6 +1938,9 @@ mod platform_impl {
             if !anonymous_first {
                 return f64::NAN;
             }
+            if !table.table_style().is_grouped() {
+                return 0.0;
+            }
             // Navigation owns the first scroll surface's top spacing. Later
             // independent lists keep the inset-grouped anonymous-section reserve.
             if is_navigation_scroll_surface(table) {
@@ -2251,7 +2323,7 @@ mod platform_impl {
             kind: SectionKind,
             signal: &Computed<StyledStr>,
         ) -> Retained<cocoa_ui::PlatformView> {
-            let group_row = kind == SectionKind::Header && !self.state.borrow().sidebar;
+            let group_row = kind == SectionKind::Header && !self.state.borrow().is_sidebar();
             let band = if group_row {
                 SectionHeader::group_row(self.mtm)
             } else {
@@ -2392,24 +2464,35 @@ mod platform_impl {
         }
 
         fn row_view(&self, _table: &TableView, row: usize) -> Option<Retained<TableRowView>> {
-            let (shows_separator, group_row) = {
+            let (shows_separator, group_row, card_position, grouped_surface, plain_style) = {
                 let state = self.state.borrow();
                 let entry = *state.flat_layout.get(row)?;
                 // The platform list hairlines the group row band under a
                 // section header; a sidebar's bands and footers draw none.
-                let group_row = matches!(entry, FlatEntry::Header(_)) && !state.sidebar;
+                let group_row = matches!(entry, FlatEntry::Header(_)) && !state.is_sidebar();
                 if !group_row && !matches!(entry, FlatEntry::Row(_) | FlatEntry::Ghost(_)) {
                     return None;
                 }
-                (group_row || state.shows_separator(row), group_row)
+                (
+                    group_row || state.shows_separator(row),
+                    group_row,
+                    state.card_position(row),
+                    state.style == ListStyle::Grouped && !group_row,
+                    state.style == ListStyle::Plain,
+                )
             };
             let row_view = TableRowView::new(self.mtm);
             row_view.set_shows_separator(shows_separator);
+            row_view.set_card_position(card_position);
+            row_view.set_grouped_surface(grouped_surface);
             row_view.set_separator_handler(Some(Rc::new(move |row_view| {
                 if group_row {
                     // A group row band separates edge to edge of the
                     // content, 16 pt in from both sides.
                     return (16.0, 16.0);
+                }
+                if plain_style {
+                    return (0.0, 0.0);
                 }
                 // `resolvedSeparatorLeading`: the leftmost text x inside
                 // the row's cell view — 16 + the insets' surplus over the
@@ -2427,7 +2510,7 @@ mod platform_impl {
             let (flat, id) = {
                 let state = self.state.borrow();
                 match state.flat_layout.get(row) {
-                    Some(FlatEntry::Header(_)) if !state.sidebar => {
+                    Some(FlatEntry::Header(_)) if !state.is_sidebar() => {
                         return SectionHeader::GROUP_ROW_HEIGHT;
                     }
                     Some(FlatEntry::Header(_)) => return 38.0,
@@ -2722,19 +2805,15 @@ fn wire_controller(
 )]
 fn render(config: &ListConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
-    let table = TableView::new(mtm);
-    // A navigation split marks its sidebar column with `SidebarContent`:
-    // the table takes the source-list chrome — clear background over the
-    // split's material, and the unemphasised selection rather than the
-    // accent fill (water-rs/waterui#1495).
+    let style = config.style();
+    #[cfg(target_os = "ios")]
+    let table = TableView::with_style(mtm, uikit_table_style(style));
     #[cfg(target_os = "macos")]
-    if ctx
-        .env()
-        .get::<waterui_controls::list::SidebarContent>()
-        .is_some()
-    {
-        table.set_sidebar(true);
-    }
+    let table = {
+        let table = TableView::new(mtm);
+        table.set_style(appkit_table_style(style));
+        table
+    };
     #[cfg(target_os = "ios")]
     let stock_height = {
         table.setSelfSizingInvalidation(
@@ -2771,7 +2850,7 @@ fn render(config: &ListConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
         #[cfg(target_os = "macos")]
         flat_layout: Vec::new(),
         #[cfg(target_os = "macos")]
-        sidebar: table.is_sidebar(),
+        style,
         selection: match &config.selection() {
             ListSelection::None => SelectionMode::None,
             ListSelection::Single(binding) => SelectionMode::Single(binding.clone()),

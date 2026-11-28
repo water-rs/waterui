@@ -455,11 +455,115 @@ pub fn list_row_horizontal_insets(
     }
 }
 
-/// The spec of a list in `env`.
+/// How a list draws its backdrop, row containers, and selection fill.
+#[cfg(feature = "list")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListSurfaceKind {
+    /// Standard theme rows with `SelectionContainer` selection fill.
+    Plain,
+    /// Full-width grouped bands over the list's `Background` token.
+    Grouped,
+    /// Horizontally inset rounded cards per section over `Background`.
+    InsetGrouped,
+    /// Transparent sidebar rows with an unemphasised rounded pill selection.
+    Sidebar,
+}
+
+/// Which rows draw a bottom separator hairline.
+#[cfg(feature = "list")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListSeparatorMode {
+    /// Draw separators under every row.
+    All,
+    /// Draw separators between rows of the same section, omitting the section's final row.
+    WithinSection,
+    /// Draw no row separators.
+    None,
+}
+
+/// Visual and layout chrome derived from a resolved [`ListStyle`].
+#[cfg(feature = "list")]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ListStyleGeometry {
+    /// Horizontal outer inset applied to each row's visual rect.
+    pub outer_horizontal_inset: f64,
+    /// Corner radius of a row, card, or selection pill.
+    pub corner_radius: f64,
+    /// Vertical gap inserted above non-first sections.
+    pub inter_section_gap: f64,
+    /// Vertical gap left below each row (e.g., compact sidebar pills).
+    pub row_gap: f64,
+    /// Default minimum row height when `ListMinRowHeight` is unset.
+    pub default_min_row_height: Option<f32>,
+    /// Backdrop and row container treatment.
+    pub surface: ListSurfaceKind,
+    /// Separator visibility rule.
+    pub separators: ListSeparatorMode,
+}
+
+/// Resolves the geometry and chrome flags for `style`.
+#[cfg(feature = "list")]
+#[must_use]
+pub const fn list_style_geometry(style: waterui_controls::list::ListStyle) -> ListStyleGeometry {
+    use waterui_controls::list::ListStyle;
+    match style {
+        ListStyle::Inset => ListStyleGeometry {
+            outer_horizontal_inset: 16.0,
+            corner_radius: 6.0,
+            inter_section_gap: 0.0,
+            row_gap: 0.0,
+            default_min_row_height: None,
+            surface: ListSurfaceKind::Plain,
+            separators: ListSeparatorMode::WithinSection,
+        },
+        ListStyle::Grouped => ListStyleGeometry {
+            outer_horizontal_inset: 0.0,
+            corner_radius: 0.0,
+            inter_section_gap: 12.0,
+            row_gap: 0.0,
+            default_min_row_height: None,
+            surface: ListSurfaceKind::Grouped,
+            separators: ListSeparatorMode::WithinSection,
+        },
+        ListStyle::InsetGrouped => ListStyleGeometry {
+            outer_horizontal_inset: 16.0,
+            corner_radius: 12.0,
+            inter_section_gap: 12.0,
+            row_gap: 0.0,
+            default_min_row_height: None,
+            surface: ListSurfaceKind::InsetGrouped,
+            separators: ListSeparatorMode::WithinSection,
+        },
+        ListStyle::Sidebar => ListStyleGeometry {
+            outer_horizontal_inset: 8.0,
+            corner_radius: 8.0,
+            inter_section_gap: 8.0,
+            row_gap: 2.0,
+            default_min_row_height: Some(36.0),
+            surface: ListSurfaceKind::Sidebar,
+            separators: ListSeparatorMode::None,
+        },
+        // `ListStyle::Automatic`, `ListStyle::Plain`, and any future variants default to plain chrome.
+        _ => ListStyleGeometry {
+            outer_horizontal_inset: 0.0,
+            corner_radius: 0.0,
+            inter_section_gap: 0.0,
+            row_gap: 0.0,
+            default_min_row_height: None,
+            surface: ListSurfaceKind::Plain,
+            separators: ListSeparatorMode::All,
+        },
+    }
+}
+
+/// The spec of a list in `env` with presentation `style`.
 #[must_use]
 #[cfg(feature = "list")]
-pub fn list_spec(env: &Environment) -> crate::theme::ListSpec {
-    crate::theme::ListSpec::new(layout_direction(env).snapshot())
+pub fn list_spec(
+    env: &Environment,
+    style: waterui_controls::list::ListStyle,
+) -> crate::theme::ListSpec {
+    crate::theme::ListSpec::new(layout_direction(env).snapshot()).with_style(style)
 }
 
 /// The list's own size from its first row's measured content, which every
@@ -479,16 +583,17 @@ pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
         return LayoutSize::zero();
     }
     let editing = state.measure_signal(list.editing());
-    let metrics = theme.list(&list_spec(env), env).metrics();
-    let row_height = list_row_height_for_content(
-        f64::from(content_size.height),
-        insets,
-        list.min_row_height(),
-        metrics,
-    );
+    let style = list.style();
+    let style_geom = list_style_geometry(style);
+    let metrics = theme.list(&list_spec(env, style), env).metrics();
+    let min_height = list.min_row_height().or(style_geom.default_min_row_height);
+    let row_height =
+        list_row_height_for_content(f64::from(content_size.height), insets, min_height, metrics)
+            + style_geom.row_gap;
 
     let horizontal_inset = f64::from(metrics.horizontal_inset);
-    let mut row_width = horizontal_inset.mul_add(2.0, f64::from(content_size.width));
+    let outer_inset = style_geom.outer_horizontal_inset * 2.0;
+    let mut row_width = horizontal_inset.mul_add(2.0, f64::from(content_size.width)) + outer_inset;
     if editing && list.edits().has_move() {
         row_width += f64::from(metrics.move_control_width + metrics.trailing_control_spacing);
     }
@@ -499,7 +604,10 @@ pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
     // rows draws its header and footer once. The sections come from row ids,
     // so no row is materialized for them.
     let mut section_height = 0.0;
-    for span in list.sections().spans(contents) {
+    for (section_index, span) in list.sections().spans(contents).into_iter().enumerate() {
+        if section_index > 0 {
+            section_height += style_geom.inter_section_gap;
+        }
         let Some(section) = span.section else {
             continue;
         };
@@ -512,7 +620,7 @@ pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
     }
 
     let total_height = row_height.mul_add(crate::num_cast::usize_as_f64(row_count), section_height);
-    let max_width = row_width.max(horizontal_inset * 2.0);
+    let max_width = row_width.max(horizontal_inset.mul_add(2.0, outer_inset));
 
     LayoutSize::new(
         crate::num_cast::f64_as_f32(max_width),

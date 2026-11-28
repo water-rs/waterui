@@ -321,6 +321,20 @@ fn chrome_trials() -> Vec<Trial> {
             Ok(())
         }),
         Trial::test(
+            "split::explicit_and_ambient_list_styles_map_to_appkit_table_styles",
+            || {
+                split::explicit_and_ambient_list_styles_map_to_appkit_table_styles();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "split::sidebar_explicit_style_overrides_automatic_sidebar_default",
+            || {
+                split::sidebar_explicit_style_overrides_automatic_sidebar_default();
+                Ok(())
+            },
+        ),
+        Trial::test(
             "material_vibrancy::a_window_material_hosts_its_content_and_releases_it",
             || {
                 material_vibrancy::a_window_material_hosts_its_content_and_releases_it();
@@ -3461,17 +3475,19 @@ mod navigation {
     }
 }
 
-/// A `NavigationSplitView` sidebar column is marked `SidebarContent`: the
-/// lists inside take the source-list chrome — clear background over the
-/// split's material and the unemphasised selection pill — while a list
-/// outside the sidebar keeps the regular fill (water-rs/waterui#1495).
+/// A `NavigationSplitView` sidebar column resolves `ListStyle::Automatic` to
+/// `ListStyle::Sidebar`: the lists inside take the source-list chrome — clear
+/// background over the split's material and the unemphasised selection pill —
+/// while a list outside the sidebar keeps the regular fill (`water-rs/waterui#1495`,
+/// `water-rs/waterui#4421`).
 #[cfg(target_os = "macos")]
 mod split {
-    use cocoa_ui::appkit::ListTableView;
+    use cocoa_ui::appkit::{ListTableView, TableStyle};
     use cocoa_ui::objc2_app_kit::NSTableViewStyle;
     use cocoa_ui::{PlatformView, view};
     use waterui::ViewExt as _;
-    use waterui::component::list::List;
+    use waterui::component::list::{List, ListStyle, Section};
+    use waterui::layout::stack::vstack;
     use waterui::navigation::{NavigationSplitView, NavigationView};
     use waterui::prelude::text;
     use waterui::reactive::binding;
@@ -3490,8 +3506,8 @@ mod split {
         None
     }
 
-    /// The split's sidebar list is the one `set_sidebar` marks — the
-    /// source-list style is what draws the grey selection pill.
+    /// The split's sidebar list resolves `ListStyle::Automatic` to `Sidebar` —
+    /// the source-list style draws the unemphasised selection pill.
     pub fn a_sidebar_list_takes_the_source_list_chrome() {
         let selection = binding(Some(0_i32));
         let leaf = resolve::render(NavigationSplitView::new(
@@ -3506,6 +3522,7 @@ mod split {
             table.is_sidebar(),
             "the sidebar list draws source-list chrome"
         );
+        assert_eq!(table.style(), TableStyle::Sidebar);
         assert_eq!(
             table.table_view().style(),
             NSTableViewStyle::SourceList,
@@ -3523,6 +3540,83 @@ mod split {
             !table.is_sidebar(),
             "a list outside a sidebar keeps the regular fill"
         );
+        assert_eq!(table.style(), TableStyle::Automatic);
+    }
+
+    /// Every `ListStyle` variant maps to its `AppKit` `TableStyle` / `NSTableViewStyle`,
+    /// and subtree `.list_style(...)` applies to descendants unless overridden.
+    pub fn explicit_and_ambient_list_styles_map_to_appkit_table_styles() {
+        let cases = [
+            (
+                ListStyle::Automatic,
+                TableStyle::Automatic,
+                NSTableViewStyle::FullWidth,
+            ),
+            (ListStyle::Plain, TableStyle::Plain, NSTableViewStyle::Plain),
+            (ListStyle::Inset, TableStyle::Inset, NSTableViewStyle::Inset),
+            (
+                ListStyle::InsetGrouped,
+                TableStyle::InsetGrouped,
+                NSTableViewStyle::Inset,
+            ),
+            (
+                ListStyle::Grouped,
+                TableStyle::Grouped,
+                NSTableViewStyle::FullWidth,
+            ),
+            (
+                ListStyle::Sidebar,
+                TableStyle::Sidebar,
+                NSTableViewStyle::SourceList,
+            ),
+        ];
+        for (style, expected_kit, expected_ns) in cases {
+            let leaf = resolve::render(
+                List::content((
+                    Section::new("Group A").content((|| text("One"), || text("Two"))),
+                    Section::new("Group B").content((|| text("Three"),)),
+                ))
+                .style(style),
+            );
+            let table = sidebar_table(leaf.view()).expect("the list mounts a table");
+            assert_eq!(table.style(), expected_kit, "explicit {style:?}");
+            assert_eq!(
+                table.table_view().style(),
+                expected_ns,
+                "explicit NSTableViewStyle for {style:?}"
+            );
+        }
+
+        // Subtree `.list_style(...)` propagates to descendants.
+        let ambient_leaf = resolve::render(
+            vstack((List::content((|| text("Row"),)),)).list_style(ListStyle::InsetGrouped),
+        );
+        let ambient_table = sidebar_table(ambient_leaf.view()).expect("ambient list mounts");
+        assert_eq!(ambient_table.style(), TableStyle::InsetGrouped);
+
+        // Explicit `.style(...)` overrides subtree `.list_style(...)`.
+        let overridden_leaf = resolve::render(
+            vstack((List::content((|| text("Row"),)).style(ListStyle::Plain),))
+                .list_style(ListStyle::InsetGrouped),
+        );
+        let overridden_table =
+            sidebar_table(overridden_leaf.view()).expect("overridden list mounts");
+        assert_eq!(overridden_table.style(), TableStyle::Plain);
+    }
+
+    /// Explicit `.style(ListStyle::Plain)` inside `NavigationSplitView`'s sidebar
+    /// overrides the automatic `Sidebar` default.
+    pub fn sidebar_explicit_style_overrides_automatic_sidebar_default() {
+        let selection = binding(Some(0_i32));
+        let leaf = resolve::render(NavigationSplitView::new(
+            &selection,
+            move || List::content(((|| text("row")).tag(0_usize),)).style(ListStyle::Plain),
+            |_id: i32| NavigationView::new("Detail", text("detail")),
+        ));
+        let table = sidebar_table(leaf.view()).expect("the sidebar mounts a list");
+        assert_eq!(table.style(), TableStyle::Plain);
+        assert_eq!(table.table_view().style(), NSTableViewStyle::Plain);
+        assert!(!table.is_sidebar());
     }
 }
 

@@ -120,7 +120,7 @@ pub mod prelude {
     pub use super::component::link::{Link, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
-        ForEachExt, List, ListContent, ListMinRowHeight, Row, Section, detail_row,
+        ForEachExt, List, ListContent, ListMinRowHeight, ListStyle, Row, Section, detail_row,
     };
     #[cfg(feature = "menu")]
     pub use super::component::menu::{Command, CommandExt, Menu, MenuItem};
