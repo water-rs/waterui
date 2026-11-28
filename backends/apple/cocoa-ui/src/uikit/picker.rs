@@ -346,18 +346,26 @@ impl RadioRowView {
                     self.ivars().unselected_image.borrow().clone()
                 };
                 icon.setImage(image.as_deref());
-                icon.setTintColor(Some(if selected {
-                    &colors.accent
-                } else {
-                    &colors.muted
-                }));
+                // SAFETY: `setTintColor:` is marked unsafe in the bindings; it is
+                // an ordinary main-thread `UIImageView` property setter.
+                unsafe {
+                    icon.setTintColor(Some(if selected {
+                        &colors.accent
+                    } else {
+                        &colors.muted
+                    }));
+                }
             }
             if let Some(label) = self.ivars().title.borrow().as_ref() {
-                label.setTextColor(Some(if enabled {
-                    &colors.foreground
-                } else {
-                    &colors.muted
-                }));
+                // SAFETY: `setTextColor:` is marked unsafe in the bindings; it is
+                // an ordinary main-thread `UILabel` property setter.
+                unsafe {
+                    label.setTextColor(Some(if enabled {
+                        &colors.foreground
+                    } else {
+                        &colors.muted
+                    }));
+                }
             }
         }
         self.setAlpha(if enabled { 1.0 } else { 0.5 });

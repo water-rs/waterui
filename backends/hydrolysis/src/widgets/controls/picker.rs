@@ -2212,10 +2212,14 @@ pub fn render_wheel_picker<E: crate::text::TextEngine>(
     }
 
     let row_height = f64::from(layout.row_height).max(1.0);
-    let surface = look.surface().resolve(env).snapshot();
-    let border = look.border().resolve(env).snapshot();
-    let highlight = look.highlight().resolve(env).snapshot();
-    let focus_ring = look.focus_ring().resolve(env).snapshot();
+    let surface = ctx.renderer_mut().read_signal(&look.surface().resolve(env));
+    let border = ctx.renderer_mut().read_signal(&look.border().resolve(env));
+    let highlight = ctx
+        .renderer_mut()
+        .read_signal(&look.highlight().resolve(env));
+    let focus_ring = ctx
+        .renderer_mut()
+        .read_signal(&look.focus_ring().resolve(env));
     let drum_center_y = drum.center().y;
     let highlight_inset = f64::from(layout.highlight_inset);
     let band_rect = Rect::new(

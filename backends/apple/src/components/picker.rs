@@ -328,8 +328,7 @@ fn bind_theme_colors(
         use nami::SignalExt as _;
         use waterui_controls::theme::color::{Foreground, MutedForeground};
 
-        let palette = crate::components::button_chrome::tint(ctx.env())
-            .resolve(ctx.env())
+        let palette = crate::components::button_chrome::tint_signal(ctx.env())
             .zip(&Foreground.resolve(ctx.env()))
             .zip(&MutedForeground.resolve(ctx.env()))
             .computed();
