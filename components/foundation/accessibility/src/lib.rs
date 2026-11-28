@@ -343,6 +343,9 @@ pub enum AccessibilityChildren {
     Automatic,
     /// Hide descendants and expose only the parent node.
     ExcludeDescendants,
+    /// Merge descendants' labels in reading order and keep their actions on
+    /// this element, hiding the merged descendants as separate elements.
+    Combine,
 }
 
 /// The semantic checked state of a checkable control.
@@ -367,6 +370,13 @@ impl AccessibilityChildren {
     #[must_use]
     pub const fn excludes_descendants(&self) -> bool {
         matches!(self, Self::ExcludeDescendants)
+    }
+
+    /// Returns whether descendants' labels and actions should be merged into
+    /// this element.
+    #[must_use]
+    pub const fn combines_descendants(&self) -> bool {
+        matches!(self, Self::Combine)
     }
 }
 
@@ -675,5 +685,17 @@ mod tests {
             Some(super::AccessibilityChecked::True)
         );
         assert_eq!(state.expanded_state(), Some(false));
+    }
+
+    #[test]
+    fn accessibility_children_predicates_match_variants() {
+        use super::AccessibilityChildren;
+
+        assert!(!AccessibilityChildren::Automatic.excludes_descendants());
+        assert!(!AccessibilityChildren::Automatic.combines_descendants());
+        assert!(AccessibilityChildren::ExcludeDescendants.excludes_descendants());
+        assert!(!AccessibilityChildren::ExcludeDescendants.combines_descendants());
+        assert!(!AccessibilityChildren::Combine.excludes_descendants());
+        assert!(AccessibilityChildren::Combine.combines_descendants());
     }
 }

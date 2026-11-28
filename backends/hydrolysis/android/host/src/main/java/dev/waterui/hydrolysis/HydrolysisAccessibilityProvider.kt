@@ -702,7 +702,8 @@ internal class HydrolysisAccessibilityProvider(
                     val index = action - CUSTOM_ACTION_BASE
                     val custom = props(node)?.optJSONArray("customActions")
                     if (custom != null && index < custom.length()) {
-                        return MappedAction(AK_CUSTOM_ACTION, null, index.toDouble())
+                        val actionId = custom.optJSONObject(index)?.optInt("id", index) ?: index
+                        return MappedAction(AK_CUSTOM_ACTION, null, actionId.toDouble())
                     }
                 }
             }

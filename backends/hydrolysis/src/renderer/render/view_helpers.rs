@@ -179,6 +179,25 @@ pub fn a11y_scoped_identifier_env(
     env.clone()
 }
 
+/// The `Env` scoping for [`AccessibilityChildren`]: `Combine` opens a naming
+/// scope so the container (or gesture host) it decorates claims its own
+/// combined element even without an explicit role or label, whereas
+/// `Automatic` and `ExcludeDescendants` ride an existing scope.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "matches the uniform &T signature of accessibility_scope_table!"
+)]
+pub fn a11y_scoped_env_for_children<E: crate::text::TextEngine>(
+    env: &Environment,
+    value: &AccessibilityChildren,
+) -> Environment {
+    if value.combines_descendants() {
+        a11y_naming_scoped_env::<AccessibilityChildren, E>(env, value)
+    } else {
+        a11y_scoped_env(env, value)
+    }
+}
+
 /// Applies `$callback` to the accessibility metadata scopes: each key's
 /// `NativeBackend` method, its type, and the function extending an
 /// environment for it — the single definition of the metadata-type →
@@ -197,7 +216,7 @@ macro_rules! accessibility_scope_table {
             accessibility_identifier: AccessibilityIdentifier => a11y_scoped_identifier_env;
             accessibility_role: AccessibilityRole => a11y_naming_scoped_env::<AccessibilityRole, E>;
             accessibility_hidden: AccessibilityHidden => a11y_scoped_env::<AccessibilityHidden>;
-            accessibility_children: AccessibilityChildren => a11y_scoped_env::<AccessibilityChildren>;
+            accessibility_children: AccessibilityChildren => a11y_scoped_env_for_children::<E>;
             // The geometry source names the element the way a label does: the
             // node that represents the wrapped view reads it from the scope.
             accessibility_geometry: AccessibilityGeometry => a11y_scoped_env::<AccessibilityGeometry>;

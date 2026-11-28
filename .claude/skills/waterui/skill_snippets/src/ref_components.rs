@@ -1609,6 +1609,7 @@ pub fn components_a11y_explicit_prose() {
 
     let _ = Divider.a11y_state(AccessibilityState::new().selected(true));
     let _ = Divider.a11y_children(AccessibilityChildren::ExcludeDescendants);
+    let _ = Divider.a11y_children(AccessibilityChildren::Combine);
     let _ = Divider.a11y_children(AccessibilityChildren::Automatic);
     let _ = Divider.a11y_geometry(AccessibilityGeometry::Allocation);
     let _ = Divider.a11y_geometry(AccessibilityGeometry::Region(Rect::new(
