@@ -437,6 +437,7 @@ fn trials() -> Vec<Trial> {
     #[cfg(feature = "highlight")]
     tests.extend(code::trials());
     tests.extend(a11y_combine::trials());
+    tests.extend(resolve::text_selectable_trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
@@ -476,13 +477,6 @@ fn base_trials() -> Vec<Trial> {
             resolve::a_string_maps_to_the_text_leaf();
             Ok(())
         }),
-        Trial::test(
-            "resolve::text_selectable_defaults_false_and_supports_leaf_scope_override_and_reactive_toggle",
-            || {
-                resolve::text_selectable_defaults_false_and_supports_leaf_scope_override_and_reactive_toggle();
-                Ok(())
-            },
-        ),
         Trial::test("resolve::spacer_maps_to_a_stretching_host", || {
             resolve::spacer_maps_to_a_stretching_host();
             Ok(())
@@ -1179,6 +1173,18 @@ mod resolve {
         let measured = leaf.layout().measure(ProposalSize::UNSPECIFIED);
         assert!(measured.size.width > 0.0);
         assert!(measured.size.height > 0.0);
+    }
+
+    /// Registers the selectable-text trials in the native harness.
+    pub fn text_selectable_trials() -> Vec<super::Trial> {
+        vec![super::Trial::test(
+            "resolve::text_selectable_defaults_false_and_supports_leaf_scope_override_and_reactive_toggle",
+            || {
+                text_selectable_defaults_false_and_supports_leaf_scope_override_and_reactive_toggle(
+                );
+                Ok(())
+            },
+        )]
     }
 
     /// Recursively collects every kit `Label` mounted under `root` in view order.
