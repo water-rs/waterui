@@ -150,11 +150,12 @@ pub mod prelude {
         FlowTablePolicy, flow_markdown,
     };
 
-    // Gradient views
+    // Gradient views and unified shape paint
     #[cfg(any(feature = "gpu", feature = "cpu"))]
     pub use super::gradient::FlowingGradient;
     pub use super::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
     pub use super::gradient::{Gradient, GradientStops, MeshGradient};
+    pub use super::graphics::{IntoPaint, Paint};
 
     // Background types (explicit to avoid module name conflict with layout::background)
     pub use super::background::{Glass, GlassStyle, Material};

@@ -82,6 +82,8 @@ type Committed<E> = Vec<(LayerId, Weak<LayerToken<E>>)>;
 struct LayerProps {
     transform: kurbo::Affine,
     opacity: f32,
+    /// The blend mode this layer composites onto its parent with.
+    blend: cherenkov_record::BlendMode,
     /// The space the layer's subtree composites in and the layer fades
     /// onto its parent in; `None` inherits the parent's space.
     blend_space: Option<BlendSpace>,
@@ -152,6 +154,7 @@ impl LayerProps {
     const DEFAULT: Self = Self {
         transform: kurbo::Affine::IDENTITY,
         opacity: 1.0,
+        blend: cherenkov_record::BlendMode::Normal,
         blend_space: None,
         clip: None,
         filter: None,
@@ -269,6 +272,9 @@ fn write_props<T: LayerTarget<E>, E: crate::text::TextEngine>(
         }
     }
     let edit = &mut tx[layer];
+    if written.blend != props.blend {
+        edit.blend(props.blend);
+    }
     if written.blend_space != props.blend_space {
         match props.blend_space {
             Some(space) => edit.blend_space(space),
@@ -2304,6 +2310,7 @@ fn lower_scope<T: LayerTarget<E>, E: crate::text::TextEngine>(
         LayerProps {
             transform: props.transform,
             opacity: props.alpha,
+            blend: props.blend,
             blend_space: props.blend_space,
             clip: props.clip.clone(),
             live: props.live.clone(),

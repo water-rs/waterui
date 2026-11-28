@@ -120,37 +120,37 @@ fn flowing_gradient_section() -> impl View {
     .padding()
 }
 
-/// Demo: Shape filled with gradient
+/// Demo: Shape filled with gradient and gradient-masked text
 fn shape_fill_section() -> impl View {
     vstack((
         text("Shape + Gradient Fill").font_size(20.0),
-        "Gradients clipped to shapes on the GPU",
+        "Shapes filled directly with gradient paints and alpha-masked text",
         hstack((
-            // Linear gradient clipped to rounded rectangle
+            // Linear gradient paint filling a rounded rectangle
             vstack((
-                Gradient::linear(
-                    [color(1.0, 0.3, 0.5), color(0.3, 0.5, 1.0)],
-                    UnitPoint::TOP_LEADING,
-                    UnitPoint::BOTTOM_TRAILING,
-                )
-                .size(100.0, 100.0)
-                .clip(RoundedRectangle::new(CornerRadius::fraction(0.18))),
+                RoundedRectangle::new(CornerRadius::fraction(0.18))
+                    .fill(Gradient::linear(
+                        [color(1.0, 0.3, 0.5), color(0.3, 0.5, 1.0)],
+                        UnitPoint::TOP_LEADING,
+                        UnitPoint::BOTTOM_TRAILING,
+                    ))
+                    .size(100.0, 100.0),
                 "Linear + Rounded",
             )),
-            // Radial gradient clipped to circle
+            // Radial gradient paint filling a circle
             vstack((
-                Gradient::radial(
-                    vec![
-                        (0.0, color(1.0, 1.0, 0.8)),
-                        (0.5, color(1.0, 0.6, 0.2)),
-                        (1.0, color(0.6, 0.2, 0.1)),
-                    ],
-                    UnitPoint::CENTER,
-                    0.0,
-                    0.7,
-                )
-                .size(100.0, 100.0)
-                .clip(Circle),
+                Circle
+                    .fill(Gradient::radial(
+                        vec![
+                            (0.0, color(1.0, 1.0, 0.8)),
+                            (0.5, color(1.0, 0.6, 0.2)),
+                            (1.0, color(0.6, 0.2, 0.1)),
+                        ],
+                        UnitPoint::CENTER,
+                        0.0,
+                        0.7,
+                    ))
+                    .size(100.0, 100.0),
                 "Radial + Circle",
             )),
             // Mesh gradient clipped to rounded rectangle
@@ -171,6 +171,13 @@ fn shape_fill_section() -> impl View {
             )),
         ))
         .spacing(16.0),
+        Gradient::linear(
+            [color(1.0, 0.3, 0.5), color(0.3, 0.5, 1.0)],
+            UnitPoint::LEADING,
+            UnitPoint::TRAILING,
+        )
+        .size(260.0, 44.0)
+        .mask(text("Gradient Title").font_size(28.0).bold(true)),
     ))
     .padding()
 }

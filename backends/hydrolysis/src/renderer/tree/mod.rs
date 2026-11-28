@@ -355,7 +355,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 let child = node.child.borrow();
                 f(own, &child);
             }
-            Self::Wrapper(node) => f(own, &node.child),
+            Self::Wrapper(node) => {
+                f(own, &node.child);
+                if let WrapperEffect::Mask(mask) = &node.effect {
+                    f(own, &mask.mask);
+                }
+            }
             Self::Fill(node) => f(own, &node.child),
         }
     }
