@@ -337,7 +337,14 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
     pub(super) fn new(
         window: impl Into<Rc<RootWindow<E>>>,
         platform: P,
-        renderer: HydrolysisRenderer<E>,
+        #[cfg_attr(
+            not(feature = "accessibility"),
+            expect(
+                unused_mut,
+                reason = "renderer is mutated only when attaching the accessibility announcement channel"
+            )
+        )]
+        mut renderer: HydrolysisRenderer<E>,
         render_diagnostics_config: RenderDiagnosticsConfig,
         env: &Environment,
     ) -> Self {
@@ -347,7 +354,16 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
         // — an executor drain, a platform-view callback, an accessibility
         // action — fires it on the none→some edge and schedules the frame
         // the request needs, by construction.
-        renderer.install_host_wake(platform.frame_wake());
+        let frame_wake = platform.frame_wake();
+        renderer.install_host_wake(Rc::clone(&frame_wake));
+        #[cfg(feature = "accessibility")]
+        if let Some(channel) = env
+            .get::<crate::renderer::accessibility::AccessibilityAnnouncementChannel>()
+            .cloned()
+        {
+            channel.attach_wake(frame_wake);
+            renderer.set_accessibility_announcement_channel(channel);
+        }
         let declaration_watches = subscribe_window_declaration_signals(&window, env, &renderer);
         Self {
             window,

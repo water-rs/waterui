@@ -672,19 +672,34 @@ fn label_leaf(
 )]
 pub fn realize_text_config(config: TextConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     let content = config.content();
+    let initial_styled = content.snapshot();
     let (mut leaf, state, label) = label_leaf(
         ctx,
         config.line_limit().snapshot(),
-        &content.snapshot(),
+        &initial_styled,
         config.paragraph_alignment().snapshot(),
     );
+    let live_region = ctx
+        .env()
+        .get::<super::accessibility_metadata::LiveRegionScope>()
+        .cloned();
+    let last_plain = RefCell::new(initial_styled.to_plain());
 
     // Content changes re-resolve every chunk signal; paragraph alignment and
     // line limit push straight to the label inside the leaf.
     leaf.watch(&content, move |ctx| {
         let duration = cross_dissolve_duration(ctx.metadata());
-        apply_styled(&state, ctx.value());
+        let styled = ctx.value();
+        apply_styled(&state, styled);
         rebuild(&state.borrow(), duration);
+        if let Some(scope) = &live_region {
+            let plain = styled.to_plain();
+            let mut prev = last_plain.borrow_mut();
+            if *prev != plain {
+                scope.announce_update(plain.as_str());
+                *prev = plain;
+            }
+        }
     });
     leaf.watch(config.paragraph_alignment(), {
         let label = label.clone();

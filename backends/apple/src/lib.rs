@@ -54,6 +54,7 @@ pub use apple_content::{
     Retained, objc2,
 };
 
+pub(crate) mod accessibility_announcer;
 mod animation;
 #[cfg(feature = "gpu_surface")]
 pub(crate) mod capture_image;

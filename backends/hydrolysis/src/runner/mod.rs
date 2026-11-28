@@ -383,10 +383,33 @@ fn install_core_window_openers<E: crate::text::TextEngine>(
     let _ = (core, opener);
 }
 
+#[cfg(feature = "accessibility")]
+pub fn install_accessibility_announcer(
+    env: &mut Environment,
+    record_history: bool,
+    is_active: Option<Rc<dyn Fn() -> bool>>,
+) -> crate::renderer::accessibility::AccessibilityAnnouncementChannel {
+    if let Some(existing) = env
+        .get::<crate::renderer::accessibility::AccessibilityAnnouncementChannel>()
+        .cloned()
+    {
+        return existing;
+    }
+    let channel =
+        crate::renderer::accessibility::AccessibilityAnnouncementChannel::new(record_history, None);
+    env.insert(channel.clone());
+    if waterui_accessibility::AccessibilityAnnouncer::from_env(env).is_none() {
+        env.install(channel.announcer(is_active));
+    }
+    channel
+}
+
 fn install_window_registries<E: crate::text::TextEngine>(env: &mut Environment) {
     let _ = env.get_or_insert_with::<crate::renderer::WindowIdentities, _>(
         crate::renderer::WindowIdentities::default,
     );
+    #[cfg(feature = "accessibility")]
+    let _ = install_accessibility_announcer(env, false, None);
     let _ = env.get_or_insert_with::<MenuShortcutRegistry<E>, _>(MenuShortcutRegistry::default);
 }
 

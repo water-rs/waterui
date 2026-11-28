@@ -975,6 +975,19 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, accessibility::AccessibilityStateSignal::new(state))
     }
 
+    /// Marks this view subtree as an accessibility live region.
+    ///
+    /// When content inside a live region changes while the region is
+    /// [`LiveRegion::Polite`](accessibility::LiveRegion::Polite) or
+    /// [`LiveRegion::Assertive`](accessibility::LiveRegion::Assertive),
+    /// assistive technologies announce the update without moving focus.
+    fn a11y_live(
+        self,
+        region: impl IntoComputed<accessibility::LiveRegion>,
+    ) -> Metadata<accessibility::AccessibilityLiveRegion, Self> {
+        Metadata::new(self, accessibility::AccessibilityLiveRegion::new(region))
+    }
+
     /// Sets the accessibility hint for this view.
     ///
     /// A hint supplements the label and role with the outcome of acting on the
@@ -2278,5 +2291,26 @@ mod tests {
         let (fill_layout, _) = fill_container.as_parts();
         let fill_size = fill_layout.size_that_fits(proposal, &[]);
         assert_eq!(fill_size, Size::new(300.0, 150.0));
+    }
+
+    #[test]
+    fn a11y_live_modifier_accepts_static_and_reactive_regions() {
+        use crate::accessibility::LiveRegion;
+        use nami::{Binding, Signal as _};
+        use waterui_core::Metadata;
+
+        let Metadata {
+            value: static_live, ..
+        } = ().a11y_live(LiveRegion::Polite);
+        assert_eq!(static_live.region().snapshot(), LiveRegion::Polite);
+
+        let region = Binding::new(LiveRegion::Off);
+        let Metadata {
+            value: reactive_live,
+            ..
+        } = ().a11y_live(region.clone());
+        assert_eq!(reactive_live.region().snapshot(), LiveRegion::Off);
+        region.set(LiveRegion::Assertive);
+        assert_eq!(reactive_live.region().snapshot(), LiveRegion::Assertive);
     }
 }

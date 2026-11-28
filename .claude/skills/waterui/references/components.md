@@ -1002,16 +1002,19 @@ in when the picture is the subject, such as a full-width profile header. `.focus
 ## Accessibility modifiers
 
 ```rust
-use waterui::accessibility::{AccessibilityRole, AccessibilityState};
+use waterui::accessibility::{AccessibilityAnnouncer, AccessibilityRole, AccessibilityState, LiveRegion};
 
 .a11y_label("Delete message")          // override the derived label
 .a11y_hint("Opens the thread")         // supplemental outcome hint (IntoText)
 .a11y_id("inbox.row.3")                // stable automation id — reaches XCUITest and Android
-.a11y_role(AccessibilityRole::Button)
+.a11y_role(AccessibilityRole::Button)  // also Status, Alert for live regions
+.a11y_live(LiveRegion::Polite)         // Off / Polite / Assertive (or reactive signal)
 .a11y_hidden(true)                     // or a reactive boolean signal
 .a11y_state(active.map(|a| AccessibilityState::new().selected(a)))
 .a11y_action("Archive", archive)       // chainable named actions in declaration order
 .a11y_adjustable(increment, decrement) // VoiceOver / TalkBack increment & decrement
+// Imperative announcement in any handler:
+// button("Upload").action(|a: AccessibilityAnnouncer| a.announce("Upload complete"))
 ```
 
 The idiom for a composed row that should read as a single node: `.a11y_hidden(true)` on

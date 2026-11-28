@@ -591,6 +591,10 @@ pub struct HeadlessRuntime {
     /// — popup windows' renderers are created under the same mode.
     family_resolution: FontFamilyResolution,
     local_executor: HeadlessMainThreadExecutor,
+    #[cfg(feature = "accessibility")]
+    announcement_channel: crate::renderer::accessibility::AccessibilityAnnouncementChannel,
+    #[cfg(feature = "accessibility")]
+    assistive_tech_active: Rc<Cell<bool>>,
     /// Declared last so it drops after the runtime state above: consumes any
     /// still-queued spawned work while this thread's locals are intact, so no
     /// runnable is ever dropped during thread-local teardown.
@@ -974,6 +978,20 @@ impl HeadlessRuntime {
         )
     }
 
+    #[cfg(feature = "accessibility")]
+    fn install_accessibility(
+        env: &mut Environment,
+    ) -> (
+        crate::renderer::accessibility::AccessibilityAnnouncementChannel,
+        Rc<Cell<bool>>,
+    ) {
+        let assistive_tech_active = Rc::new(Cell::new(false));
+        let active = Rc::clone(&assistive_tech_active);
+        let channel =
+            super::install_accessibility_announcer(env, true, Some(Rc::new(move || active.get())));
+        (channel, assistive_tech_active)
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "internal constructor forwarding the runtime's window, painter, style, font, and capture format configuration"
@@ -1005,6 +1023,8 @@ impl HeadlessRuntime {
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         #[cfg(any(test, hydrolysis_platform_services))]
         install_platform_services(&mut env);
+        #[cfg(feature = "accessibility")]
+        let (announcement_channel, assistive_tech_active) = Self::install_accessibility(&mut env);
         install_window_registries::<crate::text::ParleyEngine>(&mut env);
         #[cfg(any(feature = "text-field", feature = "secure-field"))]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
@@ -1017,25 +1037,13 @@ impl HeadlessRuntime {
             waterui_controls::theme::ColorScheme::Light,
         );
         let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
-        // The application's fonts, built once: the platform's collection plus
-        // the staged fonts directory, exactly as the windowed runners load
-        // them.
-        // Every window's renderer is seeded from this collection, and a
-        // self-drawn component that typesets text itself reads it out of the
-        // environment instead of enumerating the system's fonts for itself.
         let fonts = crate::text::fonts::native_collection(&env);
         fonts.clone().install(&mut env);
-
-        // Headless binaries (preview, tests) have no platform runner to install
-        // a tracing subscriber; honor `RUST_LOG` and `WATERUI_LOG` here so they
-        // stay debuggable.
         let _ = tracing_subscriber::fmt()
             .with_env_filter(waterui_backend_core::log::env_filter())
             .with_writer(std::io::stderr)
             .try_init();
         let local_executor = HeadlessMainThreadExecutor::thread_shared();
-        // A headless host paces frames itself, so the executor budgets at the
-        // headless rate.
         let _ = try_init_local_executor(
             waterui_backend_core::task::monitored_local_executor_with_probes(
                 local_executor.clone(),
@@ -1099,6 +1107,10 @@ impl HeadlessRuntime {
             painter,
             color_format,
             local_executor,
+            #[cfg(feature = "accessibility")]
+            announcement_channel,
+            #[cfg(feature = "accessibility")]
+            assistive_tech_active,
         }
     }
 
@@ -1290,6 +1302,36 @@ impl HeadlessRuntime {
                     .map(|popup| &mut *popup.renderer),
             )
             .map(|merged| merged.tree_update)
+    }
+
+    /// Returns every announcement submitted through
+    /// [`AccessibilityAnnouncer`](waterui_accessibility::AccessibilityAnnouncer)
+    /// so far in this headless session.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub fn accessibility_announcements(
+        &self,
+    ) -> Vec<waterui_accessibility::AccessibilityAnnouncement> {
+        self.announcement_channel.history()
+    }
+
+    /// Drains and returns all announcements submitted through
+    /// [`AccessibilityAnnouncer`](waterui_accessibility::AccessibilityAnnouncer)
+    /// since the last call.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub fn take_accessibility_announcements(
+        &self,
+    ) -> Vec<waterui_accessibility::AccessibilityAnnouncement> {
+        self.announcement_channel.take_history()
+    }
+
+    /// Controls whether the headless runtime reports assistive technology as
+    /// active (for example, to exercise screen-reader snackbar timeout
+    /// extension).
+    #[cfg(feature = "accessibility")]
+    pub fn set_assistive_technology_active(&self, active: bool) {
+        self.assistive_tech_active.set(active);
     }
 
     /// The point a pointer could actually reach inside `node`'s accessibility

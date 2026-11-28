@@ -167,6 +167,7 @@ mod imp {
         });
         let locale = crate::locale::install(env, mtm);
         let reduce_motion = crate::reduce_motion::install(env, mtm);
+        crate::accessibility_announcer::install(env);
 
         let termination = Rc::new(OnceCell::new());
         let launch = Box::new(Launch {
@@ -332,6 +333,7 @@ mod imp {
         let background = Color::new(Background).resolve(env);
         let locale = crate::locale::install(env, mtm);
         let reduce_motion = crate::reduce_motion::install(env, mtm);
+        crate::accessibility_announcer::install(env);
 
         // Filled by `prepared`: `build_menus` can fire before `app(env)`
         // runs, so the declared menus sit behind this slot.

@@ -21,11 +21,16 @@ use executor_core::spawn_local;
 use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal as _};
 use native_executor::sleep;
+use waterui_accessibility::{
+    AccessibilityAnnouncer, AccessibilityLiveRegion, AccessibilityRole, LiveRegion,
+};
 use waterui_backend_core::{Environment, SlotView};
 use waterui_controls::button::{Button, ButtonStyle, button};
 use waterui_controls::label::{Label, label};
 use waterui_controls::slot::SlotBuilder;
-use waterui_controls::snackbar::{SnackbarHostConfig, SnackbarPosition, SnackbarPresentation};
+use waterui_controls::snackbar::{
+    SnackbarHostConfig, SnackbarPosition, SnackbarPresentation, snackbar_close_label,
+};
 use waterui_controls::theme::ForegroundOverride;
 use waterui_controls::theme::color::{Accent, Border, Foreground, Surface};
 use waterui_core::animation::Animation;
@@ -151,11 +156,15 @@ fn build_apple_banner(presentation: &SnackbarPresentation<Held>) -> impl View + 
 
     let close_button = presentation.closeable().then(|| {
         let presentation_for_close = presentation.clone();
-        Button::new(label("Close").icon(AppleCloseIcon).icon_only())
-            .style(ButtonStyle::Borderless)
-            .action(move |_env: Environment| {
-                presentation_for_close.close();
-            })
+        Button::new(
+            label(snackbar_close_label())
+                .icon(AppleCloseIcon)
+                .icon_only(),
+        )
+        .style(ButtonStyle::Borderless)
+        .action(move |_env: Environment| {
+            presentation_for_close.close();
+        })
     });
 
     let shape = RoundedRectangle::new(CORNER_RADIUS);
@@ -177,7 +186,11 @@ fn build_apple_banner(presentation: &SnackbarPresentation<Held>) -> impl View + 
         BackgroundView::new(content, shape.fill(Surface)),
         BorderStyle::new(Border, BORDER_WIDTH).corner_radius(CORNER_RADIUS),
     );
-    Metadata::new(Metadata::new(bordered, ambient_shadow), key_shadow)
+    let shadowed = Metadata::new(Metadata::new(bordered, ambient_shadow), key_shadow);
+    Metadata::new(
+        Metadata::new(shadowed, AccessibilityRole::Status),
+        AccessibilityLiveRegion::new(LiveRegion::Polite),
+    )
 }
 
 struct AppleSnackbarRow {
@@ -194,6 +207,7 @@ struct SnackbarHostState {
     overlay_host: Retained<HostView>,
     child: Mounted,
     renderer: Renderer,
+    env: Environment,
     direction: Computed<LayoutDirection>,
     rows: RefCell<Vec<AppleSnackbarRow>>,
 }
@@ -418,6 +432,17 @@ fn reconcile_presentations(
             }
             let leaf = state.renderer.render(build_apple_banner(presentation));
             let mounted = leaf.mount(&state.overlay_host);
+            let message = presentation
+                .message()
+                .resolve(&state.env)
+                .content()
+                .snapshot()
+                .to_plain();
+            if let Some(announcer) = AccessibilityAnnouncer::from_env(&state.env) {
+                announcer.announce_plain(message.as_str(), LiveRegion::Polite);
+            } else {
+                cocoa_ui::accessibility::announce(message.as_str(), false);
+            }
             let dismiss_guard = presentation.dismissing().watch({
                 let state = Rc::downgrade(state);
                 let presentation = presentation.clone();
@@ -475,6 +500,7 @@ pub fn realize_snackbar_host_metadata(
         overlay_host,
         child: mounted_child,
         renderer: ctx.renderer(),
+        env: ctx.env().clone(),
         direction: layout_direction(ctx.env()),
         rows: RefCell::new(Vec::new()),
     });

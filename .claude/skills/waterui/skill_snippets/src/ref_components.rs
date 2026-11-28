@@ -1599,7 +1599,9 @@ pub fn components_block_38() {
     let increment = || {};
     let decrement = || {};
 
-    use waterui::accessibility::{AccessibilityRole, AccessibilityState};
+    use waterui::accessibility::{
+        AccessibilityAnnouncer, AccessibilityRole, AccessibilityState, LiveRegion,
+    };
 
     let view = Divider;
     let _ = {
@@ -1616,6 +1618,8 @@ pub fn components_block_38() {
     let view = Divider;
     let _ = { view.a11y_role(AccessibilityRole::Button) };
     let view = Divider;
+    let _ = { view.a11y_live(LiveRegion::Polite) };
+    let view = Divider;
     let _ = {
         view.a11y_hidden(true) // or a reactive boolean signal
     };
@@ -1629,6 +1633,8 @@ pub fn components_block_38() {
     let _ = {
         view.a11y_adjustable(increment, decrement) // VoiceOver / TalkBack increment & decrement
     };
+    let _ = button("Upload").action(|a: AccessibilityAnnouncer| a.announce("Upload complete"));
+    let _ = (AccessibilityRole::Status, AccessibilityRole::Alert);
 }
 
 // ---------------------------------------------------------------------------

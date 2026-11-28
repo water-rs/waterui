@@ -110,6 +110,7 @@ pub fn restore_a11y_naming_scope<E: crate::text::TextEngine>(
         AccessibilityHint,
         AccessibilityCustomActions,
         AccessibilityAdjustable,
+        AccessibilityLiveRegion,
         AccessibilityRole,
         AccessibilityChildren,
         AccessibilityGeometry,
@@ -226,6 +227,7 @@ macro_rules! accessibility_scope_table {
     ($callback:ident) => {
         $callback! {
             accessibility_label: AccessibilityLabel => a11y_naming_scoped_env::<AccessibilityLabel, E>;
+            accessibility_live_region: AccessibilityLiveRegion => a11y_naming_scoped_env::<AccessibilityLiveRegion, E>;
             // `.a11y_value(..)` is naming metadata like the label: the node
             // that represents the wrapped view owns the semantic payload —
             // once — and a container that no control spoke for synthesizes

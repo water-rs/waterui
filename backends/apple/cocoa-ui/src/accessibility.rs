@@ -79,6 +79,10 @@ pub enum Role {
     Group,
     /// Modal dialog or alert surface.
     Dialog,
+    /// Non-modal status update region.
+    Status,
+    /// Urgent alert message region.
+    Alert,
 }
 
 /// A checkbox's check state.
@@ -130,10 +134,12 @@ mod imp {
 
     use block2::RcBlock;
     use objc2::MainThreadOnly as _;
-    use objc2::runtime::Bool;
+    use objc2::runtime::{AnyObject, Bool};
     use objc2_foundation::{NSArray, NSString};
     use objc2_ui_kit::{
-        NSObjectUIAccessibility, NSObjectUIAccessibilityAction, UIAccessibilityCustomAction,
+        NSObjectUIAccessibility, NSObjectUIAccessibilityAction,
+        UIAccessibilityAnnouncementNotification, UIAccessibilityCustomAction,
+        UIAccessibilityIsVoiceOverRunning, UIAccessibilityPostNotification,
         UIAccessibilityTraitAdjustable, UIAccessibilityTraitButton, UIAccessibilityTraitHeader,
         UIAccessibilityTraitImage, UIAccessibilityTraitLink, UIAccessibilityTraitNotEnabled,
         UIAccessibilityTraitSearchField, UIAccessibilityTraitSelected,
@@ -196,7 +202,7 @@ mod imp {
                 | Role::MenuBar
                 | Role::Option
                 | Role::Group => 0,
-                Role::Dialog => return None,
+                Role::Dialog | Role::Status | Role::Alert => return None,
             }
         })
     }
@@ -205,15 +211,15 @@ mod imp {
     /// ones, and marks it an accessibility element.
     pub fn set_role(view: &UIView, role: Role) {
         let mtm = objc2::MainThreadMarker::from(view);
+        let Some(role_traits) = traits(role) else {
+            return;
+        };
         view.setIsAccessibilityElement(true, mtm);
         if let Some(host) = view.downcast_ref::<crate::uikit::HostView>()
             && matches!(role, Role::Heading(_))
         {
             host.set_combines_accessibility_children(true);
         }
-        let Some(role_traits) = traits(role) else {
-            return;
-        };
         let mut current = view.accessibilityTraits(mtm);
         let keep_adjustable = view
             .downcast_ref::<crate::uikit::HostView>()
@@ -365,6 +371,28 @@ mod imp {
         );
     }
 
+    /// Posts a spoken announcement notification to `VoiceOver`.
+    pub fn announce(message: &str, _assertive: bool) {
+        if message.is_empty() {
+            return;
+        }
+        let text = NSString::from_str(message);
+        // SAFETY: `UIAccessibilityAnnouncementNotification` is an immutable UIKit
+        // constant and `NSString` is its documented argument type.
+        unsafe {
+            UIAccessibilityPostNotification(
+                UIAccessibilityAnnouncementNotification,
+                Some(AsRef::<AnyObject>::as_ref(&*text)),
+            );
+        }
+    }
+
+    /// Returns whether `VoiceOver` is currently running.
+    #[must_use]
+    pub fn is_voiceover_running() -> bool {
+        UIAccessibilityIsVoiceOverRunning()
+    }
+
     /// Applies the dynamic accessibility state.
     ///
     /// `disabled`, `selected`, `busy`, and `invalid` toggle traits and the
@@ -435,15 +463,18 @@ mod imp {
     use objc2::rc::Retained;
     use objc2::runtime::{AnyObject, Bool, ProtocolObject};
     use objc2_app_kit::{
-        NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityCheckBoxRole,
-        NSAccessibilityComboBoxRole, NSAccessibilityCustomAction, NSAccessibilityGroupRole,
-        NSAccessibilityHeadingRole, NSAccessibilityImageRole, NSAccessibilityLinkRole,
-        NSAccessibilityListRole, NSAccessibilityMenuBarRole, NSAccessibilityMenuItemRole,
-        NSAccessibilityMenuRole, NSAccessibilityProgressIndicatorRole,
+        NSAccessibility, NSAccessibilityAnnouncementKey,
+        NSAccessibilityAnnouncementRequestedNotification, NSAccessibilityButtonRole,
+        NSAccessibilityCheckBoxRole, NSAccessibilityComboBoxRole, NSAccessibilityCustomAction,
+        NSAccessibilityGroupRole, NSAccessibilityHeadingRole, NSAccessibilityImageRole,
+        NSAccessibilityLinkRole, NSAccessibilityListRole, NSAccessibilityMenuBarRole,
+        NSAccessibilityMenuItemRole, NSAccessibilityMenuRole,
+        NSAccessibilityPostNotificationWithUserInfo, NSAccessibilityPriorityKey,
+        NSAccessibilityPriorityLevel, NSAccessibilityProgressIndicatorRole,
         NSAccessibilityRadioButtonRole, NSAccessibilityRole, NSAccessibilitySliderRole,
-        NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole,
+        NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole, NSApplication, NSWorkspace,
     };
-    use objc2_foundation::{NSArray, NSNumber, NSString};
+    use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString};
 
     use super::{Checked, CustomActionHandler, Role};
 
@@ -485,7 +516,9 @@ mod imp {
                 | Role::Switch
                 | Role::TabPanel
                 | Role::Option
-                | Role::Group => NSAccessibilityGroupRole,
+                | Role::Group
+                | Role::Status
+                | Role::Alert => NSAccessibilityGroupRole,
                 Role::Dialog => return None,
             }
         })
@@ -496,6 +529,15 @@ mod imp {
         element.setAccessibilityElement(true);
         if let Some(ax_role) = self::role(role) {
             element.setAccessibilityRole(Some(ax_role));
+        }
+        match role {
+            Role::Status => {
+                element.setAccessibilitySubrole(Some(&NSString::from_str("AXApplicationStatus")));
+            }
+            Role::Alert => {
+                element.setAccessibilitySubrole(Some(&NSString::from_str("AXApplicationAlert")));
+            }
+            _ => {}
         }
         let heading_level = match role {
             Role::Heading(level) if level > 0 => Some(level),
@@ -631,6 +673,47 @@ mod imp {
     pub fn set_busy(element: &ProtocolObject<dyn NSAccessibility>, busy: bool) {
         let busy_label = NSString::from_str("Busy");
         element.setAccessibilityHelp(if busy { Some(&*busy_label) } else { None });
+    }
+
+    /// Posts an `NSAccessibilityAnnouncementRequestedNotification` to `VoiceOver`.
+    pub fn announce(message: &str, assertive: bool) {
+        if message.is_empty() {
+            return;
+        }
+        let Some(mtm) = objc2::MainThreadMarker::new() else {
+            return;
+        };
+        let app = NSApplication::sharedApplication(mtm);
+        let text = NSString::from_str(message);
+        let priority = if assertive {
+            NSAccessibilityPriorityLevel::High
+        } else {
+            NSAccessibilityPriorityLevel::Medium
+        };
+        let priority_num = NSNumber::new_isize(priority.0);
+        // SAFETY: the `NSAccessibility*Key` and notification constants are
+        // immutable `NSString`s published by AppKit; `NSString` and `NSNumber`
+        // are their documented userInfo value types.
+        unsafe {
+            let user_info = NSDictionary::from_slices(
+                &[NSAccessibilityAnnouncementKey, NSAccessibilityPriorityKey],
+                &[
+                    AsRef::<AnyObject>::as_ref(&*text),
+                    AsRef::<AnyObject>::as_ref(&*priority_num),
+                ],
+            );
+            NSAccessibilityPostNotificationWithUserInfo(
+                AsRef::<AnyObject>::as_ref(&*app),
+                NSAccessibilityAnnouncementRequestedNotification,
+                Some(&user_info),
+            );
+        }
+    }
+
+    /// Returns whether `VoiceOver` is currently enabled.
+    #[must_use]
+    pub fn is_voiceover_running() -> bool {
+        NSWorkspace::sharedWorkspace().isVoiceOverEnabled()
     }
 
     /// Applies the dynamic accessibility state: enabled, selected, checked,

@@ -683,6 +683,7 @@ mod tests {
             accessibility_hint: waterui_accessibility::AccessibilityHint,
             accessibility_identifier: waterui_accessibility::AccessibilityIdentifier,
             accessibility_label: waterui_accessibility::AccessibilityLabel,
+            accessibility_live_region: waterui_accessibility::AccessibilityLiveRegion,
             accessibility_role: waterui_accessibility::AccessibilityRole,
             accessibility_state: waterui_accessibility::AccessibilityState,
             accessibility_state_signal: waterui_accessibility::AccessibilityStateSignal,
