@@ -26,7 +26,7 @@ use waterui_core::{
     env::{Installed, With},
     extract::State,
     handler::{EventHandler, Handler, HandlerOnce},
-    layout::{HorizontalAlignment, VerticalAlignment, ViewDimensions},
+    layout::{HorizontalAlignment, Size, VerticalAlignment, ViewDimensions},
     metadata::MetadataKey,
     plugin::Plugin,
 };
@@ -45,7 +45,7 @@ use suiteki::Str;
 use waterui_capture::{CaptureHandle, CaptureScope};
 use waterui_layout::{
     AspectRatio, ContentMode, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority, Overlay,
-    VerticalAlignmentGuide,
+    ReportSize, VerticalAlignmentGuide,
     frame::Frame,
     padding::{EdgeInsets, Padding},
     stack::Alignment,
@@ -170,6 +170,26 @@ pub trait ViewExt: View + Sized {
     /// * `priority` - Higher keeps more space; ties share the shortfall.
     fn layout_priority(self, priority: i32) -> Metadata<LayoutPriority, Self> {
         Metadata::new(self, LayoutPriority::new(priority))
+    }
+
+    /// Reports this view's committed placed size into `size` after each layout
+    /// pass.
+    ///
+    /// Reporting observes the result of layout and adds no layout rule: the
+    /// backend writes into `size` only when the committed placed size changes,
+    /// and never feeds it back into layout proposals.
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// let size = binding(Size::zero());
+    /// let adaptive = when(size.map(|s| s.width > 600.0), || text("Wide"))
+    ///     .otherwise(|| text("Narrow"))
+    ///     .max_width(f32::INFINITY)
+    ///     .report_size(&size);
+    /// ```
+    fn report_size(self, size: &Binding<Size>) -> Metadata<ReportSize, Self> {
+        Metadata::new(self, ReportSize::new(size))
     }
 
     /// Joins the window's refresh-rate vote while this view is mounted and visible.

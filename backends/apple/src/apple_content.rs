@@ -668,6 +668,7 @@ mod tests {
             environment: Environment,
             retain: waterui_core::metadata::Retain,
             layout_priority: waterui_core::layout::LayoutPriority,
+            report_size: waterui_layout::report_size::ReportSize,
             lifecycle_hook: waterui_interaction::event::LifeCycleHook,
             task_hook: waterui_interaction::event::TaskHook,
             on_event: waterui_interaction::event::OnEvent,

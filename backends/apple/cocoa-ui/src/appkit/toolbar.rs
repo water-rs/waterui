@@ -87,6 +87,8 @@ pub struct ToolbarChild {
     /// The handler the item runs when invoked — the same one the hosted
     /// view's own control would run.
     pub action: Option<Rc<dyn Fn()>>,
+    /// Whether the toolbar item is enabled.
+    pub enabled: bool,
 }
 
 impl fmt::Debug for ToolbarChild {
@@ -95,6 +97,7 @@ impl fmt::Debug for ToolbarChild {
             .field("label", &self.label)
             .field("has_icon", &self.icon.is_some())
             .field("has_action", &self.action.is_some())
+            .field("enabled", &self.enabled)
             .field("view", &self.view)
             .finish()
     }
@@ -227,6 +230,8 @@ pub struct WindowToolbarIvars {
     sidebar_toggle: RefCell<Option<Retained<NSToolbarItem>>>,
     /// The handlers promoted `NSToolbarItem`s run, by item identifier.
     item_actions: RefCell<HashMap<String, Rc<dyn Fn()>>>,
+    /// Enabled state for promoted `NSToolbarItem`s, by item identifier.
+    item_enabled: RefCell<HashMap<String, bool>>,
     /// The accessory row showing the search field, while a search is offered.
     search_accessory: RefCell<Option<Retained<NSTitlebarAccessoryViewController>>>,
     /// Identity of the search the accessory is attached to.
@@ -249,6 +254,7 @@ impl fmt::Debug for WindowToolbarIvars {
                 &self.sidebar_toggle.borrow().is_some(),
             )
             .field("item_actions", &self.item_actions.borrow().len())
+            .field("item_enabled", &self.item_enabled.borrow().len())
             .field(
                 "has_search_accessory",
                 &self.search_accessory.borrow().is_some(),
@@ -295,12 +301,27 @@ define_class!(
         #[unsafe(method(actionInvoked:))]
         fn action_invoked(&self, sender: &NSToolbarItem) {
             guarded("WindowToolbar actionInvoked:", || {
+                if !sender.isEnabled() {
+                    return;
+                }
                 let key = sender.itemIdentifier().to_string();
                 let action = self.ivars().item_actions.borrow().get(&key).cloned();
                 if let Some(action) = action {
                     action();
                 }
             });
+        }
+
+        // SAFETY: `validateToolbarItem:` matches `NSToolbarItemValidation`.
+        #[unsafe(method(validateToolbarItem:))]
+        fn validate_toolbar_item(&self, item: &NSToolbarItem) -> bool {
+            let key = item.itemIdentifier().to_string();
+            self.ivars()
+                .item_enabled
+                .borrow()
+                .get(&key)
+                .copied()
+                .unwrap_or(true)
         }
 
         // SAFETY: the raw-KVO callback's signature matches
@@ -402,6 +423,7 @@ impl WindowToolbar {
             sidebar_split: RefCell::new(None),
             sidebar_toggle: RefCell::new(None),
             item_actions: RefCell::new(HashMap::new()),
+            item_enabled: RefCell::new(HashMap::new()),
             search_accessory: RefCell::new(None),
             search_source: RefCell::new(None),
             charged_search_row_height: Cell::new(0.0),
@@ -969,9 +991,15 @@ impl WindowToolbar {
         identifier: &NSToolbarItemIdentifier,
         action: &ToolbarChild,
     ) -> Retained<NSToolbarItem> {
+        self.ivars()
+            .item_enabled
+            .borrow_mut()
+            .insert(identifier.to_string(), action.enabled);
         let Some(icon) = &action.icon else {
             let item = self.hosting_item(identifier, &action.view.view, Some(action.view.size));
             item.setBordered(true);
+            item.setAutovalidates(false);
+            item.setEnabled(action.enabled);
             return item;
         };
         let item =
@@ -989,6 +1017,11 @@ impl WindowToolbar {
         unsafe { item.setTarget(Some(self.as_ref())) };
         // SAFETY: `setAction:` registers `actionInvoked:`.
         unsafe { item.setAction(Some(sel!(actionInvoked:))) };
+        // Set enabled state after target/action so AppKit does not reset it,
+        // and disable autovalidation so disabled items stay disabled until
+        // updated.
+        item.setAutovalidates(false);
+        item.setEnabled(action.enabled);
         if let Some(handler) = &action.action {
             self.ivars()
                 .item_actions

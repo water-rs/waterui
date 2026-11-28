@@ -194,6 +194,13 @@ fn navigation_trials() -> Vec<Trial> {
                 Ok(())
             },
         ),
+        Trial::test(
+            "navigation::semantic_toolbar_item_respects_disabled_and_visible",
+            || {
+                navigation::semantic_toolbar_item_respects_disabled_and_visible();
+                Ok(())
+            },
+        ),
     ];
     trials.extend(toolbar_reach_trials());
     trials
@@ -398,6 +405,7 @@ fn trials() -> Vec<Trial> {
     tests.extend(transition::trials());
     tests.extend(owner_lifetimes::trials());
     tests.extend(scroll::trials());
+    tests.extend(report_size::trials());
     tests.extend(list_scroll::trials());
     tests.extend(apple_content::trials());
     #[cfg(target_os = "macos")]
@@ -3246,6 +3254,83 @@ mod navigation {
         assert!(
             explicit > icon_width + 8.0,
             "an explicit title-and-icon preference keeps its title, got {explicit}"
+        );
+    }
+
+    /// A semantic `NavigationToolbarItem::action` with `.disabled(...)` and
+    /// `.visible(...)` promotes to a real `NSToolbarItem` with its symbol and
+    /// label, tracks enabled state reactively, and is excluded from the toolbar
+    /// while hidden.
+    pub fn semantic_toolbar_item_respects_disabled_and_visible() {
+        use waterui::component::label;
+        use waterui::navigation::NavigationStack;
+        use waterui_apple::SfSymbol;
+
+        const TRAILING: &str = "dev.cocoaui.navigation.trailing";
+
+        let disabled = binding(true);
+        let visible = binding(true);
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Compose", text("body")).navigation_toolbar(
+                NavigationToolbar::default().item(
+                    NavigationToolbarItem::action(
+                        NavigationToolbarPlacement::Confirmation,
+                        label("Send").icon(SfSymbol::PAPERPLANE),
+                        || {},
+                    )
+                    .disabled(disabled.clone())
+                    .visible(visible.clone()),
+                ),
+            ),
+        ));
+        let window = leaf::attach(mtm(), leaf.view());
+        let trailing_item = || {
+            window.native().toolbar().and_then(|toolbar| {
+                toolbar
+                    .items()
+                    .iter()
+                    .find(|item| item.itemIdentifier().to_string() == TRAILING)
+            })
+        };
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || trailing_item().is_some()),
+            "the semantic action is promoted into the window toolbar"
+        );
+        let item = trailing_item().expect("trailing toolbar item exists");
+        assert!(
+            item.image().is_some(),
+            "the semantic action keeps its icon image on the NSToolbarItem"
+        );
+        assert_eq!(
+            item.label().to_string(),
+            "Send",
+            "the semantic action keeps its label on the NSToolbarItem"
+        );
+        assert!(
+            !item.isEnabled(),
+            "the toolbar item starts disabled with the signal"
+        );
+
+        disabled.set(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                trailing_item().is_some_and(|item| item.isEnabled())
+            }),
+            "the toolbar item re-enables when the disabled signal clears"
+        );
+
+        visible.set(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || trailing_item().is_none()),
+            "hiding the toolbar item removes it from the window toolbar"
+        );
+
+        visible.set(true);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                trailing_item().is_some_and(|item| item.isEnabled() && item.image().is_some())
+            }),
+            "showing the toolbar item restores it with its icon and enabled state"
         );
     }
 
@@ -10484,6 +10569,13 @@ mod navigation {
                     Ok(())
                 },
             ),
+            libtest_mimic::Trial::test(
+                "navigation::semantic_toolbar_item_respects_disabled_and_visible",
+                || {
+                    semantic_toolbar_item_respects_disabled_and_visible();
+                    Ok(())
+                },
+            ),
         ]
     }
 
@@ -10811,6 +10903,64 @@ mod navigation {
             trailing.isEnabled(),
             "the bar item follows the checkbox back to enabled"
         );
+    }
+
+    /// A semantic `NavigationToolbarItem::action` with `.disabled(...)` and
+    /// `.visible(...)` preserves its symbol image and accessibility label,
+    /// mirrors disabled state onto `UIBarButtonItem.enabled`, and removes the
+    /// item from the bar while hidden.
+    fn semantic_toolbar_item_respects_disabled_and_visible() {
+        use waterui::component::label;
+
+        let disabled = binding(true);
+        let visible = binding(true);
+        let item = NavigationToolbarItem::action(
+            NavigationToolbarPlacement::Confirmation,
+            label("Send").icon(SfSymbol::PAPERPLANE),
+            || {},
+        )
+        .disabled(disabled.clone())
+        .visible(visible.clone());
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Compose", text("root"))
+                .navigation_toolbar(NavigationToolbar::new(vec![item])),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        let top = nav.topViewController().expect("the stack has a root page");
+        let trailing = top
+            .navigationItem()
+            .rightBarButtonItems()
+            .expect("the visible semantic action is present")
+            .objectAtIndex(0);
+        assert!(
+            trailing.image().is_some(),
+            "the semantic action keeps its symbol image"
+        );
+        assert!(
+            !trailing.isEnabled(),
+            "the bar item starts disabled with the semantic disabled signal"
+        );
+        disabled.set(false);
+        assert!(
+            trailing.isEnabled(),
+            "the bar item re-enables when the disabled signal clears"
+        );
+        visible.set(false);
+        assert!(
+            top.navigationItem()
+                .rightBarButtonItems()
+                .is_none_or(|items| items.is_empty()),
+            "hiding the semantic item removes it from rightBarButtonItems"
+        );
+        visible.set(true);
+        let restored = top
+            .navigationItem()
+            .rightBarButtonItems()
+            .expect("showing the semantic item restores it")
+            .objectAtIndex(0);
+        assert!(restored.image().is_some());
+        assert!(restored.isEnabled());
     }
 
     /// The root page's intent is recorded in `set_page` while
@@ -19623,6 +19773,189 @@ mod code {
             copied.load(Ordering::SeqCst),
             1,
             "activating native Copy button must invoke OnCopied"
+        );
+    }
+}
+
+/// `ViewExt::report_size` (water-rs/waterui#4298): committed placed sizes write
+/// into the bound `Binding<Size>` after commit, stay silent on unchanged
+/// relayouts, and drive adaptive `when(size.map(...), ...)` across resize
+/// without triggering a synchronous layout cycle.
+mod report_size {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::{PlatformView, Rect as KitRect, view};
+    use libtest_mimic::Trial;
+    use waterui::Color;
+    use waterui::graphics::color::Srgb;
+    use waterui::layout::Size;
+    use waterui::prelude::{
+        Binding, Signal as _, SignalExt as _, ViewExt as _, binding, text, when,
+    };
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
+
+    use super::{Label, leaf, mtm, resolve};
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "report_size::initial_placement_and_dedup_on_unchanged_relayout",
+                || {
+                    initial_placement_and_dedup_on_unchanged_relayout();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "report_size::resize_updates_binding_and_drives_adaptive_when",
+                || {
+                    resize_updates_binding_and_drives_adaptive_when();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn counting_size() -> (Binding<Size>, Rc<Cell<usize>>) {
+        let writes = Rc::new(Cell::new(0usize));
+        let counted = binding(Size::zero()).filter({
+            let writes = Rc::clone(&writes);
+            move |_| {
+                writes.set(writes.get() + 1);
+                true
+            }
+        });
+        (counted, writes)
+    }
+
+    fn layout_and_wait_commit(view: &PlatformView) {
+        view::invalidate_layout(view);
+        #[cfg(target_os = "macos")]
+        view.layoutSubtreeIfNeeded();
+        #[cfg(target_os = "ios")]
+        view.layoutIfNeeded();
+
+        let committed = Rc::new(Cell::new(false));
+        cocoa_ui::core_animation::on_commit(mtm(), {
+            let committed = Rc::clone(&committed);
+            move || committed.set(true)
+        });
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || committed.get()),
+            "on_commit turn must run to deliver post-commit size reports"
+        );
+    }
+
+    fn collect_label_texts(root: &PlatformView, out: &mut Vec<String>) {
+        if let Some(label) = root.downcast_ref::<Label>()
+            && let Some(attributed) = label.source_text()
+        {
+            out.push(attributed.string().to_string());
+        }
+        for child in view::subviews(root) {
+            collect_label_texts(&child, out);
+        }
+    }
+
+    fn initial_placement_and_dedup_on_unchanged_relayout() {
+        let (size, writes) = counting_size();
+        let rendered = resolve::render(
+            Color::new(Srgb::new(0.2, 0.4, 0.7))
+                .size(120.0, 80.0)
+                .report_size(&size),
+        );
+        let _window = leaf::attach(mtm(), rendered.view());
+        layout_and_wait_commit(rendered.view());
+
+        assert_eq!(
+            size.snapshot(),
+            Size::new(120.0, 80.0),
+            "initial placement must report the view's committed response size"
+        );
+        assert_eq!(
+            writes.get(),
+            1,
+            "initial placement must write the binding exactly once"
+        );
+
+        // Relayout with identical frame must not re-write or re-notify watchers.
+        layout_and_wait_commit(rendered.view());
+        assert_eq!(
+            writes.get(),
+            1,
+            "unchanged relayout must not re-notify size watchers"
+        );
+    }
+
+    fn resize_updates_binding_and_drives_adaptive_when() {
+        // 1. Direct frame resize on a stretching view updates the reported size.
+        let stretch_size = binding(Size::zero());
+        let stretched =
+            resolve::render(Color::new(Srgb::new(0.1, 0.6, 0.3)).report_size(&stretch_size));
+        let _stretch_window = leaf::attach(mtm(), stretched.view());
+        layout_and_wait_commit(stretched.view());
+        let initial_bounds = view::bounds(stretched.view());
+        assert!(
+            (f64::from(stretch_size.snapshot().width) - initial_bounds.size.width).abs() < 0.5
+                && (f64::from(stretch_size.snapshot().height) - initial_bounds.size.height).abs()
+                    < 0.5,
+            "stretching view must report its initial placed bounds ({initial_bounds:?}), got {:?}",
+            stretch_size.snapshot()
+        );
+
+        view::set_frame(stretched.view(), KitRect::new(0.0, 0.0, 720.0, 360.0));
+        layout_and_wait_commit(stretched.view());
+        assert_eq!(
+            stretch_size.snapshot(),
+            Size::new(720.0, 360.0),
+            "resizing the view frame must update the reported size"
+        );
+
+        // 2. Container width resize drives `when(size.map(...), ...)` cleanly.
+        let pane_width = binding(320.0_f32);
+        let (reported, writes) = counting_size();
+        let adaptive = resolve::render(
+            when(reported.map(|s| s.width > 500.0), || text("two-column"))
+                .otherwise(|| text("one-column"))
+                .max_width(f32::INFINITY)
+                .report_size(&reported)
+                .width(pane_width.clone()),
+        );
+        let _adaptive_window = leaf::attach(mtm(), adaptive.view());
+        layout_and_wait_commit(adaptive.view());
+
+        assert!(
+            (reported.snapshot().width - 320.0).abs() < 0.5,
+            "initial adaptive width must report 320, got {:?}",
+            reported.snapshot()
+        );
+        let mut labels = Vec::new();
+        collect_label_texts(adaptive.view(), &mut labels);
+        assert!(
+            labels.iter().any(|text| text == "one-column"),
+            "narrow width must display one-column, got {labels:?}"
+        );
+
+        pane_width.set(580.0);
+        layout_and_wait_commit(adaptive.view());
+        layout_and_wait_commit(adaptive.view());
+        assert!(
+            (reported.snapshot().width - 580.0).abs() < 0.5,
+            "resized adaptive width must report 580, got {:?}",
+            reported.snapshot()
+        );
+        labels.clear();
+        collect_label_texts(adaptive.view(), &mut labels);
+        assert!(
+            labels.iter().any(|text| text == "two-column"),
+            "widening past 500 pt must adapt to two-column, got {labels:?}"
+        );
+        let writes_settled = writes.get();
+        layout_and_wait_commit(adaptive.view());
+        assert_eq!(
+            writes.get(),
+            writes_settled,
+            "settled adapted layout must not re-write or cycle"
         );
     }
 }

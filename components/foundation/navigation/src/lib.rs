@@ -24,7 +24,7 @@ use core::{
     marker::PhantomData,
 };
 
-use nami::{Binding, Computed, Signal as _, SignalExt as _};
+use nami::{Binding, Computed, Signal as _, SignalExt as _, signal::IntoComputed, zip::zip};
 #[cfg(feature = "serde")]
 use serde::{Serialize, de::DeserializeOwned};
 use waterui_controls::{Button, ButtonStyle, IconSlot, IntoLabel, LabelKind, button};
@@ -1101,6 +1101,8 @@ pub struct ActionToolbarItem;
 pub struct NavigationToolbarItem<C, Kind = CustomToolbarItem> {
     placement: NavigationToolbarPlacement,
     content: C,
+    disabled: Option<Computed<bool>>,
+    visible: Option<Computed<bool>>,
     kind: PhantomData<Kind>,
 }
 
@@ -1119,6 +1121,39 @@ impl<C, Kind> NavigationToolbarItem<C, Kind> {
     pub const fn placement(&self) -> NavigationToolbarPlacement {
         self.placement
     }
+
+    /// Disables this toolbar item reactively while preserving its semantic
+    /// label and icon.
+    ///
+    /// Chaining `.disabled(...)` combines with any previous disabled signal on
+    /// this item by logical OR.
+    pub fn disabled(mut self, disabled: impl IntoComputed<bool>) -> Self {
+        let disabled = disabled.into_computed();
+        self.disabled = Some(match self.disabled {
+            Some(existing) => zip(existing, disabled)
+                .map(|(first, second)| first || second)
+                .into_computed(),
+            None => disabled,
+        });
+        self
+    }
+
+    /// Shows or hides this toolbar item reactively while preserving its
+    /// semantic label and icon.
+    ///
+    /// Hidden items are excluded from bar layout, interaction, and
+    /// accessibility. Chaining `.visible(...)` combines with any previous
+    /// visibility signal on this item by logical AND.
+    pub fn visible(mut self, visible: impl IntoComputed<bool>) -> Self {
+        let visible = visible.into_computed();
+        self.visible = Some(match self.visible {
+            Some(existing) => zip(existing, visible)
+                .map(|(first, second)| first && second)
+                .into_computed(),
+            None => visible,
+        });
+        self
+    }
 }
 
 impl NavigationToolbarItem<(), CustomToolbarItem> {
@@ -1134,6 +1169,8 @@ impl NavigationToolbarItem<(), CustomToolbarItem> {
         NavigationToolbarItem {
             placement,
             content,
+            disabled: None,
+            visible: None,
             kind: PhantomData,
         }
     }
@@ -1154,6 +1191,8 @@ impl NavigationToolbarItem<(), CustomToolbarItem> {
         NavigationToolbarItem {
             placement,
             content,
+            disabled: None,
+            visible: None,
             kind: PhantomData,
         }
     }
@@ -1169,6 +1208,8 @@ impl<C: View> NavigationToolbarItem<C, CustomToolbarItem> {
         NavigationToolbarItem {
             placement: self.placement,
             content: (self.content, icon),
+            disabled: self.disabled,
+            visible: self.visible,
             kind: PhantomData,
         }
     }
@@ -1188,6 +1229,8 @@ impl<V: View> NavigationToolbarItemSource for NavigationToolbarItem<V, CustomToo
             content: S::from_view(self.content),
             title: None,
             icon: None,
+            disabled: self.disabled,
+            visible: self.visible,
             env: None,
         }
     }
@@ -1203,6 +1246,8 @@ impl<V: View, I: View + Clone + 'static> NavigationToolbarItemSource
             content: S::from_view(content),
             title: None,
             icon: Some(IconSlot::from_view(icon)),
+            disabled: self.disabled,
+            visible: self.visible,
             env: None,
         }
     }
@@ -1219,6 +1264,8 @@ impl<L: LabelKind> NavigationToolbarItemSource
             content: S::from_view(self.content),
             title,
             icon,
+            disabled: self.disabled,
+            visible: self.visible,
             env: None,
         }
     }
@@ -1238,6 +1285,10 @@ pub struct ResolvedNavigationToolbarItem<S> {
     title: Option<Text>,
     /// The item's icon, when it was declared as a semantic label.
     icon: Option<IconSlot<S>>,
+    /// Reactive disabled state, when declared on the item.
+    disabled: Option<Computed<bool>>,
+    /// Reactive visibility state, when declared on the item.
+    visible: Option<Computed<bool>>,
     /// Scoped navigation environment attached by a pushed page.
     env: Option<Environment>,
 }
@@ -1253,6 +1304,8 @@ impl<S: 'static> ResolvedNavigationToolbarItem<S> {
             content: f(self.content),
             title: self.title,
             icon: self.icon.map(|icon| icon.map_slot(f)),
+            disabled: self.disabled,
+            visible: self.visible,
             env: self.env,
         }
     }
@@ -1261,6 +1314,7 @@ impl<S: 'static> ResolvedNavigationToolbarItem<S> {
 impl<S> ResolvedNavigationToolbarItem<S> {
     /// Takes the value apart into its fields, in declaration order.
     #[must_use]
+    #[allow(clippy::type_complexity)]
     pub fn into_parts(
         self,
     ) -> (
@@ -1268,6 +1322,8 @@ impl<S> ResolvedNavigationToolbarItem<S> {
         S,
         Option<Text>,
         Option<IconSlot<S>>,
+        Option<Computed<bool>>,
+        Option<Computed<bool>>,
         Option<Environment>,
     ) {
         (
@@ -1275,6 +1331,8 @@ impl<S> ResolvedNavigationToolbarItem<S> {
             self.content,
             self.title,
             self.icon,
+            self.disabled,
+            self.visible,
             self.env,
         )
     }
@@ -1301,6 +1359,18 @@ impl<S> ResolvedNavigationToolbarItem<S> {
     #[must_use]
     pub const fn icon(&self) -> Option<&IconSlot<S>> {
         self.icon.as_ref()
+    }
+
+    /// Reactive disabled state declared on this item, if any.
+    #[must_use]
+    pub const fn disabled(&self) -> Option<&Computed<bool>> {
+        self.disabled.as_ref()
+    }
+
+    /// Reactive visibility state declared on this item, if any.
+    #[must_use]
+    pub const fn visible(&self) -> Option<&Computed<bool>> {
+        self.visible.as_ref()
     }
 
     /// Scoped navigation environment attached by a pushed destination, if any.
